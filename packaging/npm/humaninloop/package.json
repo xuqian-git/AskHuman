@@ -1,5 +1,5 @@
 {
-  "name": "humaninloop",
+  "name": "@humaninloop/cli",
   "version": "0.1.0",
   "description": "Human-in-the-loop interaction tool. The `AskHuman` CLI pops up a window (or uses Telegram) to collect human input and prints the result to stdout — usable standalone or as a dependency.",
   "license": "MIT",

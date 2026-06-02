@@ -11,10 +11,10 @@ git tag vX.Y.Z
   └─► CI release.yml（tag 触发）
         ├─ 4 平台编译 AskHuman 二进制
         ├─ 填充各平台子包 → npm publish（@humaninloop/darwin-arm64 等 4 个）
-        ├─ npm publish 主包 humaninloop（optionalDependencies 锁定子包版本）
+        ├─ npm publish 主包 @humaninloop/cli（optionalDependencies 锁定子包版本）
         └─ 打 tar.gz/zip → 创建 GitHub Release 并上传
 
-消费①（单独）：npm i -g humaninloop → AskHuman ...        或 GitHub Release 下载
+消费①（单独）：npm i -g @humaninloop/cli → AskHuman ...     或 GitHub Release 下载
 消费②（被依赖）：下游 dependencies 加 humaninloop → npm i 自动装当前平台子包
                 运行时：getBinaryPath() 解析路径 → spawn → 读 stdout / 退出码
 ```

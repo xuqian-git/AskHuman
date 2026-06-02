@@ -21,7 +21,7 @@
 
 `AskHuman` 需要同时满足两种消费方式：
 
-1. **单独使用**：用户 `npm i -g humaninloop` 后在终端直接用 `AskHuman ...`；或从 GitHub Release 下载。
+1. **单独使用**：用户 `npm i -g @humaninloop/cli` 后在终端直接用 `AskHuman ...`；或从 GitHub Release 下载。
 2. **被其他库依赖**：典型下游为 `WeiboLongRunningAgent`(WBLRA) 这类 Node/TS 项目，把 `humaninloop` 写进 `dependencies`，用户 `npm install` 时**自动装上对应平台二进制**，运行时在代码里解析路径并 `spawn` 调用。
 
 ### 需求 B：Channel 粒度的优雅降级
@@ -41,7 +41,7 @@
 | D1 | 主分发渠道 | npm「平台子包」（esbuild/biome 同款） |
 | D2 | 补充分发渠道 | 保留 GitHub Release 的 tar.gz / zip |
 | D3 | 不采用的方案 | Homebrew（只解决「人来装」，不解决「被库依赖」）；axe 式 bundle 捆绑（本项目单文件，无需下游捆绑） |
-| D4 | 主包名 | `humaninloop`（公共名，npmjs 上可用，无 scope） |
+| D4 | 主包名 | `@humaninloop/cli`（scoped；非 scoped 的 `humaninloop` 被 npm 判定与 `human-in-loop` 太像而拒绝） |
 | D5 | 平台子包名 | scoped（esbuild 风格，规避 npm 反垃圾）：`@humaninloop/darwin-arm64` / `@humaninloop/darwin-x64` / `@humaninloop/win32-x64` / `@humaninloop/linux-x64` |
 | D6 | registry | 公共 npmjs |
 | D7 | 运行时 API | 主包导出 `getBinaryPath()` / `isAvailable()`；解析顺序：环境变量 `HUMANINLOOP_BINARY` → 平台子包 → 系统 `PATH` |
@@ -67,7 +67,7 @@
 需求 A：
 
 1. 打 tag `vX.Y.Z` 后，CI 自动：编译 4 平台二进制 → 发布 4 个平台子包与主包到 npmjs → 上传 tar.gz/zip 到 GitHub Release。
-2. 在 macOS/Windows/Linux 任一机器 `npm i -g humaninloop` 后，`AskHuman` 命令可用，仅安装当前平台对应的一个子包。
+2. 在 macOS/Windows/Linux 任一机器 `npm i -g @humaninloop/cli` 后，`AskHuman` 命令可用，仅安装当前平台对应的一个子包。
 3. 下游项目把 `humaninloop` 加入 `dependencies` 并 `npm i` 后，可通过 `getBinaryPath()` 拿到二进制路径并成功 `spawn`；`isAvailable()` 正确反映是否就位。
 4. 三处 + 子包版本号在一次发版内保持一致。
 

@@ -13,7 +13,7 @@
 ### 方式一：npm（推荐）
 
 ```bash
-npm i -g humaninloop      # 全局安装，得到 AskHuman 命令
+npm i -g @humaninloop/cli      # 全局安装，得到 AskHuman 命令
 ```
 
 只会下载与当前平台匹配的一个二进制（mac arm64/x64、win x64、linux x64）。
@@ -40,10 +40,10 @@ npm i -g humaninloop      # 全局安装，得到 AskHuman 命令
 
 ## 作为依赖（程序集成）
 
-把 `humaninloop` 加入项目依赖（`npm i humaninloop`），在代码里解析二进制路径并调用——`npm install` 时会自动装上当前平台的二进制：
+把 `@humaninloop/cli` 加入项目依赖（`npm i @humaninloop/cli`），在代码里解析二进制路径并调用——`npm install` 时会自动装上当前平台的二进制：
 
 ```js
-import { getBinaryPath, isAvailable } from "humaninloop";
+import { getBinaryPath, isAvailable } from "@humaninloop/cli";
 import { spawnSync } from "node:child_process";
 
 if (isAvailable()) {
