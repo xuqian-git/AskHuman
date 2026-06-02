@@ -23,3 +23,44 @@ export interface PopupSubmission {
   userInput: string;
   images: ImageAttachment[];
 }
+
+export interface GeneralConfig {
+  theme: ThemeMode;
+  alwaysOnTop: boolean;
+}
+
+export interface PopupChannelConfig {
+  enabled: boolean;
+  width: number;
+  height: number;
+  rememberSize: boolean;
+}
+
+export interface TelegramChannelConfig {
+  enabled: boolean;
+  botToken: string;
+  chatId: string;
+  apiBaseUrl: string;
+}
+
+export interface ChannelsConfig {
+  popup: PopupChannelConfig;
+  telegram: TelegramChannelConfig;
+}
+
+export interface AppConfig {
+  general: GeneralConfig;
+  channels: ChannelsConfig;
+}
+
+export interface HookStatus {
+  installed: boolean;
+  hooksJsonExists: boolean;
+  supported: boolean;
+}
+
+export interface TelegramTestArgs {
+  botToken: string;
+  chatId: string;
+  apiBaseUrl: string;
+}

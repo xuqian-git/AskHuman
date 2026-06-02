@@ -11,9 +11,11 @@ mod app;
 mod cli;
 mod commands;
 mod config;
+mod integrations;
 mod models;
 mod paths;
 mod prompts;
+mod telegram;
 
 fn main() {
     cli::dispatch();

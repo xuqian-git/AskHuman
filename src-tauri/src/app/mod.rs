@@ -48,7 +48,7 @@ pub fn run_settings(config: AppConfig) -> ! {
 /// 统一启动入口：`generate_context!` 每个二进制只能展开一次，故所有窗口共用此路径。
 fn launch(state: AppState, view: View) -> ! {
     let theme = window_theme(&state.config);
-    let popup_bg = background_for(resolved_theme(&state.config));
+    let window_bg = background_for(resolved_theme(&state.config));
     let popup_w = state.config.channels.popup.width;
     let popup_h = state.config.channels.popup.height;
     let always_on_top = state.config.general.always_on_top;
@@ -59,6 +59,15 @@ fn launch(state: AppState, view: View) -> ! {
             crate::commands::popup_init,
             crate::commands::submit_popup,
             crate::commands::cancel_popup,
+            crate::commands::get_settings,
+            crate::commands::save_settings,
+            crate::commands::get_prompt,
+            crate::commands::set_theme,
+            crate::commands::cursor_hook_status,
+            crate::commands::cursor_hook_install,
+            crate::commands::cursor_hook_uninstall,
+            crate::commands::cursor_hook_reveal,
+            crate::commands::telegram_test,
         ])
         .on_window_event(|window, event| {
             // 仅弹窗参与“关闭即取消 / 记忆尺寸”；设置窗口走默认关闭行为。
@@ -88,7 +97,7 @@ fn launch(state: AppState, view: View) -> ! {
                     .min_inner_size(420.0, 480.0)
                     .center()
                     .always_on_top(always_on_top)
-                    .background_color(popup_bg)
+                    .background_color(window_bg)
                     .theme(theme)
                     .build()?;
                 }
@@ -101,6 +110,7 @@ fn launch(state: AppState, view: View) -> ! {
                     .title("HumanInLoop 设置")
                     .inner_size(560.0, 640.0)
                     .center()
+                    .background_color(window_bg)
                     .theme(theme)
                     .build()?;
                 }

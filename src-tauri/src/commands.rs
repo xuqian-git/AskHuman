@@ -1,10 +1,12 @@
 //! 前端可调用的 Tauri 命令（弹窗模式）。
 
 use crate::app::{self, AppState};
-use crate::config::ThemeMode;
+use crate::config::{AppConfig, ThemeMode};
+use crate::integrations::cursor_hook;
 use crate::models::{AskRequest, ChannelAction, ChannelResult, ImageAttachment};
+use crate::telegram::TelegramClient;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 
 /// 弹窗初始化负载：请求内容 + 主题（前端据此套用样式）。
 #[derive(Serialize)]
@@ -58,4 +60,87 @@ fn theme_str(theme: ThemeMode) -> String {
         ThemeMode::Dark => "dark",
     }
     .to_string()
+}
+
+// ===== 设置页命令 =====
+
+#[tauri::command]
+pub fn get_settings() -> AppConfig {
+    AppConfig::load()
+}
+
+#[tauri::command]
+pub fn save_settings(config: AppConfig) -> Result<(), String> {
+    config.save().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_prompt() -> &'static str {
+    crate::prompts::CLI_REFERENCE
+}
+
+/// 实时应用主题到已打开的窗口（system→跟随系统）。
+#[tauri::command]
+pub fn set_theme(app: AppHandle, theme: String) {
+    let t = match theme.as_str() {
+        "light" => Some(tauri::Theme::Light),
+        "dark" => Some(tauri::Theme::Dark),
+        _ => None,
+    };
+    for label in ["settings", "popup"] {
+        if let Some(w) = app.get_webview_window(label) {
+            let _ = w.set_theme(t);
+        }
+    }
+}
+
+// ===== Cursor Hook =====
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HookStatus {
+    installed: bool,
+    hooks_json_exists: bool,
+    supported: bool,
+}
+
+#[tauri::command]
+pub fn cursor_hook_status() -> HookStatus {
+    HookStatus {
+        installed: cursor_hook::is_installed(),
+        hooks_json_exists: cursor_hook::hooks_json_exists(),
+        supported: cursor_hook::supported(),
+    }
+}
+
+#[tauri::command]
+pub fn cursor_hook_install() -> Result<String, String> {
+    cursor_hook::install().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn cursor_hook_uninstall() -> Result<String, String> {
+    cursor_hook::uninstall().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn cursor_hook_reveal() {
+    cursor_hook::reveal();
+}
+
+// ===== Telegram 测试连接 =====
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TelegramTestArgs {
+    bot_token: String,
+    chat_id: String,
+    api_base_url: String,
+}
+
+#[tauri::command]
+pub async fn telegram_test(args: TelegramTestArgs) -> Result<String, String> {
+    let client = TelegramClient::new(args.bot_token, args.chat_id, args.api_base_url)
+        .map_err(|e| e.to_string())?;
+    client.test_connection().await.map_err(|e| e.to_string())
 }
