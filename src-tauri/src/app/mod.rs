@@ -56,6 +56,7 @@ fn launch(state: AppState, view: View) -> ! {
         .manage(state)
         .invoke_handler(tauri::generate_handler![
             crate::commands::popup_init,
+            crate::commands::popup_ready,
             crate::commands::submit_popup,
             crate::commands::cancel_popup,
         ])
@@ -75,6 +76,7 @@ fn launch(state: AppState, view: View) -> ! {
         .setup(move |app| {
             match view {
                 View::Popup => {
+                    // 先隐藏创建，待前端绘制完成（popup_ready）再显示，避免白屏闪烁。
                     WebviewWindowBuilder::new(
                         app,
                         "popup",
@@ -85,8 +87,21 @@ fn launch(state: AppState, view: View) -> ! {
                     .min_inner_size(420.0, 480.0)
                     .center()
                     .always_on_top(always_on_top)
+                    .visible(false)
                     .theme(theme)
                     .build()?;
+
+                    // 兜底：前端若未发出就绪信号，超时后也显示窗口。
+                    let handle = app.handle().clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(std::time::Duration::from_millis(1500));
+                        if let Some(w) = handle.get_webview_window("popup") {
+                            if !w.is_visible().unwrap_or(true) {
+                                let _ = w.show();
+                                let _ = w.set_focus();
+                            }
+                        }
+                    });
                 }
                 View::Settings => {
                     WebviewWindowBuilder::new(
