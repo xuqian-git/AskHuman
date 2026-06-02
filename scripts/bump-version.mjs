@@ -49,10 +49,10 @@ function updateCargoToml(relPath) {
 }
 
 const PLATFORM_PKGS = [
-  "humaninloop-darwin-arm64",
-  "humaninloop-darwin-x64",
-  "humaninloop-win32-x64",
-  "humaninloop-linux-x64",
+  "@humaninloop/darwin-arm64",
+  "@humaninloop/darwin-x64",
+  "@humaninloop/win32-x64",
+  "@humaninloop/linux-x64",
 ];
 
 updateCargoToml("src-tauri/Cargo.toml");

@@ -8,10 +8,10 @@ const path = require("path");
 
 // platformKey -> 平台子包名
 const PLATFORM_PACKAGES = {
-  "darwin-arm64": "humaninloop-darwin-arm64",
-  "darwin-x64": "humaninloop-darwin-x64",
-  "win32-x64": "humaninloop-win32-x64",
-  "linux-x64": "humaninloop-linux-x64",
+  "darwin-arm64": "@humaninloop/darwin-arm64",
+  "darwin-x64": "@humaninloop/darwin-x64",
+  "win32-x64": "@humaninloop/win32-x64",
+  "linux-x64": "@humaninloop/linux-x64",
 };
 
 function binName() {

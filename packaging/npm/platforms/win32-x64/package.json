@@ -1,5 +1,5 @@
 {
-  "name": "humaninloop-win32-x64",
+  "name": "@humaninloop/win32-x64",
   "version": "0.1.0",
   "description": "Windows x64 binary for humaninloop (AskHuman). Installed automatically as an optional dependency of `humaninloop`.",
   "license": "MIT",

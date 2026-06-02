@@ -1,5 +1,5 @@
 {
-  "name": "humaninloop-darwin-arm64",
+  "name": "@humaninloop/darwin-arm64",
   "version": "0.1.0",
   "description": "macOS arm64 binary for humaninloop (AskHuman). Installed automatically as an optional dependency of `humaninloop`.",
   "license": "MIT",

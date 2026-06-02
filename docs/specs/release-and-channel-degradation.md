@@ -42,7 +42,7 @@
 | D2 | 补充分发渠道 | 保留 GitHub Release 的 tar.gz / zip |
 | D3 | 不采用的方案 | Homebrew（只解决「人来装」，不解决「被库依赖」）；axe 式 bundle 捆绑（本项目单文件，无需下游捆绑） |
 | D4 | 主包名 | `humaninloop`（公共名，npmjs 上可用，无 scope） |
-| D5 | 平台子包名 | `humaninloop-darwin-arm64` / `humaninloop-darwin-x64` / `humaninloop-win32-x64` / `humaninloop-linux-x64` |
+| D5 | 平台子包名 | scoped（esbuild 风格，规避 npm 反垃圾）：`@humaninloop/darwin-arm64` / `@humaninloop/darwin-x64` / `@humaninloop/win32-x64` / `@humaninloop/linux-x64` |
 | D6 | registry | 公共 npmjs |
 | D7 | 运行时 API | 主包导出 `getBinaryPath()` / `isAvailable()`；解析顺序：环境变量 `HUMANINLOOP_BINARY` → 平台子包 → 系统 `PATH` |
 | D8 | 退出码契约 | `0`=成功或用户取消；`3`=无任何可用 channel（需降级）；`1`=其他异常 |

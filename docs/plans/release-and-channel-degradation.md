@@ -10,7 +10,7 @@
 git tag vX.Y.Z
   └─► CI release.yml（tag 触发）
         ├─ 4 平台编译 AskHuman 二进制
-        ├─ 填充各平台子包 → npm publish（humaninloop-darwin-arm64 等 4 个）
+        ├─ 填充各平台子包 → npm publish（@humaninloop/darwin-arm64 等 4 个）
         ├─ npm publish 主包 humaninloop（optionalDependencies 锁定子包版本）
         └─ 打 tar.gz/zip → 创建 GitHub Release 并上传
 
@@ -64,7 +64,7 @@ packaging/npm/
 
 ### A3. 平台子包 `humaninloop-<os>-<cpu>/package.json` 关键字段
 
-- `"name"`：如 `humaninloop-darwin-arm64`。
+- `"name"`：如 `@humaninloop/darwin-arm64`（scoped）。
 - `"os": ["darwin"]`、`"cpu": ["arm64"]`：npm 据此**只装匹配当前平台的一个**。
 - `"files": ["bin"]`，二进制位于 `bin/AskHuman`（Windows 为 `AskHuman.exe`）。
 - npm `os`/`cpu` 取值映射：darwin/win32/linux × arm64/x64。
