@@ -4,8 +4,15 @@
 // 因此不设置 `windows_subsystem = "windows"`，以保证 Windows 上也能向终端写 stdout。
 // （代价是 GUI 模式在 Windows 上可能伴随控制台窗口，后续单独处理。）
 
+// 开发期：部分核心 API 在后续步骤（弹窗/设置/Telegram）才会接线，先放宽未使用告警。
+#![allow(dead_code)]
+
 mod app;
 mod cli;
+mod config;
+mod models;
+mod paths;
+mod prompts;
 
 fn main() {
     cli::dispatch();

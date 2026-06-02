@@ -1,5 +1,7 @@
 pub mod args;
 pub mod help;
+pub mod image_writer;
+pub mod output;
 
 use std::process::exit;
 
