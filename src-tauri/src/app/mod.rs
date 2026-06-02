@@ -48,6 +48,7 @@ pub fn run_settings(config: AppConfig) -> ! {
 /// 统一启动入口：`generate_context!` 每个二进制只能展开一次，故所有窗口共用此路径。
 fn launch(state: AppState, view: View) -> ! {
     let theme = window_theme(&state.config);
+    let popup_bg = background_for(resolved_theme(&state.config));
     let popup_w = state.config.channels.popup.width;
     let popup_h = state.config.channels.popup.height;
     let always_on_top = state.config.general.always_on_top;
@@ -75,9 +76,9 @@ fn launch(state: AppState, view: View) -> ! {
         .setup(move |app| {
             match view {
                 View::Popup => {
-                    // 先隐藏创建，给原生窗口涂上最终主题背景色后立即显示：
-                    // 窗口瞬间出现且已是目标底色，既无白屏闪烁也无可感知延迟。
-                    let window = WebviewWindowBuilder::new(
+                    // 在创建时即给 webview 设定底色（macOS 仅 builder 阶段对 webview 生效），
+                    // 窗口一出现就是目标深/浅色，无白屏闪烁。
+                    WebviewWindowBuilder::new(
                         app,
                         "popup",
                         WebviewUrl::App("index.html?view=popup".into()),
@@ -87,15 +88,9 @@ fn launch(state: AppState, view: View) -> ! {
                     .min_inner_size(420.0, 480.0)
                     .center()
                     .always_on_top(always_on_top)
-                    .visible(false)
+                    .background_color(popup_bg)
                     .theme(theme)
                     .build()?;
-
-                    // theme() 返回解析后的实际主题（system 亦可），据此取底色。
-                    let resolved = window.theme().unwrap_or(tauri::Theme::Light);
-                    let _ = window.set_background_color(Some(background_for(resolved)));
-                    let _ = window.show();
-                    let _ = window.set_focus();
                 }
                 View::Settings => {
                     WebviewWindowBuilder::new(
@@ -164,7 +159,19 @@ fn emit_result(request: &AskRequest, result: &ChannelResult) -> i32 {
     }
 }
 
-/// 原生窗口底色（与前端 tokens.css `--bg` 对齐）。
+/// 解析“实际”主题：system 时探测系统深/浅色。
+fn resolved_theme(config: &AppConfig) -> tauri::Theme {
+    match config.general.theme {
+        ThemeMode::Light => tauri::Theme::Light,
+        ThemeMode::Dark => tauri::Theme::Dark,
+        ThemeMode::System => match dark_light::detect() {
+            Ok(dark_light::Mode::Dark) => tauri::Theme::Dark,
+            _ => tauri::Theme::Light,
+        },
+    }
+}
+
+/// 原生窗口/webview 底色（与前端 tokens.css `--bg` 对齐）。
 fn background_for(theme: tauri::Theme) -> tauri::window::Color {
     match theme {
         tauri::Theme::Dark => tauri::window::Color(30, 30, 30, 255),
