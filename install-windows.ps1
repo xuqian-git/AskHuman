@@ -19,7 +19,8 @@ Write-Host "==> 构建前端 (dist/)"
 pnpm build
 
 Write-Host "==> 编译 release（前端资源在此步骤被嵌入）"
-cargo build --release --manifest-path src-tauri/Cargo.toml
+# --features custom-protocol：生产构建必须启用，否则二进制以 dev 模式连 devUrl 导致白屏。
+cargo build --release --manifest-path src-tauri/Cargo.toml --features custom-protocol
 
 $Bin = "src-tauri\target\release\AskHuman.exe"
 if (-not (Test-Path $Bin)) { Write-Error "未找到编译产物 $Bin"; exit 1 }

@@ -22,7 +22,8 @@ echo "==> 构建前端 (dist/)"
 pnpm build
 
 echo "==> 编译 release 二进制（前端资源在此步骤被嵌入）"
-cargo build --release --manifest-path src-tauri/Cargo.toml
+# --features custom-protocol：生产构建必须启用，否则二进制以 dev 模式连 devUrl 导致白屏。
+cargo build --release --manifest-path src-tauri/Cargo.toml --features custom-protocol
 
 BIN_PATH="src-tauri/target/release/AskHuman"
 if [ ! -f "$BIN_PATH" ]; then

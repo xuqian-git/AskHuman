@@ -12,6 +12,12 @@ default-run = "AskHuman"
 name = "AskHuman"
 path = "src/main.rs"
 
+[features]
+# 生产构建（直接 `cargo build --release`，不经 tauri CLI）必须启用此特性：
+# 否则 tauri 的 build.rs 判定 dev=true，二进制会去连 devUrl(localhost) 而非内嵌资源，导致白屏。
+# 注意：`pnpm tauri dev` 不启用此特性，仍走 dev server 热重载。请勿移除。
+custom-protocol = ["tauri/custom-protocol"]
+
 [build-dependencies]
 tauri-build = { version = "2" }
 
