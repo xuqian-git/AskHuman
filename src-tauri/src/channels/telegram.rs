@@ -158,6 +158,7 @@ pub(crate) async fn run_session(
                                 Some(user_input.clone())
                             },
                             images: Vec::new(),
+                            files: Vec::new(),
                             source_channel_id: "telegram".to_string(),
                         });
                         return;

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   popupInit,
@@ -27,6 +28,8 @@ const loadError = ref<string | null>(null);
 const chosen = ref<string[]>([]);
 const userInput = ref("");
 const images = ref<ImageAttachment[]>([]);
+// 用户拖入回复的非图片文件（仅展示路径，提交时透传绝对路径）。
+const replyFiles = ref<{ path: string; name: string }[]>([]);
 const submitting = ref(false);
 const inputRef = ref<HTMLTextAreaElement | null>(null);
 const fileRef = ref<HTMLInputElement | null>(null);
@@ -49,6 +52,7 @@ const attRefs = ref<HTMLElement[]>([]);
 const previewing = ref(false);
 let unlistenIndex: UnlistenFn | null = null;
 let unlistenFocus: UnlistenFn | null = null;
+let unlistenDrop: UnlistenFn | null = null;
 
 function setAttRef(el: Element | null, i: number) {
   if (el) attRefs.value[i] = el as HTMLElement;
@@ -186,8 +190,33 @@ function removeImage(index: number) {
   images.value.splice(index, 1);
 }
 
-function onDrop(e: DragEvent) {
-  if (e.dataTransfer?.files?.length) addFiles(e.dataTransfer.files);
+// 浏览器 drop 事件在 Tauri 下拿不到 files（原生层接管），仅保留以阻止默认行为；
+// 实际文件拖入经 Tauri 的 onDragDropEvent 处理（见 onMounted）。
+function onDrop(_e: DragEvent) {}
+
+const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp|heic|heif|tiff?|svg)$/i;
+
+// 拖入的本地文件：图片读为 data URL 作为图片附件；非图片以绝对路径作为回复文件附件。
+async function addDroppedPaths(paths: string[]) {
+  for (const path of paths) {
+    const name = path.split(/[\\/]/).pop() || "file";
+    if (IMAGE_EXT.test(path)) {
+      try {
+        const data = await readImageDataUrl(path);
+        const semi = data.indexOf(";");
+        const mediaType = semi > 5 ? data.slice(5, semi) : "image/png";
+        images.value.push({ data, mediaType, filename: name });
+      } catch (err) {
+        console.error("读取拖入图片失败", path, err);
+      }
+    } else if (!replyFiles.value.some((f) => f.path === path)) {
+      replyFiles.value.push({ path, name });
+    }
+  }
+}
+
+function removeReplyFile(index: number) {
+  replyFiles.value.splice(index, 1);
 }
 
 async function onPaste(e: ClipboardEvent) {
@@ -217,6 +246,7 @@ async function send() {
       selectedOptions,
       userInput: userInput.value,
       images: images.value,
+      files: replyFiles.value.map((f) => f.path),
     });
   } catch {
     submitting.value = false;
@@ -275,6 +305,10 @@ onMounted(async () => {
     const i = selectedFile.value;
     if (i !== null) nextTick(() => attRefs.value[i]?.focus());
   });
+  // 原生文件拖放：Tauri 接管 OS 拖放，drop 时回传文件路径，逐个读为图片附件。
+  unlistenDrop = await getCurrentWebview().onDragDropEvent((event) => {
+    if (event.payload.type === "drop") addDroppedPaths(event.payload.paths);
+  });
   try {
     const init = await popupInit();
     applyTheme(init.theme);
@@ -295,6 +329,7 @@ onBeforeUnmount(() => {
   window.removeEventListener("keydown", onKeydown);
   unlistenIndex?.();
   unlistenFocus?.();
+  unlistenDrop?.();
 });
 </script>
 
@@ -426,6 +461,21 @@ onBeforeUnmount(() => {
         <div v-for="(img, i) in images" :key="i" class="thumb">
           <img :src="img.data" alt="" />
           <button class="remove" type="button" @click="removeImage(i)">
+            ×
+          </button>
+        </div>
+      </div>
+
+      <div v-if="replyFiles.length" class="reply-files">
+        <div
+          v-for="(f, i) in replyFiles"
+          :key="f.path"
+          class="reply-file"
+          :title="f.path"
+        >
+          <span class="rf-icon">📄</span>
+          <span class="rf-name">{{ f.name }}</span>
+          <button class="rf-remove" type="button" @click="removeReplyFile(i)">
             ×
           </button>
         </div>
@@ -706,6 +756,56 @@ onBeforeUnmount(() => {
   flex: 1 1 auto;
   pointer-events: none;
 }
+/* 回复文件 chip（拖入的非图片文件，自适应换行） */
+.reply-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.reply-file {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 220px;
+  padding: 4px 6px 4px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  font-size: 12px;
+}
+.reply-file .rf-icon {
+  flex: 0 0 auto;
+  font-size: 13px;
+  line-height: 1;
+}
+.reply-file .rf-name {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+}
+.reply-file .rf-remove {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(128, 128, 128, 0.25);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1;
+  cursor: default;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.reply-file .rf-remove:hover {
+  background: rgba(128, 128, 128, 0.4);
+  color: var(--text-primary);
+}
+
 /* 按钮上的快捷键标注 */
 .btn .sc {
   margin-left: 6px;

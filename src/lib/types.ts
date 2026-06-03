@@ -32,6 +32,7 @@ export interface PopupSubmission {
   selectedOptions: string[];
   userInput: string;
   images: ImageAttachment[];
+  files: string[];
 }
 
 export interface GeneralConfig {

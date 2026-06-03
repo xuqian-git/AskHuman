@@ -41,6 +41,9 @@ pub struct PopupSubmission {
     user_input: String,
     #[serde(default)]
     images: Vec<ImageAttachment>,
+    /// 用户拖入回复的非图片文件绝对路径（直接透传）。
+    #[serde(default)]
+    files: Vec<String>,
 }
 
 #[tauri::command]
@@ -50,6 +53,7 @@ pub fn submit_popup(app: AppHandle, submission: PopupSubmission) {
         selected_options: submission.selected_options,
         user_input: Some(submission.user_input),
         images: submission.images,
+        files: submission.files,
         source_channel_id: "popup".to_string(),
     };
     if let Some(c) = app.try_state::<Arc<Coordinator>>() {

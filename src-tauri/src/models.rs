@@ -85,6 +85,9 @@ pub struct ChannelResult {
     pub user_input: Option<String>,
     #[serde(default)]
     pub images: Vec<ImageAttachment>,
+    /// 用户随回复附带的本地文件绝对路径（非图片，直接透传不复制）。
+    #[serde(default)]
+    pub files: Vec<String>,
     pub source_channel_id: String,
 }
 
@@ -95,6 +98,7 @@ impl ChannelResult {
             selected_options: Vec::new(),
             user_input: None,
             images: Vec::new(),
+            files: Vec::new(),
             source_channel_id: source_channel_id.into(),
         }
     }

@@ -8,11 +8,12 @@ pub fn cancel_output() -> String {
     format!("[状态]\n{}", CANCEL_STATUS_TEXT)
 }
 
-/// 成功路径输出（图片已落盘，传入路径列表）。
+/// 成功路径输出（图片已落盘，传入路径列表；文件为用户拖入的非图片绝对路径，直接透传）。
 pub fn send_output(
     selected_options: &[String],
     user_input: Option<&str>,
     image_paths: &[String],
+    file_paths: &[String],
 ) -> String {
     let mut sections: Vec<String> = Vec::new();
 
@@ -29,6 +30,10 @@ pub fn send_output(
 
     if !image_paths.is_empty() {
         sections.push(format!("[图片]\n{}", image_paths.join("\n")));
+    }
+
+    if !file_paths.is_empty() {
+        sections.push(format!("[文件]\n{}", file_paths.join("\n")));
     }
 
     if sections.is_empty() {
@@ -48,31 +53,37 @@ mod tests {
 
     #[test]
     fn options_only() {
-        let out = send_output(&s(&["A", "B"]), None, &[]);
+        let out = send_output(&s(&["A", "B"]), None, &[], &[]);
         assert_eq!(out, "[选择的选项]\nA, B");
     }
 
     #[test]
     fn input_trimmed() {
-        let out = send_output(&[], Some("  你好  \n"), &[]);
+        let out = send_output(&[], Some("  你好  \n"), &[], &[]);
         assert_eq!(out, "[用户输入]\n你好");
     }
 
     #[test]
     fn empty_input_omitted() {
-        let out = send_output(&[], Some("   "), &[]);
+        let out = send_output(&[], Some("   "), &[], &[]);
         assert_eq!(out, "[用户输入]\n用户确认继续");
     }
 
     #[test]
     fn all_sections_blank_line_separated() {
-        let out = send_output(&s(&["A"]), Some("hi"), &s(&["/tmp/a.png"]));
+        let out = send_output(&s(&["A"]), Some("hi"), &s(&["/tmp/a.png"]), &[]);
         assert_eq!(out, "[选择的选项]\nA\n\n[用户输入]\nhi\n\n[图片]\n/tmp/a.png");
     }
 
     #[test]
+    fn files_section_after_images() {
+        let out = send_output(&[], Some("hi"), &s(&["/tmp/a.png"]), &s(&["/tmp/b.md"]));
+        assert_eq!(out, "[用户输入]\nhi\n\n[图片]\n/tmp/a.png\n\n[文件]\n/tmp/b.md");
+    }
+
+    #[test]
     fn empty_all_confirms_continue() {
-        let out = send_output(&[], None, &[]);
+        let out = send_output(&[], None, &[], &[]);
         assert_eq!(out, "[用户输入]\n用户确认继续");
     }
 

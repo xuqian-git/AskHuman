@@ -253,6 +253,7 @@ pub(crate) fn emit_result(request_id: &str, result: &ChannelResult) -> i32 {
                         &result.selected_options,
                         result.user_input.as_deref(),
                         &paths,
+                        &result.files,
                     )
                 );
                 0
