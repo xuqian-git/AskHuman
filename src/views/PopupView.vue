@@ -491,11 +491,53 @@ onBeforeUnmount(() => {
   pointer-events: none;
 }
 .brand-dot {
+  position: relative;
   width: 9px;
   height: 9px;
   border-radius: 50%;
   background: #30d158;
   box-shadow: 0 0 0 3px color-mix(in srgb, #30d158 22%, transparent);
+  animation: brand-dot-breathe 2.4s ease-in-out infinite;
+}
+/* 扩散的光环：用伪元素做 ping 式涟漪，避免影响 dot 自身阴影 */
+.brand-dot::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: #30d158;
+  animation: brand-dot-ping 2.4s ease-out infinite;
+}
+@keyframes brand-dot-breathe {
+  0%,
+  100% {
+    opacity: 0.85;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.12);
+  }
+}
+@keyframes brand-dot-ping {
+  0% {
+    opacity: 0.5;
+    transform: scale(1);
+  }
+  70%,
+  100% {
+    opacity: 0;
+    transform: scale(2.6);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .brand-dot,
+  .brand-dot::after {
+    animation: none;
+  }
+  .brand-dot::after {
+    display: none;
+  }
 }
 .brand-title {
   font-size: 13px;
