@@ -25,6 +25,10 @@ pub fn dispatch() {
             println!("{}", help::version_text());
             exit(0);
         }
+        "--agent-help" => {
+            println!("{}", help::agent_help_text());
+            exit(0);
+        }
         "--settings" => {
             crate::app::run_settings(crate::config::AppConfig::load());
         }

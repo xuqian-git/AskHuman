@@ -226,8 +226,8 @@ pub fn save_settings(config: AppConfig) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn get_prompt() -> &'static str {
-    crate::prompts::CLI_REFERENCE
+pub fn get_prompt() -> String {
+    crate::prompts::cli_reference()
 }
 
 /// 实时应用主题到已打开的窗口（system→跟随系统）。

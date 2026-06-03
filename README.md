@@ -73,6 +73,9 @@ ASKHUMAN_ENV_SOURCE_NAME=Agent AskHuman "要继续吗？"   # 标题显示 “Qu
 # 打开设置界面
 AskHuman --settings
 
+# 面向 AI 的精简用法（仅提问相关：调用方式/参数/用户回应/示例）
+AskHuman --agent-help
+
 # 帮助 / 版本
 AskHuman --help
 AskHuman --version

@@ -30,6 +30,7 @@ pub fn help_text() -> String {
         "用法:".to_string(),
         format!("  {prog} <message> [选项]      启动询问弹窗，结果写入 stdout"),
         format!("  {prog} --settings            启动设置界面"),
+        format!("  {prog} --agent-help          显示面向 AI 的精简用法（提问相关）"),
         format!("  {prog} --help, -h            显示此帮助信息"),
         format!("  {prog} --version, -v         显示版本信息"),
         String::new(),
@@ -47,6 +48,37 @@ pub fn help_text() -> String {
         "  每个区块仅在有内容时输出，区块之间用空行分隔。".to_string(),
         String::new(),
         "更多文档：参考应用内设置的「参考提示词」页面。".to_string(),
+    ]
+    .join("\n")
+}
+
+/// 面向 AI 的精简用法：仅含提问相关的调用方式、参数、结果区块与示例。
+/// 既用于 `--agent-help`，也被「参考提示词」(prompts) 直接嵌入复用。
+pub fn agent_help_text() -> String {
+    let prog = program_name();
+    [
+        format!("{prog} —— 向人类发起提问并收集回应。"),
+        String::new(),
+        "调用方式:".to_string(),
+        format!("  {prog} \"<提问内容>\" [-o \"<选项>\" ...] [-f \"<文件路径>\" ...] [--no-markdown]"),
+        String::new(),
+        "参数说明:".to_string(),
+        "  <提问内容>            展示给用户的问题（必填，默认按 Markdown 渲染）".to_string(),
+        "  -o, --option <text>   预定义选项，可多次出现，便于用户快速点选".to_string(),
+        "  -f, --file <path>     附带文件或图片（绝对/相对/~），可多次出现".to_string(),
+        "  --no-markdown         关闭 Markdown 渲染，按纯文本显示".to_string(),
+        String::new(),
+        "用户回应（仅在有内容时返回，区块之间空行分隔）:".to_string(),
+        "  [选择的选项]  用户勾选的预定义选项".to_string(),
+        "  [用户输入]    用户输入的自由文本".to_string(),
+        "  [图片]        用户附带图片的本地路径（可直接读取）".to_string(),
+        "  [文件]        用户拖入的非图片文件本地路径（可直接读取）".to_string(),
+        "  [状态]        仅在用户取消时出现，请按其中说明继续询问".to_string(),
+        String::new(),
+        "使用示例:".to_string(),
+        format!("  {prog} \"要继续部署吗？\" -o \"继续\" -o \"停止\""),
+        format!("  {prog} \"看看这个改动？\" -f ./diff.patch -f ~/Pictures/shot.png"),
+        format!("  {prog} \"纯文本内容（不渲染 Markdown）\" --no-markdown"),
     ]
     .join("\n")
 }
