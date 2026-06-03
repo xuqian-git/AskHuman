@@ -326,6 +326,8 @@ where
     )
     .title("HumanInLoop 设置")
     .inner_size(560.0, 640.0)
+    // 最小宽度：保证标题栏内居中的 tab 不会与左上角红绿灯重叠。
+    .min_inner_size(480.0, 520.0)
     .center()
     .theme(theme);
     apply_surface(builder, window_bg).build()?;

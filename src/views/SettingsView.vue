@@ -18,6 +18,19 @@ type Tab = "general" | "integration" | "channel";
 
 const config = ref<AppConfig | null>(null);
 const activeTab = ref<Tab>("general");
+
+// tab 按钮同时是窗口拖拽区：用屏幕坐标区分「点击切换」与「拖动移窗」。
+// 原生拖窗时窗口跟随光标，clientX/Y 几乎不变，故必须用 screenX/Y。
+const tabDown = ref<{ x: number; y: number } | null>(null);
+function onTabDown(e: MouseEvent) {
+  tabDown.value = { x: e.screenX, y: e.screenY };
+}
+function onTabClick(tab: Tab, e: MouseEvent) {
+  const d = tabDown.value;
+  tabDown.value = null;
+  if (d && Math.hypot(e.screenX - d.x, e.screenY - d.y) > 4) return;
+  activeTab.value = tab;
+}
 const prompt = ref("");
 const promptCopied = ref(false);
 
@@ -135,23 +148,28 @@ onMounted(async () => {
 
 <template>
   <div v-if="config" class="settings">
-    <div class="drag-strip" data-tauri-drag-region></div>
-    <nav class="tabbar">
+    <nav class="tabbar" data-tauri-drag-region>
       <button
+        data-tauri-drag-region
         :class="{ active: activeTab === 'general' }"
-        @click="activeTab = 'general'"
+        @mousedown="onTabDown"
+        @click="onTabClick('general', $event)"
       >
         通用
       </button>
       <button
+        data-tauri-drag-region
         :class="{ active: activeTab === 'integration' }"
-        @click="activeTab = 'integration'"
+        @mousedown="onTabDown"
+        @click="onTabClick('integration', $event)"
       >
         集成
       </button>
       <button
+        data-tauri-drag-region
         :class="{ active: activeTab === 'channel' }"
-        @click="activeTab = 'channel'"
+        @mousedown="onTabDown"
+        @click="onTabClick('channel', $event)"
       >
         通信渠道
       </button>
@@ -429,19 +447,6 @@ onMounted(async () => {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-}
-/* macOS Overlay 标题栏：顶部透明拖拽条 */
-.drag-strip {
-  display: none;
-}
-.vibrancy .drag-strip {
-  display: block;
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 28px;
-  z-index: 10;
 }
 .settings-body {
   flex: 1 1 auto;
