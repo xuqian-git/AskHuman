@@ -17,6 +17,8 @@ pub struct PopupInit {
     request: AskRequest,
     theme: String,
     always_on_top: bool,
+    /// 标题来源名：「Question from {source_name}」。可经环境变量定制。
+    source_name: String,
 }
 
 #[tauri::command]
@@ -25,6 +27,7 @@ pub fn popup_init(state: State<AppState>) -> PopupInit {
         request: state.request.clone(),
         theme: theme_str(state.config.general.theme),
         always_on_top: state.config.general.always_on_top,
+        source_name: crate::models::source_name(),
     }
 }
 

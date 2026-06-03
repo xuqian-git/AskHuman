@@ -92,6 +92,22 @@ fn convert_bold(text: &str) -> String {
     out
 }
 
+/// 全量转义 MarkdownV2 特殊字符（含 `*`、`>`、`` ` ``）。
+/// 用于把「纯文本」原样放入 MarkdownV2 消息（如非 markdown 正文 + 加粗头部）。
+pub fn escape_all(text: &str) -> String {
+    const SPECIAL: &[char] = &[
+        '_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!',
+    ];
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if SPECIAL.contains(&c) {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
 /// 转义 MarkdownV2 特殊字符（不转义 `*`、`>`、`` ` ``）。
 fn escape_special(text: &str) -> String {
     const SPECIAL: &[char] = &[

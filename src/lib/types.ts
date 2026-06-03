@@ -25,6 +25,7 @@ export interface PopupInit {
   request: AskRequest;
   theme: ThemeMode;
   alwaysOnTop: boolean;
+  sourceName: string;
 }
 
 export interface PopupSubmission {

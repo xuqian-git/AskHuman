@@ -38,6 +38,7 @@ function onScroll(e: Event) {
 
 const pinned = ref(false);
 const theme = ref<ThemeMode>("system");
+const sourceName = ref("the Loop");
 
 // 提问附带的文件附件（AI→人，仅展示）。
 const attachments = computed<FileAttachment[]>(() => request.value?.files ?? []);
@@ -279,6 +280,7 @@ onMounted(async () => {
     applyTheme(init.theme);
     theme.value = init.theme;
     pinned.value = init.alwaysOnTop;
+    sourceName.value = init.sourceName;
     request.value = init.request;
     loadThumbs();
     requestAnimationFrame(() => inputRef.value?.focus({ preventScroll: true }));
@@ -312,7 +314,7 @@ onBeforeUnmount(() => {
     <header class="navbar" :class="{ scrolled }" data-tauri-drag-region>
       <span class="brand">
         <span class="brand-dot"></span>
-        <span class="brand-title">Question from the Loop</span>
+        <span class="brand-title">Question from {{ sourceName }}</span>
       </span>
       <span class="nav-actions">
         <button

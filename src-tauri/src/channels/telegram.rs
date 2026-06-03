@@ -62,29 +62,46 @@ pub(crate) async fn run_session(
     let mut selected: Vec<String> = Vec::new();
     let mut user_input = String::new();
 
-    // 1. 选项消息（MarkdownV2 失败回退纯文本）
+    // 1. 选项消息（MarkdownV2 失败回退纯文本）。头部用直角引号包裹来源名以区分正文。
+    let header = format!("「Question from {}」", crate::models::source_name());
     let inline = if options.is_empty() {
         None
     } else {
         Some(inline_keyboard(&options, &selected))
     };
     let options_message_id = if request.is_markdown {
-        let processed = markdown::process(&request.message);
+        // 头部加粗后随正文一起处理，统一完成 MarkdownV2 转义。
+        let combined = format!("**{}**\n\n{}", header, request.message);
+        let processed = markdown::process(&combined);
+        let plain = format!("{}\n\n{}", header, request.message);
         match client
             .send_message(&processed, Some("MarkdownV2"), inline.clone())
             .await
         {
             Ok(id) => id,
             Err(_) => client
-                .send_message(&request.message, None, inline.clone())
+                .send_message(&plain, None, inline.clone())
                 .await
                 .unwrap_or(0),
         }
     } else {
-        client
-            .send_message(&request.message, None, inline.clone())
+        // 非 markdown 正文：仍用 MarkdownV2 让头部加粗，正文整体转义保持原样；失败回退纯文本。
+        let md = format!(
+            "*{}*\n\n{}",
+            markdown::escape_all(&header),
+            markdown::escape_all(&request.message)
+        );
+        let plain = format!("{}\n\n{}", header, request.message);
+        match client
+            .send_message(&md, Some("MarkdownV2"), inline.clone())
             .await
-            .unwrap_or(0)
+        {
+            Ok(id) => id,
+            Err(_) => client
+                .send_message(&plain, None, inline.clone())
+                .await
+                .unwrap_or(0),
+        }
     };
 
     // 2. 操作消息（含「发送」按钮）
