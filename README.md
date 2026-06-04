@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/banner.jpg" alt="AskHuman" width="800">
+</p>
+
 # HumanInLoop
 
 跨平台的「Human-in-the-loop」交互工具。当 AI 助手准备结束对话或需要确认时，调用命令行 `AskHuman` 弹出窗口，让你继续提问、勾选选项、补充文字或附带图片，并把结果回传给 AI。
