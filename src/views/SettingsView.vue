@@ -5,6 +5,9 @@ import {
   cursorHookReveal,
   cursorHookStatus,
   cursorHookUninstall,
+  dingtalkDetectPrepare,
+  dingtalkDetectWait,
+  dingtalkTest,
   getPrompt,
   getSettings,
   openTestPopup,
@@ -54,6 +57,12 @@ const hookError = ref(false);
 const telegramTesting = ref(false);
 const telegramMessage = ref<string | null>(null);
 const telegramError = ref(false);
+
+const dingtalkTesting = ref(false);
+const dingtalkDetecting = ref(false);
+const dingtalkDetectCode = ref<string | null>(null);
+const dingtalkMessage = ref<string | null>(null);
+const dingtalkError = ref(false);
 
 function clamp(v: number, min: number, max: number) {
   return Math.min(max, Math.max(min, v));
@@ -150,6 +159,57 @@ async function runTelegramTest() {
     telegramError.value = true;
   } finally {
     telegramTesting.value = false;
+  }
+}
+
+async function runDingtalkTest() {
+  if (!config.value) return;
+  dingtalkTesting.value = true;
+  dingtalkMessage.value = null;
+  const dd = config.value.channels.dingding;
+  try {
+    dingtalkMessage.value = await dingtalkTest({
+      clientId: dd.clientId,
+      clientSecret: dd.clientSecret,
+      userId: dd.userId,
+    });
+    dingtalkError.value = false;
+  } catch (e) {
+    dingtalkMessage.value = String(e);
+    dingtalkError.value = true;
+  } finally {
+    dingtalkTesting.value = false;
+  }
+}
+
+// 自动识别：先校验并取识别码 → 展示提示 → 等用户私聊发送该码 → 回填 userId。
+async function runDingtalkDetect() {
+  if (!config.value) return;
+  const dd = config.value.channels.dingding;
+  dingtalkDetecting.value = true;
+  dingtalkMessage.value = null;
+  dingtalkDetectCode.value = null;
+  try {
+    const code = await dingtalkDetectPrepare({
+      clientId: dd.clientId,
+      clientSecret: dd.clientSecret,
+    });
+    dingtalkDetectCode.value = code;
+    const userId = await dingtalkDetectWait({
+      clientId: dd.clientId,
+      clientSecret: dd.clientSecret,
+      code,
+    });
+    dd.userId = userId;
+    await persist();
+    dingtalkError.value = false;
+    dingtalkMessage.value = `已识别并填入 UserId：${userId}`;
+  } catch (e) {
+    dingtalkMessage.value = String(e);
+    dingtalkError.value = true;
+  } finally {
+    dingtalkDetecting.value = false;
+    dingtalkDetectCode.value = null;
   }
 }
 
@@ -480,6 +540,83 @@ onMounted(async () => {
               :class="telegramError ? 'err' : 'ok'"
             >
               {{ telegramMessage }}
+            </p>
+          </template>
+        </div>
+
+        <div class="card">
+          <div class="row">
+            <p class="card-title">钉钉</p>
+            <span class="spacer"></span>
+            <label class="switch">
+              <input
+                type="checkbox"
+                v-model="config.channels.dingding.enabled"
+                @change="persist"
+              />
+              <span class="track"></span>
+            </label>
+          </div>
+
+          <template v-if="config.channels.dingding.enabled">
+            <hr class="divider" />
+            <div class="field">
+              <label>ClientId（AppKey）</label>
+              <input
+                class="input"
+                v-model="config.channels.dingding.clientId"
+                @change="persist"
+              />
+            </div>
+            <div class="field">
+              <label>ClientSecret（AppSecret）</label>
+              <input
+                class="input"
+                type="password"
+                v-model="config.channels.dingding.clientSecret"
+                @change="persist"
+              />
+            </div>
+            <div class="field">
+              <label>UserId</label>
+              <div class="row">
+                <input
+                  class="input"
+                  style="flex: 1"
+                  v-model="config.channels.dingding.userId"
+                  @change="persist"
+                />
+                <button
+                  class="btn"
+                  type="button"
+                  :disabled="dingtalkDetecting"
+                  @click="runDingtalkDetect"
+                >
+                  {{ dingtalkDetecting ? "识别中…" : "自动识别" }}
+                </button>
+              </div>
+            </div>
+            <p v-if="dingtalkDetectCode" class="result ok">
+              请用目标钉钉账号私聊机器人发送：<b>{{ dingtalkDetectCode }}</b
+              >（120 秒内有效）
+            </p>
+            <div class="row">
+              <button
+                class="btn"
+                type="button"
+                :disabled="dingtalkTesting"
+                @click="runDingtalkTest"
+              >
+                {{ dingtalkTesting ? "测试中…" : "测试连接" }}
+              </button>
+              <span class="spacer"></span>
+            </div>
+            <p
+              v-if="dingtalkMessage"
+              class="result"
+              :class="dingtalkError ? 'err' : 'ok'"
+            >
+              {{ dingtalkMessage }}
             </p>
           </template>
         </div>

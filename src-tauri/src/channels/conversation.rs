@@ -1,0 +1,110 @@
+//! 会话型消息渠道的公共抽象：把「多问题逐条发送 / 单题特例 / 收集答案 / 投递」
+//! 这套与传输无关的编排逻辑抽出来，各渠道（Telegram / 钉钉 / 未来飞书等）只需实现
+//! `MessagingChannel` 的传输相关原语。
+
+use super::ResultSink;
+use crate::models::{AskRequest, ChannelAction, ChannelResult, MessagePrompt, QuestionAnswer};
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
+
+/// 单道题的上下文（传给 `ask_question`）。
+pub struct QuestionCtx<'a> {
+    /// 题首加粗行：单题无 Message 时为来源头部，多题为 `Question i/n`，否则空。
+    pub header: &'a str,
+    pub text: &'a str,
+    pub options: &'a [String],
+    pub is_markdown: bool,
+    /// 0 基序号与总题数（供渠道按需展示进度）。
+    pub index: usize,
+    pub total: usize,
+}
+
+/// 会话型消息渠道的传输原语（与编排逻辑解耦）。
+#[async_trait::async_trait]
+pub trait MessagingChannel: Send {
+    fn id(&self) -> &str;
+    /// 建连 / 校验：成功才进入问答；失败返回中文错误（由调用方警告并跳过）。
+    async fn open(&mut self) -> Result<(), String>;
+    /// 发送共享 Message（头部 + 文本 + 展示文件）。
+    async fn send_message_prompt(&mut self, message: &MessagePrompt, is_markdown: bool, source: &str);
+    /// 发送一道题并等到「用户完成作答」；被抢答（cancelled）时返回 `None`。
+    async fn ask_question(
+        &mut self,
+        ctx: &QuestionCtx<'_>,
+        cancelled: &AtomicBool,
+    ) -> Option<QuestionAnswer>;
+    /// 收尾 / 断连（完成或被抢答后调用）。
+    async fn close(&mut self);
+}
+
+/// 公共驱动：单/多题统一编排，全部完成后投递结果；被抢答则中止不投递。
+///
+/// 规则（与既有 Telegram 行为一致）：
+/// - 单题且无 Message：单条，题首为来源头部 `「Question from {name}」`；
+/// - 否则：先发共享 Message，再逐题（多题题首 `Question i/n`，单题题首为空）。
+pub async fn run_conversation(
+    channel: &mut dyn MessagingChannel,
+    request: &AskRequest,
+    cancelled: Arc<AtomicBool>,
+    sink: ResultSink,
+) {
+    let n = request.questions.len();
+    let has_message =
+        !request.message.text.trim().is_empty() || !request.message.files.is_empty();
+    let source = crate::models::source_name();
+    let mut answers: Vec<QuestionAnswer> = Vec::with_capacity(n);
+
+    if n == 1 && !has_message {
+        let q = &request.questions[0];
+        let header = format!("「Question from {}」", source);
+        let ctx = QuestionCtx {
+            header: &header,
+            text: &q.message,
+            options: &q.predefined_options,
+            is_markdown: request.is_markdown,
+            index: 0,
+            total: 1,
+        };
+        match channel.ask_question(&ctx, &cancelled).await {
+            Some(answer) => answers.push(answer),
+            None => {
+                channel.close().await;
+                return;
+            }
+        }
+    } else {
+        channel
+            .send_message_prompt(&request.message, request.is_markdown, &source)
+            .await;
+        for (index, question) in request.questions.iter().enumerate() {
+            let header = if n > 1 {
+                format!("Question {}/{}", index + 1, n)
+            } else {
+                String::new()
+            };
+            let ctx = QuestionCtx {
+                header: &header,
+                text: &question.message,
+                options: &question.predefined_options,
+                is_markdown: request.is_markdown,
+                index,
+                total: n,
+            };
+            match channel.ask_question(&ctx, &cancelled).await {
+                Some(answer) => answers.push(answer),
+                None => {
+                    channel.close().await;
+                    return;
+                }
+            }
+        }
+    }
+
+    let source_channel_id = channel.id().to_string();
+    channel.close().await;
+    sink.submit(ChannelResult {
+        action: ChannelAction::Send,
+        answers,
+        source_channel_id,
+    });
+}

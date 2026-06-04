@@ -1,6 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AppConfig,
+  DingTalkDetectArgs,
+  DingTalkTestArgs,
+  DingTalkWaitArgs,
   HookStatus,
   PopupInit,
   PopupSubmission,
@@ -60,3 +63,12 @@ export const cursorHookReveal = () => invoke<void>("cursor_hook_reveal");
 
 export const telegramTest = (args: TelegramTestArgs) =>
   invoke<string>("telegram_test", { args });
+
+export const dingtalkTest = (args: DingTalkTestArgs) =>
+  invoke<string>("dingtalk_test", { args });
+
+export const dingtalkDetectPrepare = (args: DingTalkDetectArgs) =>
+  invoke<string>("dingtalk_detect_prepare", { args });
+
+export const dingtalkDetectWait = (args: DingTalkWaitArgs) =>
+  invoke<string>("dingtalk_detect_wait", { args });

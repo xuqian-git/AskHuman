@@ -333,3 +333,127 @@ pub async fn telegram_test(args: TelegramTestArgs) -> Result<String, String> {
         .map_err(|e| e.to_string())?;
     client.test_connection().await.map_err(|e| e.to_string())
 }
+
+// ===== 钉钉测试连接 / userId 自动识别 =====
+
+use crate::config::DingTalkChannelConfig;
+use crate::dingtalk::client::DingTalkClient;
+use crate::dingtalk::stream::{StreamConn, StreamEvent, TOPIC_BOT_MESSAGE};
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DingTalkTestArgs {
+    client_id: String,
+    client_secret: String,
+    user_id: String,
+}
+
+/// 测试连接：换 token（校验 ClientId/Secret）+ 向 userId 单聊发一条测试消息。
+#[tauri::command]
+pub async fn dingtalk_test(args: DingTalkTestArgs) -> Result<String, String> {
+    if args.user_id.trim().is_empty() {
+        return Err("请先填写 UserId（可点击「自动识别」获取）".to_string());
+    }
+    let cfg = DingTalkChannelConfig {
+        enabled: true,
+        client_id: args.client_id,
+        client_secret: args.client_secret,
+        user_id: args.user_id,
+    };
+    let client = DingTalkClient::new(&cfg).map_err(|e| e.to_string())?;
+    client
+        .send_oto_text("✅ HumanInLoop 钉钉连接测试成功")
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok("已向你的单聊发送一条测试消息，请在钉钉查收".to_string())
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DingTalkDetectArgs {
+    client_id: String,
+    client_secret: String,
+}
+
+/// 自动识别准备：校验 ClientId/Secret（换 token），通过后返回供用户私聊发送的 4 位识别码。
+/// 校验不通过则返回中文错误（前端据此不展示识别码、不进入等待）。
+#[tauri::command]
+pub async fn dingtalk_detect_prepare(args: DingTalkDetectArgs) -> Result<String, String> {
+    let client_id = args.client_id.trim();
+    let client_secret = args.client_secret.trim();
+    if client_id.is_empty() || client_secret.is_empty() {
+        return Err("请先填写 ClientId 和 ClientSecret".to_string());
+    }
+    let http = reqwest::Client::new();
+    crate::dingtalk::token::get_token(&http, client_id, client_secret)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(gen_detect_code())
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DingTalkWaitArgs {
+    client_id: String,
+    client_secret: String,
+    code: String,
+}
+
+/// 自动识别等待：开 Stream（bot 消息 topic），等到内容等于识别码的单聊消息，返回其 senderStaffId。
+/// 120 秒超时报错。
+#[tauri::command]
+pub async fn dingtalk_detect_wait(args: DingTalkWaitArgs) -> Result<String, String> {
+    use std::time::Duration;
+    let client_id = args.client_id.trim();
+    let client_secret = args.client_secret.trim();
+    if client_id.is_empty() || client_secret.is_empty() {
+        return Err("请先填写 ClientId 和 ClientSecret".to_string());
+    }
+    let code = args.code.trim().to_string();
+    if code.is_empty() {
+        return Err("识别码无效，请重试".to_string());
+    }
+    let http = reqwest::Client::new();
+    let mut stream = StreamConn::connect(http, client_id, client_secret, &[TOPIC_BOT_MESSAGE])
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Err("等待超时（120 秒）未收到匹配的识别码，请重试".to_string());
+        }
+        match tokio::time::timeout(remaining, stream.recv()).await {
+            Ok(Some(StreamEvent::BotMessage(data))) => {
+                let content = data
+                    .get("text")
+                    .and_then(|t| t.get("content"))
+                    .and_then(|c| c.as_str())
+                    .unwrap_or("")
+                    .trim();
+                if content == code {
+                    if let Some(sender) =
+                        data.get("senderStaffId").and_then(|v| v.as_str())
+                    {
+                        return Ok(sender.to_string());
+                    }
+                }
+            }
+            Ok(Some(_)) => {}
+            Ok(None) => return Err("Stream 连接断开，请重试".to_string()),
+            Err(_) => {
+                return Err("等待超时（120 秒）未收到匹配的识别码，请重试".to_string())
+            }
+        }
+    }
+}
+
+/// 生成 4 位识别码（瞬时配对用，无需强随机）。
+fn gen_detect_code() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0);
+    format!("{:04}", nanos % 10000)
+}

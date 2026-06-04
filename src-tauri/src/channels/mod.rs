@@ -1,5 +1,7 @@
 //! Channel 抽象：并行运行、首个终态结果由协调器采纳，其余被 `cancel_by_other` 收尾。
 
+pub mod conversation;
+pub mod dingding;
 pub mod popup;
 pub mod telegram;
 

@@ -70,9 +70,17 @@ export interface TelegramChannelConfig {
   apiBaseUrl: string;
 }
 
+export interface DingTalkChannelConfig {
+  enabled: boolean;
+  clientId: string;
+  clientSecret: string;
+  userId: string;
+}
+
 export interface ChannelsConfig {
   popup: PopupChannelConfig;
   telegram: TelegramChannelConfig;
+  dingding: DingTalkChannelConfig;
 }
 
 export interface AppConfig {
@@ -90,4 +98,21 @@ export interface TelegramTestArgs {
   botToken: string;
   chatId: string;
   apiBaseUrl: string;
+}
+
+export interface DingTalkTestArgs {
+  clientId: string;
+  clientSecret: string;
+  userId: string;
+}
+
+export interface DingTalkDetectArgs {
+  clientId: string;
+  clientSecret: string;
+}
+
+export interface DingTalkWaitArgs {
+  clientId: string;
+  clientSecret: string;
+  code: string;
 }

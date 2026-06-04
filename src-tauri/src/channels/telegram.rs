@@ -1,8 +1,12 @@
 //! Telegram Channel：发送提问 + 长轮询接收回复（不接收图片），逐项对齐 Swift 版。
+//!
+//! 编排逻辑（单/多题、收集答案、投递）已上移到 `channels::conversation::run_conversation`；
+//! 本文件提供传输相关实现 `TelegramSession`（`MessagingChannel`）+ 薄外层 `TelegramChannel`。
 
+use super::conversation::{run_conversation, MessagingChannel, QuestionCtx};
 use super::{Channel, ResultSink};
 use crate::config::TelegramChannelConfig;
-use crate::models::{AskRequest, ChannelAction, ChannelResult, MessagePrompt, QuestionAnswer};
+use crate::models::{AskRequest, MessagePrompt, QuestionAnswer};
 use crate::telegram::{markdown, TelegramClient};
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -11,6 +15,7 @@ use std::time::Duration;
 
 const SEND_BUTTON: &str = "↗️发送";
 
+/// 薄外层：接 Coordinator（并行抢答），把会话委托给 `run_conversation` + `TelegramSession`。
 pub struct TelegramChannel {
     config: TelegramChannelConfig,
     cancelled: Arc<AtomicBool>,
@@ -35,7 +40,12 @@ impl Channel for TelegramChannel {
         let cancelled = self.cancelled.clone();
         let request = request.clone();
         tauri::async_runtime::spawn(async move {
-            run_session(request, config, cancelled, sink).await;
+            let mut session = TelegramSession::new(config);
+            if let Err(e) = session.open().await {
+                eprintln!("警告: Telegram 配置无效，已跳过该 Channel: {}", e);
+                return;
+            }
+            run_conversation(&mut session, &request, cancelled, sink).await;
         });
     }
 
@@ -44,79 +54,72 @@ impl Channel for TelegramChannel {
     }
 }
 
-pub(crate) async fn run_session(
-    request: AskRequest,
+/// 传输实现：持有 client 与跨题长轮询 offset。
+pub struct TelegramSession {
     config: TelegramChannelConfig,
-    cancelled: Arc<AtomicBool>,
-    sink: ResultSink,
-) {
-    let client = match TelegramClient::new(config.bot_token, config.chat_id, config.api_base_url) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("警告: Telegram 配置无效，已跳过该 Channel: {}", e);
-            return;
+    client: Option<TelegramClient>,
+    offset: i64,
+}
+
+impl TelegramSession {
+    pub fn new(config: TelegramChannelConfig) -> Self {
+        Self {
+            config,
+            client: None,
+            offset: 0,
         }
-    };
+    }
+}
 
-    let n = request.questions.len();
-    let has_message =
-        !request.message.text.trim().is_empty() || !request.message.files.is_empty();
-    let source = crate::models::source_name();
+#[async_trait::async_trait]
+impl MessagingChannel for TelegramSession {
+    fn id(&self) -> &str {
+        "telegram"
+    }
 
-    let mut answers: Vec<QuestionAnswer> = Vec::with_capacity(n);
-    // 长轮询 offset 跨问题持续递增。
-    let mut offset: i64 = 0;
-
-    if n == 1 && !has_message {
-        // 单题且无 Message：现状单条，问题自带「Question from {名}」来源头部。
-        let q = &request.questions[0];
-        let header = format!("「Question from {}」", source);
-        match ask_question(
-            &client,
-            &header,
-            &q.message,
-            &q.predefined_options,
-            request.is_markdown,
-            &cancelled,
-            &mut offset,
+    async fn open(&mut self) -> Result<(), String> {
+        let client = TelegramClient::new(
+            self.config.bot_token.clone(),
+            self.config.chat_id.clone(),
+            self.config.api_base_url.clone(),
         )
-        .await
-        {
-            Some(answer) => answers.push(answer),
-            None => return,
-        }
-    } else {
-        // 先发共享 Message（头部 + 文本 + 文件），再逐题串行。
-        send_message_prompt(&client, &request.message, request.is_markdown, &source).await;
-        for (index, question) in request.questions.iter().enumerate() {
-            let header = if n > 1 {
-                format!("Question {}/{}", index + 1, n)
-            } else {
-                String::new()
-            };
-            match ask_question(
-                &client,
-                &header,
-                &question.message,
-                &question.predefined_options,
-                request.is_markdown,
-                &cancelled,
-                &mut offset,
-            )
-            .await
-            {
-                Some(answer) => answers.push(answer),
-                // 被其它 channel 抢答（cancelled）→ 中止，不投递。
-                None => return,
-            }
+        .map_err(|e| e.to_string())?;
+        self.client = Some(client);
+        Ok(())
+    }
+
+    async fn send_message_prompt(
+        &mut self,
+        message: &MessagePrompt,
+        is_markdown: bool,
+        source: &str,
+    ) {
+        if let Some(client) = self.client.as_ref() {
+            send_message_prompt(client, message, is_markdown, source).await;
         }
     }
 
-    sink.submit(ChannelResult {
-        action: ChannelAction::Send,
-        answers,
-        source_channel_id: "telegram".to_string(),
-    });
+    async fn ask_question(
+        &mut self,
+        ctx: &QuestionCtx<'_>,
+        cancelled: &AtomicBool,
+    ) -> Option<QuestionAnswer> {
+        // 拆分借用：client 不可变 + offset 可变。
+        let Self { client, offset, .. } = self;
+        let client = client.as_ref()?;
+        ask_question(
+            client,
+            ctx.header,
+            ctx.text,
+            ctx.options,
+            ctx.is_markdown,
+            cancelled,
+            offset,
+        )
+        .await
+    }
+
+    async fn close(&mut self) {}
 }
 
 /// 发送共享 Message：头部「Question from {名}」+（文本，若有）+ 其展示文件。
@@ -154,7 +157,7 @@ async fn ask_question(
     question_text: &str,
     options: &[String],
     is_markdown: bool,
-    cancelled: &Arc<AtomicBool>,
+    cancelled: &AtomicBool,
     offset: &mut i64,
 ) -> Option<QuestionAnswer> {
     let options = options.to_vec();

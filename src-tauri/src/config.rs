@@ -96,11 +96,36 @@ impl Default for TelegramChannelConfig {
     }
 }
 
+/// 钉钉渠道配置。robotCode 不单独配置——企业内部应用机器人 robotCode = clientId(AppKey)。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct DingTalkChannelConfig {
+    pub enabled: bool,
+    /// 企业内部应用 AppKey（同时用作机器人 robotCode）。
+    pub client_id: String,
+    /// 企业内部应用 AppSecret。
+    pub client_secret: String,
+    /// 接收/作答用户的 userId（单聊）。
+    pub user_id: String,
+}
+
+impl Default for DingTalkChannelConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            client_id: String::new(),
+            client_secret: String::new(),
+            user_id: String::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ChannelsConfig {
     pub popup: PopupChannelConfig,
     pub telegram: TelegramChannelConfig,
+    pub dingding: DingTalkChannelConfig,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -160,6 +185,8 @@ mod tests {
         assert!(c.channels.popup.remember_size);
         assert!(!c.channels.telegram.enabled);
         assert_eq!(c.channels.telegram.api_base_url, "https://api.telegram.org");
+        assert!(!c.channels.dingding.enabled);
+        assert!(c.channels.dingding.client_id.is_empty());
     }
 
     #[test]

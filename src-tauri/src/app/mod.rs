@@ -2,11 +2,13 @@
 
 pub mod coordinator;
 
+use crate::channels::dingding::DingTalkChannel;
 use crate::channels::popup::PopupChannel;
 use crate::channels::telegram::TelegramChannel;
 use crate::channels::Channel;
 use crate::cli::{image_writer, output};
 use crate::config::{AppConfig, ThemeMode};
+use crate::dingtalk::client::DingTalkClient;
 use crate::models::{AskRequest, ChannelAction, ChannelResult};
 use crate::telegram::TelegramClient;
 use coordinator::Coordinator;
@@ -30,33 +32,33 @@ enum View {
 /// 无任何可用通信 Channel 时的退出码（供下游据此降级）。
 pub const EXIT_NO_CHANNEL: i32 = 3;
 
-/// 提问模式入口：按 Channel 可用性分流到 GUI 弹窗或 headless Telegram。
+/// 提问模式入口：按 Channel 可用性分流到 GUI 弹窗或 headless 消息渠道。
 ///
 /// 决策（在创建任何窗口前）：
-/// - 需要弹窗且 GUI 可用 → GUI 路径（弹窗 + 可选 Telegram 抢答）；
-/// - 否则若 Telegram 可用 → headless 路径（仅 Telegram，不进 Tauri）；
+/// - 需要弹窗且 GUI 可用 → GUI 路径（弹窗 + 可选会话型渠道抢答）；
+/// - 否则若存在可用会话型渠道（Telegram/钉钉）→ headless 路径（不进 Tauri）；
 /// - 都不可用 → stderr 报原因 + 退出码 `EXIT_NO_CHANNEL`。
 pub fn run_ask(request: AskRequest, config: AppConfig) -> ! {
-    let telegram_active = is_telegram_active(&config);
+    let messaging_active = has_active_messaging(&config);
     let popup_wanted = config.channels.popup.enabled;
     let gui = gui_available();
 
     if popup_wanted && gui.is_ok() {
-        run_gui_ask(request, config, telegram_active);
-    } else if telegram_active {
+        run_gui_ask(request, config, messaging_active);
+    } else if messaging_active {
         if popup_wanted {
             if let Err(reason) = &gui {
                 stderr_redirect::eprintln_real(&format!(
-                    "本地弹窗不可用：{}；已改用 Telegram",
+                    "本地弹窗不可用：{}；已改用消息渠道",
                     reason
                 ));
             }
         }
-        run_headless_telegram(request, config);
+        run_headless(request, config);
     } else {
         let reason = match (popup_wanted, &gui) {
-            (true, Err(r)) => format!("本地弹窗不可用：{}，且未配置可用的 Telegram", r),
-            (false, _) => "本地弹窗已禁用，且未配置可用的 Telegram".to_string(),
+            (true, Err(r)) => format!("本地弹窗不可用：{}，且未配置可用的消息渠道", r),
+            (false, _) => "本地弹窗已禁用，且未配置可用的消息渠道".to_string(),
             (true, Ok(())) => unreachable!(),
         };
         stderr_redirect::eprintln_real(&format!("错误: 无可用的通信 Channel — {}", reason));
@@ -72,8 +74,31 @@ fn is_telegram_active(config: &AppConfig) -> bool {
             .is_ok()
 }
 
-/// GUI 弹窗路径；若 Tauri 构建失败（GUI 不可用），按 Telegram 是否可用兜底。
-fn run_gui_ask(request: AskRequest, config: AppConfig, telegram_active: bool) -> ! {
+/// 钉钉是否已配置且可用（构造 client 成功——即三项非空——即视为可用）。
+fn is_dingding_active(config: &AppConfig) -> bool {
+    let dd = &config.channels.dingding;
+    dd.enabled && DingTalkClient::new(dd).is_ok()
+}
+
+/// 是否存在任一可用的会话型消息渠道。
+fn has_active_messaging(config: &AppConfig) -> bool {
+    is_telegram_active(config) || is_dingding_active(config)
+}
+
+/// 收集全部可用的会话型渠道外层（供 GUI 路径注册并行抢答）。
+fn active_messaging_channels(config: &AppConfig) -> Vec<Arc<dyn Channel>> {
+    let mut channels: Vec<Arc<dyn Channel>> = Vec::new();
+    if is_telegram_active(config) {
+        channels.push(Arc::new(TelegramChannel::new(config.channels.telegram.clone())));
+    }
+    if is_dingding_active(config) {
+        channels.push(Arc::new(DingTalkChannel::new(config.channels.dingding.clone())));
+    }
+    channels
+}
+
+/// GUI 弹窗路径；若 Tauri 构建失败（GUI 不可用），按消息渠道是否可用兜底。
+fn run_gui_ask(request: AskRequest, config: AppConfig, messaging_active: bool) -> ! {
     let state = AppState {
         request: request.clone(),
         config: config.clone(),
@@ -81,15 +106,15 @@ fn run_gui_ask(request: AskRequest, config: AppConfig, telegram_active: bool) ->
     match launch(state, View::Popup) {
         Ok(()) => std::process::exit(0), // 成功路径已在 launch 内退出，此处不可达
         Err(e) => {
-            if telegram_active {
+            if messaging_active {
                 stderr_redirect::eprintln_real(&format!(
-                    "本地弹窗启动失败：{}；已改用 Telegram",
+                    "本地弹窗启动失败：{}；已改用消息渠道",
                     e
                 ));
-                run_headless_telegram(request, config);
+                run_headless(request, config);
             } else {
                 stderr_redirect::eprintln_real(&format!(
-                    "错误: 本地弹窗启动失败：{}，且未配置可用的 Telegram",
+                    "错误: 本地弹窗启动失败：{}，且未配置可用的消息渠道",
                     e
                 ));
                 std::process::exit(EXIT_NO_CHANNEL);
@@ -98,8 +123,13 @@ fn run_gui_ask(request: AskRequest, config: AppConfig, telegram_active: bool) ->
     }
 }
 
-/// headless 路径：不进入 Tauri 事件循环，仅用 tokio 跑 Telegram channel。
-fn run_headless_telegram(request: AskRequest, config: AppConfig) -> ! {
+/// headless 路径：不进入 Tauri 事件循环，用 tokio 并行跑全部可用会话型渠道。
+///
+/// 直接驱动各渠道会话并 `await` 全部结束：任一渠道完成回复即 `submit` → `process::exit`；
+/// 全部会话结束仍无结果 → 报错并以 `EXIT_NO_CHANNEL` 退出（避免静默挂起）。
+fn run_headless(request: AskRequest, config: AppConfig) -> ! {
+    use crate::channels::conversation::{run_conversation, MessagingChannel};
+
     let rt = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -112,17 +142,50 @@ fn run_headless_telegram(request: AskRequest, config: AppConfig) -> ! {
     };
 
     let coordinator = Coordinator::new_headless(request.clone());
-    let tg = config.channels.telegram.clone();
-    let channel: Arc<dyn Channel> = Arc::new(TelegramChannel::new(tg.clone()));
-    coordinator.register(channel);
 
     rt.block_on(async move {
         let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        crate::channels::telegram::run_session(request, tg, cancelled, coordinator).await;
+        let mut handles = Vec::new();
+
+        if is_telegram_active(&config) {
+            use crate::channels::telegram::TelegramSession;
+            let cfg = config.channels.telegram.clone();
+            let req = request.clone();
+            let sink = coordinator.clone();
+            let cancelled = cancelled.clone();
+            handles.push(tokio::spawn(async move {
+                let mut session = TelegramSession::new(cfg);
+                if let Err(e) = session.open().await {
+                    stderr_redirect::eprintln_real(&format!("警告: Telegram 配置无效: {}", e));
+                    return;
+                }
+                run_conversation(&mut session, &req, cancelled, sink).await;
+            }));
+        }
+
+        if is_dingding_active(&config) {
+            use crate::channels::dingding::DingTalkSession;
+            let cfg = config.channels.dingding.clone();
+            let req = request.clone();
+            let sink = coordinator.clone();
+            let cancelled = cancelled.clone();
+            handles.push(tokio::spawn(async move {
+                let mut session = DingTalkSession::new(cfg);
+                if let Err(e) = session.open().await {
+                    stderr_redirect::eprintln_real(&format!("警告: 钉钉配置无效: {}", e));
+                    return;
+                }
+                run_conversation(&mut session, &req, cancelled, sink).await;
+            }));
+        }
+
+        for h in handles {
+            let _ = h.await;
+        }
     });
 
-    // 正常情况下用户在 Telegram 完成回复 → submit → 进程已退出；走到此处说明未获结果。
-    stderr_redirect::eprintln_real("错误: Telegram 会话结束但未获得结果");
+    // 正常情况下用户完成回复 → submit → 进程已退出；走到此处说明全部会话结束仍未获结果。
+    stderr_redirect::eprintln_real("错误: 消息渠道会话结束但未获得结果");
     std::process::exit(EXIT_NO_CHANNEL);
 }
 
@@ -151,12 +214,9 @@ fn launch(state: AppState, view: View) -> tauri::Result<()> {
     let appear_behavior = state.config.general.appear_animation.ns_animation_behavior();
 
     // 通道启用判定（仅提问模式使用）。
-    let tg = state.config.channels.telegram.clone();
-    let telegram_active = tg.enabled
-        && TelegramClient::new(tg.bot_token.clone(), tg.chat_id.clone(), tg.api_base_url.clone())
-            .is_ok();
-    // 弹窗禁用且 Telegram 不可用时，兜底仍开弹窗，避免无任何 Channel 导致进程挂起。
-    let show_popup = state.config.channels.popup.enabled || !telegram_active;
+    let messaging_active = has_active_messaging(&state.config);
+    // 弹窗禁用且无可用消息渠道时，兜底仍开弹窗，避免无任何 Channel 导致进程挂起。
+    let show_popup = state.config.channels.popup.enabled || !messaging_active;
 
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_drag::init())
@@ -183,6 +243,9 @@ fn launch(state: AppState, view: View) -> tauri::Result<()> {
             crate::commands::cursor_hook_uninstall,
             crate::commands::cursor_hook_reveal,
             crate::commands::telegram_test,
+            crate::commands::dingtalk_test,
+            crate::commands::dingtalk_detect_prepare,
+            crate::commands::dingtalk_detect_wait,
         ])
         .on_window_event(|window, event| {
             // 仅弹窗参与“关闭即取消 / 记忆尺寸”；设置窗口走默认关闭行为。
@@ -235,8 +298,8 @@ fn launch(state: AppState, view: View) -> tauri::Result<()> {
                         coordinator.register(Arc::new(PopupChannel::new(app.handle().clone())));
                     }
 
-                    if telegram_active {
-                        let ch = Arc::new(TelegramChannel::new(tg.clone()));
+                    let config = app.state::<AppState>().config.clone();
+                    for ch in active_messaging_channels(&config) {
                         coordinator.register(ch.clone());
                         ch.start(&request, coordinator.clone());
                     }

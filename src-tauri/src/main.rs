@@ -12,6 +12,7 @@ mod channels;
 mod cli;
 mod commands;
 mod config;
+mod dingtalk;
 mod integrations;
 #[cfg(target_os = "macos")]
 mod macos_dock_icon;
