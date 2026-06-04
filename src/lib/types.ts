@@ -30,6 +30,8 @@ export interface ImageAttachment {
 
 export type ThemeMode = "system" | "light" | "dark";
 
+export type PopupAnimation = "none" | "document" | "alert";
+
 export interface PopupInit {
   request: AskRequest;
   theme: ThemeMode;
@@ -51,6 +53,7 @@ export interface PopupSubmission {
 export interface GeneralConfig {
   theme: ThemeMode;
   alwaysOnTop: boolean;
+  appearAnimation: PopupAnimation;
 }
 
 export interface PopupChannelConfig {

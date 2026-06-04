@@ -13,11 +13,37 @@ pub enum ThemeMode {
     Dark,
 }
 
+/// 弹窗出现动画样式（对应 macOS `NSWindowAnimationBehavior`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum PopupAnimation {
+    /// 无动画（NSWindowAnimationBehaviorNone = 2）。
+    None,
+    /// 文档窗口动画（NSWindowAnimationBehaviorDocumentWindow = 3）。
+    Document,
+    /// 提示面板动画（NSWindowAnimationBehaviorAlertPanel = 5），更明显。
+    #[default]
+    Alert,
+}
+
+impl PopupAnimation {
+    /// 映射到 macOS `NSWindowAnimationBehavior` 原始取值。
+    #[cfg(target_os = "macos")]
+    pub fn ns_animation_behavior(self) -> isize {
+        match self {
+            PopupAnimation::None => 2,
+            PopupAnimation::Document => 3,
+            PopupAnimation::Alert => 5,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct GeneralConfig {
     pub theme: ThemeMode,
     pub always_on_top: bool,
+    pub appear_animation: PopupAnimation,
 }
 
 impl Default for GeneralConfig {
@@ -25,6 +51,7 @@ impl Default for GeneralConfig {
         Self {
             theme: ThemeMode::System,
             always_on_top: true,
+            appear_animation: PopupAnimation::Alert,
         }
     }
 }
@@ -126,6 +153,7 @@ mod tests {
         let c = AppConfig::default();
         assert_eq!(c.general.theme, ThemeMode::System);
         assert!(c.general.always_on_top);
+        assert_eq!(c.general.appear_animation, PopupAnimation::Alert);
         assert!(c.channels.popup.enabled);
         assert_eq!(c.channels.popup.width, 560.0);
         assert_eq!(c.channels.popup.height, 620.0);

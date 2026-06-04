@@ -147,6 +147,8 @@ fn launch(state: AppState, view: View) -> tauri::Result<()> {
     let popup_w = state.config.channels.popup.width;
     let popup_h = state.config.channels.popup.height;
     let always_on_top = state.config.general.always_on_top;
+    #[cfg(target_os = "macos")]
+    let appear_behavior = state.config.general.appear_animation.ns_animation_behavior();
 
     // 通道启用判定（仅提问模式使用）。
     let tg = state.config.channels.telegram.clone();
@@ -172,6 +174,7 @@ fn launch(state: AppState, view: View) -> tauri::Result<()> {
             crate::commands::get_settings,
             crate::commands::save_settings,
             crate::commands::get_prompt,
+            crate::commands::open_test_popup,
             crate::commands::set_theme,
             crate::commands::update_theme,
             crate::commands::open_settings,
@@ -218,9 +221,17 @@ fn launch(state: AppState, view: View) -> tauri::Result<()> {
                         .inner_size(popup_w, popup_h)
                         .min_inner_size(420.0, 480.0)
                         .center()
+                        // 先隐藏构建，设好原生出现动画后再显示，触发 macOS 窗口出现动画。
+                        .visible(false)
                         .always_on_top(always_on_top)
                         .theme(theme);
-                        apply_surface(builder, window_bg).build()?;
+                        let win = apply_surface(builder, window_bg).build()?;
+                        // macOS：隐藏构建后先设原生出现动画（样式由设置决定），再 show()。
+                        #[cfg(target_os = "macos")]
+                        if let Ok(ns) = win.ns_window() {
+                            crate::macos_window_anim::set_appear_animation(ns, appear_behavior);
+                        }
+                        let _ = win.show();
                         coordinator.register(Arc::new(PopupChannel::new(app.handle().clone())));
                     }
 

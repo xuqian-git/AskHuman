@@ -220,6 +220,30 @@ pub fn get_prompt() -> String {
     crate::prompts::cli_reference()
 }
 
+/// 设置页「弹出测试窗口」：以独立子进程跑一个示例提问，
+/// 完全复用真实弹窗流程并读取已保存的配置（含出现动画），便于快速预览效果。
+#[tauri::command]
+pub fn open_test_popup() -> Result<(), String> {
+    use std::process::{Command, Stdio};
+    let exe = std::env::current_exe().map_err(|e| format!("无法定位程序路径: {}", e))?;
+    Command::new(exe)
+        .args([
+            "这是一个测试弹窗，用于预览弹出动画与外观。",
+            "-q",
+            "测试问题：弹窗效果看起来如何？",
+            "-o",
+            "很好",
+            "-o",
+            "再调整",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("启动测试弹窗失败: {}", e))?;
+    Ok(())
+}
+
 /// 实时应用主题到已打开的窗口（system→跟随系统）。
 #[tauri::command]
 pub fn set_theme(app: AppHandle, theme: String) {

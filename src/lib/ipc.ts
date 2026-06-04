@@ -40,6 +40,8 @@ export const saveSettings = (config: AppConfig) =>
 
 export const getPrompt = () => invoke<string>("get_prompt");
 
+export const openTestPopup = () => invoke<void>("open_test_popup");
+
 export const setTheme = (theme: ThemeMode) =>
   invoke<void>("set_theme", { theme });
 

@@ -7,12 +7,21 @@ import {
   cursorHookUninstall,
   getPrompt,
   getSettings,
+  openTestPopup,
   saveSettings,
   setTheme,
   telegramTest,
 } from "../lib/ipc";
 import { applyTheme } from "../lib/theme";
-import type { AppConfig, HookStatus, ThemeMode } from "../lib/types";
+import type {
+  AppConfig,
+  HookStatus,
+  PopupAnimation,
+  ThemeMode,
+} from "../lib/types";
+
+// 出现动画为 macOS 原生窗口能力，其它平台不展示选择器。
+const isMac = navigator.userAgent.toLowerCase().includes("mac");
 
 type Tab = "general" | "integration" | "channel";
 
@@ -59,6 +68,12 @@ async function changeTheme(theme: ThemeMode) {
   config.value.general.theme = theme;
   applyTheme(theme);
   await setTheme(theme);
+  await persist();
+}
+
+async function changeAnimation(anim: PopupAnimation) {
+  if (!config.value) return;
+  config.value.general.appearAnimation = anim;
   await persist();
 }
 
@@ -219,6 +234,43 @@ onMounted(async () => {
               />
               <span class="track"></span>
             </label>
+          </div>
+          <template v-if="isMac">
+            <hr class="divider" />
+            <div class="row">
+              <span class="label">弹出动画</span>
+              <span class="spacer"></span>
+              <div class="segmented">
+                <button
+                  :class="{ active: config.general.appearAnimation === 'none' }"
+                  @click="changeAnimation('none')"
+                >
+                  None
+                </button>
+                <button
+                  :class="{
+                    active: config.general.appearAnimation === 'document',
+                  }"
+                  @click="changeAnimation('document')"
+                >
+                  Document
+                </button>
+                <button
+                  :class="{ active: config.general.appearAnimation === 'alert' }"
+                  @click="changeAnimation('alert')"
+                >
+                  Alert
+                </button>
+              </div>
+            </div>
+          </template>
+          <hr class="divider" />
+          <div class="row">
+            <span class="label">弹出测试窗口</span>
+            <span class="spacer"></span>
+            <button class="btn" type="button" @click="openTestPopup">
+              测试
+            </button>
           </div>
         </div>
       </template>
