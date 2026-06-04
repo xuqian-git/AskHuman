@@ -12,7 +12,7 @@ pub fn dispatch() {
 
     if argv.len() < 2 {
         eprintln!("错误: 缺少提问内容\n");
-        println!("{}", help::help_text());
+        println!("{}", help::agent_help_text());
         exit(1);
     }
 
@@ -47,28 +47,32 @@ pub fn dispatch() {
                 ) =>
         {
             eprintln!("错误: 未知选项 {}\n", first);
-            println!("{}", help::help_text());
+            println!("{}", help::agent_help_text());
             exit(1);
         }
         _ => match args::parse_ask(&argv[1..]) {
             Ok(parsed) => {
-                let mut questions = Vec::with_capacity(parsed.questions.len());
-                for q in parsed.questions {
-                    let files = match file_attachment::resolve(&q.files) {
-                        Ok(files) => files,
-                        Err(e) => {
-                            eprintln!("错误: {}", e);
-                            exit(1);
-                        }
-                    };
-                    questions.push(crate::models::Question::new(q.message, q.options, files));
-                }
-                let request = crate::models::AskRequest::new(questions, parsed.is_markdown);
+                // 解析 Message 的展示附件（-f 始终归 Message）。
+                let files = match file_attachment::resolve(&parsed.message_files) {
+                    Ok(files) => files,
+                    Err(e) => {
+                        eprintln!("错误: {}", e);
+                        exit(1);
+                    }
+                };
+                let message = crate::models::MessagePrompt::new(parsed.message_text, files);
+                let questions = parsed
+                    .questions
+                    .into_iter()
+                    .map(|q| crate::models::Question::new(q.message, q.options))
+                    .collect();
+                let request =
+                    crate::models::AskRequest::new(message, questions, parsed.is_markdown);
                 crate::app::run_ask(request, crate::config::AppConfig::load());
             }
             Err(e) => {
                 eprintln!("错误: {}\n", e);
-                println!("{}", help::help_text());
+                println!("{}", help::agent_help_text());
                 exit(1);
             }
         },

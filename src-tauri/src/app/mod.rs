@@ -129,7 +129,7 @@ fn run_headless_telegram(request: AskRequest, config: AppConfig) -> ! {
 /// 设置模式：创建设置窗口。
 pub fn run_settings(config: AppConfig) -> ! {
     let state = AppState {
-        request: AskRequest::new(Vec::new(), false),
+        request: AskRequest::new(crate::models::MessagePrompt::default(), Vec::new(), false),
         config,
     };
     if let Err(e) = launch(state, View::Settings) {

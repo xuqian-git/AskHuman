@@ -16,50 +16,64 @@ pub fn source_name() -> String {
         .unwrap_or_else(|| DEFAULT_SOURCE_NAME.to_string())
 }
 
-/// 一次提问请求（可含多个问题）。
+/// 一次提问请求：一个共享 Message（描述 + 附件）+ 一组问题（恒 ≥1）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AskRequest {
     pub id: String,
     /// 是否按 Markdown 渲染（全局，对所有问题生效）。
     pub is_markdown: bool,
-    /// 问题列表（至少一个）。
+    /// 共享 Message：所有问题的描述与展示附件。
+    pub message: MessagePrompt,
+    /// 问题列表（恒 ≥1，由 CLI 归一化保证：无 `-q` 时由第一个参数提升而来）。
     #[serde(default)]
     pub questions: Vec<Question>,
 }
 
 impl AskRequest {
-    pub fn new(questions: Vec<Question>, is_markdown: bool) -> Self {
+    pub fn new(message: MessagePrompt, questions: Vec<Question>, is_markdown: bool) -> Self {
         Self {
             id: uuid::Uuid::new_v4().to_string(),
             is_markdown,
+            message,
             questions,
         }
     }
 }
 
-/// 单个问题（其选项、附件与该问题绑定；是否 Markdown 见 `AskRequest::is_markdown`）。
+/// 共享 Message：所有问题的描述文本与展示附件（不持有选项）。
+///
+/// `text` 仅在使用了 `-q`（存在独立描述）时非空；无 `-q` 时第一个参数被提升为问题，`text` 为空。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessagePrompt {
+    #[serde(default)]
+    pub text: String,
+    /// 提问附带的文件（AI→人，仅用于弹窗展示，不进入结果输出）。
+    #[serde(default)]
+    pub files: Vec<FileAttachment>,
+}
+
+impl MessagePrompt {
+    pub fn new(text: String, files: Vec<FileAttachment>) -> Self {
+        Self { text, files }
+    }
+}
+
+/// 单个问题（其选项与该问题绑定；是否 Markdown 见 `AskRequest::is_markdown`）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Question {
     pub message: String,
     #[serde(default)]
     pub predefined_options: Vec<String>,
-    /// 提问附带的文件（AI→人，仅用于弹窗展示，不进入结果输出）。
-    #[serde(default)]
-    pub files: Vec<FileAttachment>,
 }
 
 impl Question {
-    pub fn new(
-        message: String,
-        predefined_options: Vec<String>,
-        files: Vec<FileAttachment>,
-    ) -> Self {
+    pub fn new(message: String, predefined_options: Vec<String>) -> Self {
         Self {
             message,
             predefined_options,
-            files,
         }
     }
 }

@@ -1,13 +1,18 @@
 export interface AskRequest {
   id: string;
   isMarkdown: boolean;
+  message: MessagePrompt;
   questions: Question[];
+}
+
+export interface MessagePrompt {
+  text: string;
+  files: FileAttachment[];
 }
 
 export interface Question {
   message: string;
   predefinedOptions: string[];
-  files: FileAttachment[];
 }
 
 export interface FileAttachment {

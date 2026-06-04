@@ -46,14 +46,18 @@
   font-size: 14px;
   line-height: 1.5;
   width: 100%;
-  min-height: 84px;
+  min-height: 64px;
+  max-height: 240px;
   resize: none;
-  padding: 10px 12px;
+  overflow-y: auto;
+  /* 底部留白给输入框内右下角的「添加图片」图标 */
+  padding: 10px 12px 36px;
   border-radius: var(--radius-md);
   border: 1px solid var(--control-border);
   background: var(--control-bg);
   color: var(--text-primary);
   box-sizing: border-box;
+  display: block;
 }
 .textarea::placeholder {
   color: var(--text-tertiary);

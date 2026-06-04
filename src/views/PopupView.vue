@@ -63,6 +63,14 @@ const isMulti = computed(() => total.value > 1);
 const currentQuestion = computed<Question | null>(
   () => questions.value[current.value] ?? null
 );
+// 共享 Message（描述 + 附件）。无 -q 时 text 为空（第一个参数已提升为问题）。
+const messageText = computed(() => request.value?.message.text ?? "");
+const messageHtml = computed(() =>
+  request.value?.isMarkdown ? renderMarkdown(messageText.value) : ""
+);
+const showDescription = computed(
+  () => messageText.value.trim() !== "" || attachments.value.length > 0
+);
 const allViewed = computed(
   () => visited.value.length > 0 && visited.value.every(Boolean)
 );
@@ -90,9 +98,9 @@ const userInput = computed({
 const images = computed(() => imagesByQ.value[current.value] ?? []);
 const replyFiles = computed(() => replyFilesByQ.value[current.value] ?? []);
 
-// 提问附带的文件附件（AI→人，仅展示），随当前题切换。
+// 提问附带的文件附件（AI→人，仅展示）：Message 级，顶部常驻，不随题切换。
 const attachments = computed<FileAttachment[]>(
-  () => currentQuestion.value?.files ?? []
+  () => request.value?.message.files ?? []
 );
 const selectedFile = ref<number | null>(null);
 const thumbs = ref<Record<string, string>>({});
@@ -320,6 +328,15 @@ async function onPaste(e: ClipboardEvent) {
   }
 }
 
+// 输入框随内容自增高（封顶 240px，超出则框内滚动；底部留白由 CSS padding 提供）。
+const MAX_TEXTAREA_H = 240;
+function autoGrow() {
+  const el = inputRef.value;
+  if (!el) return;
+  el.style.height = "auto";
+  el.style.height = `${Math.min(el.scrollHeight, MAX_TEXTAREA_H)}px`;
+}
+
 // ===== 多题导航 =====
 function markVisited(i: number) {
   if (i >= 0 && i < visited.value.length) visited.value[i] = true;
@@ -331,9 +348,10 @@ function goTo(index: number) {
   selectedFile.value = null;
   current.value = index;
   markVisited(index);
-  loadThumbs();
-  loadDragIcons();
-  requestAnimationFrame(() => inputRef.value?.focus({ preventScroll: true }));
+  requestAnimationFrame(() => {
+    inputRef.value?.focus({ preventScroll: true });
+    autoGrow();
+  });
 }
 
 function goPrev() {
@@ -455,7 +473,10 @@ onMounted(async () => {
     if (n > 0) visited.value[0] = true;
     loadThumbs();
     loadDragIcons();
-    requestAnimationFrame(() => inputRef.value?.focus({ preventScroll: true }));
+    requestAnimationFrame(() => {
+      inputRef.value?.focus({ preventScroll: true });
+      autoGrow();
+    });
   } catch (err) {
     console.error("popup_init 失败", err);
     loadError.value = String(err);
@@ -488,7 +509,6 @@ onBeforeUnmount(() => {
       <span class="brand">
         <span class="brand-dot"></span>
         <span class="brand-title">Question from {{ sourceName }}</span>
-        <span v-if="isMulti" class="brand-counter">[{{ current + 1 }}/{{ total }}]</span>
       </span>
       <span class="nav-actions">
         <button
@@ -535,14 +555,16 @@ onBeforeUnmount(() => {
       </span>
     </header>
     <div class="content" @scroll="onScroll">
-      <div
-        v-if="request.isMarkdown"
-        class="markdown-body"
-        v-html="renderedHtml"
-      ></div>
-      <pre v-else class="plain-body">{{ currentQuestion?.message }}</pre>
+      <!-- 共享 Message 区（描述 + 附件），仅在有内容时展示，顶部常驻 -->
+      <template v-if="showDescription">
+        <div
+          v-if="messageText && request.isMarkdown"
+          class="markdown-body message-body"
+          v-html="messageHtml"
+        ></div>
+        <pre v-else-if="messageText" class="plain-body message-body">{{ messageText }}</pre>
 
-      <div v-if="attachments.length" class="attachments">
+        <div v-if="attachments.length" class="attachments">
         <div class="att-caption">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
             <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
@@ -578,6 +600,20 @@ onBeforeUnmount(() => {
           </div>
         </div>
       </div>
+      </template>
+
+      <!-- 题号计数（仅多题），位于 Message 下方、问题上方 -->
+      <div v-if="isMulti" class="q-counter">
+        Question {{ current + 1 }}/{{ total }}
+      </div>
+
+      <!-- 当前问题正文 -->
+      <div
+        v-if="request.isMarkdown && currentQuestion?.message"
+        class="markdown-body"
+        v-html="renderedHtml"
+      ></div>
+      <pre v-else-if="currentQuestion?.message" class="plain-body">{{ currentQuestion?.message }}</pre>
 
       <div v-if="currentQuestion && currentQuestion.predefinedOptions.length" class="options">
         <div
@@ -592,17 +628,27 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <textarea
-        ref="inputRef"
-        v-model="userInput"
-        class="textarea"
-        placeholder="输入你的回复…"
-      ></textarea>
-
-      <!-- 多问题：添加图片移到输入框下方 -->
-      <div v-if="isMulti" class="under-input">
-        <button class="btn btn-icon" type="button" @click="pickFiles">
-          添加图片
+      <!-- 输入框 + 内置「添加图片」小图标（右下角） -->
+      <div class="input-wrap">
+        <textarea
+          ref="inputRef"
+          v-model="userInput"
+          class="textarea"
+          placeholder="输入你的回复…"
+          @input="autoGrow"
+        ></textarea>
+        <button
+          class="img-btn"
+          type="button"
+          title="添加图片"
+          aria-label="添加图片"
+          @click="pickFiles"
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="3" width="18" height="18" rx="2" />
+            <circle cx="8.5" cy="8.5" r="1.6" />
+            <path d="M21 15l-5-5L5 21" />
+          </svg>
         </button>
       </div>
 
@@ -674,15 +720,12 @@ onBeforeUnmount(() => {
       </button>
     </div>
 
-    <!-- 单问题底部：维持现状 -->
+    <!-- 单问题底部：取消(左) + 发送(右) -->
     <div v-else class="footer" data-tauri-drag-region>
-      <button class="btn btn-icon" type="button" @click="pickFiles">
-        添加图片
-      </button>
-      <span class="spacer"></span>
       <button class="btn" type="button" :disabled="submitting" @click="requestCancel">
         取消 <kbd class="sc">⌘W</kbd>
       </button>
+      <span class="spacer"></span>
       <button
         class="btn btn-primary"
         type="button"
@@ -946,10 +989,46 @@ onBeforeUnmount(() => {
   font-size: 11px;
   color: var(--text-secondary);
 }
-/* 多问题：输入框下方的「添加图片」 */
-.under-input {
+/* 共享 Message 描述区：与下方问题略作区分 */
+.message-body {
+  color: var(--text-secondary);
+}
+/* 题号计数：位于 Message 与问题之间 */
+.q-counter {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+/* 输入框容器：承载内置「添加图片」图标 */
+.input-wrap {
+  position: relative;
   display: flex;
-  margin-top: -4px;
+}
+.img-btn {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: default;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.img-btn:hover {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+}
+.img-btn svg {
+  width: 17px;
+  height: 17px;
 }
 .footer {
   flex: 0 0 auto;
