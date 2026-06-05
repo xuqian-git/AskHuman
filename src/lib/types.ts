@@ -59,6 +59,8 @@ export interface GeneralConfig {
   windowEffect: WindowEffect;
   /** 语音识别语言（BCP-47，如 "zh-CN"）；"auto" 跟随系统首选语言。 */
   speechLanguage: string;
+  /** 语音输入快捷键（弹窗内）。规范串如 "cmd+d"；空串表示关闭。 */
+  speechShortcut: string;
 }
 
 export interface PopupChannelConfig {

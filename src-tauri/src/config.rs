@@ -58,6 +58,8 @@ pub struct GeneralConfig {
     pub window_effect: WindowEffect,
     /// 语音识别语言（BCP-47，如 "zh-CN"/"en-US"）；"auto" 表示跟随系统首选语言。
     pub speech_language: String,
+    /// 语音输入快捷键（弹窗内）。规范串如 "cmd+d"/"cmd+shift+d"；空串表示关闭。
+    pub speech_shortcut: String,
 }
 
 impl Default for GeneralConfig {
@@ -68,6 +70,7 @@ impl Default for GeneralConfig {
             appear_animation: PopupAnimation::Alert,
             window_effect: WindowEffect::Glass,
             speech_language: "auto".to_string(),
+            speech_shortcut: "cmd+d".to_string(),
         }
     }
 }
@@ -197,6 +200,7 @@ mod tests {
         assert_eq!(c.general.appear_animation, PopupAnimation::Alert);
         assert_eq!(c.general.window_effect, WindowEffect::Glass);
         assert_eq!(c.general.speech_language, "auto");
+        assert_eq!(c.general.speech_shortcut, "cmd+d");
         assert!(c.channels.popup.enabled);
         assert_eq!(c.channels.popup.width, 560.0);
         assert_eq!(c.channels.popup.height, 620.0);

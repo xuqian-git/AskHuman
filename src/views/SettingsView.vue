@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { onBeforeUnmount, onMounted, ref } from "vue";
 import {
   applyWindowEffect,
   cursorHookInstall,
@@ -17,6 +17,13 @@ import {
   telegramTest,
 } from "../lib/ipc";
 import { applyTheme } from "../lib/theme";
+import {
+  eventToSpec,
+  formatShortcut,
+  isModifierOnly,
+  shortcutConflict,
+  specToString,
+} from "../lib/shortcut";
 import { isGlassSupported } from "tauri-plugin-liquid-glass-api";
 import type {
   AppConfig,
@@ -107,6 +114,73 @@ async function changeSpeechLanguage(lang: string) {
   config.value.general.speechLanguage = lang;
   await persist();
 }
+
+// 语音快捷键录制：点一下进入录制，直接按组合键录入；Esc 取消。
+const recordingShortcut = ref(false);
+const shortcutPreview = ref("");
+const shortcutError = ref<string | null>(null);
+let shortcutHandler: ((e: KeyboardEvent) => void) | null = null;
+
+function previewModifiers(e: KeyboardEvent): string {
+  let o = "";
+  if (e.ctrlKey) o += "⌃";
+  if (e.altKey) o += "⌥";
+  if (e.shiftKey) o += "⇧";
+  if (e.metaKey) o += "⌘";
+  return o ? o + "…" : "";
+}
+
+function stopRecordShortcut() {
+  recordingShortcut.value = false;
+  shortcutPreview.value = "";
+  if (shortcutHandler) {
+    window.removeEventListener("keydown", shortcutHandler, true);
+    shortcutHandler = null;
+  }
+}
+
+function startRecordShortcut() {
+  if (recordingShortcut.value) return;
+  recordingShortcut.value = true;
+  shortcutError.value = null;
+  shortcutPreview.value = "";
+  shortcutHandler = (e: KeyboardEvent) => {
+    // 捕获阶段拦截，避免触发浏览器/窗口默认行为（如 ⌘W 关窗）。
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.key === "Escape") {
+      stopRecordShortcut();
+      return;
+    }
+    if (isModifierOnly(e)) {
+      shortcutPreview.value = previewModifiers(e);
+      return;
+    }
+    const spec = eventToSpec(e);
+    if (!spec) return;
+    const reason = shortcutConflict(spec);
+    if (reason) {
+      shortcutError.value = reason;
+      return;
+    }
+    if (config.value) {
+      config.value.general.speechShortcut = specToString(spec);
+      persist();
+    }
+    stopRecordShortcut();
+  };
+  window.addEventListener("keydown", shortcutHandler, true);
+}
+
+function clearShortcut() {
+  if (!config.value) return;
+  config.value.general.speechShortcut = "";
+  shortcutError.value = null;
+  persist();
+  stopRecordShortcut();
+}
+
+onBeforeUnmount(stopRecordShortcut);
 
 // 切换弹窗背景效果（仅 macOS 26+ 显示）。持久化后实时作用于已打开的 popup + 设置窗口。
 async function changeWindowEffect(effect: WindowEffect) {
@@ -387,26 +461,6 @@ onMounted(async () => {
               </div>
             </div>
           </template>
-          <template v-if="isMac">
-            <hr class="divider" />
-            <div class="row">
-              <span class="label">语音识别语言</span>
-              <span class="spacer"></span>
-              <select
-                class="select"
-                :value="config.general.speechLanguage"
-                @change="changeSpeechLanguage(($event.target as HTMLSelectElement).value)"
-              >
-                <option
-                  v-for="lang in SPEECH_LANGUAGES"
-                  :key="lang.value"
-                  :value="lang.value"
-                >
-                  {{ lang.label }}
-                </option>
-              </select>
-            </div>
-          </template>
           <hr class="divider" />
           <div class="row">
             <span class="label">弹出测试窗口</span>
@@ -415,6 +469,62 @@ onMounted(async () => {
               测试
             </button>
           </div>
+        </div>
+
+        <!-- 语音输入（仅 macOS） -->
+        <div v-if="isMac" class="card">
+          <p class="card-title">语音输入</p>
+          <div class="row">
+            <span class="label">识别语言</span>
+            <span class="spacer"></span>
+            <select
+              class="select"
+              :value="config.general.speechLanguage"
+              @change="changeSpeechLanguage(($event.target as HTMLSelectElement).value)"
+            >
+              <option
+                v-for="lang in SPEECH_LANGUAGES"
+                :key="lang.value"
+                :value="lang.value"
+              >
+                {{ lang.label }}
+              </option>
+            </select>
+          </div>
+          <hr class="divider" />
+          <div class="row">
+            <span class="label">快捷键</span>
+            <span class="spacer"></span>
+            <button
+              class="btn shortcut-rec"
+              :class="{ recording: recordingShortcut }"
+              type="button"
+              @click="startRecordShortcut"
+            >
+              {{
+                recordingShortcut
+                  ? shortcutPreview || "按下快捷键…"
+                  : formatShortcut(config.general.speechShortcut)
+              }}
+            </button>
+            <button
+              class="btn"
+              type="button"
+              style="margin-left: 6px"
+              :disabled="!config.general.speechShortcut && !recordingShortcut"
+              @click="clearShortcut"
+            >
+              清除
+            </button>
+          </div>
+          <p v-if="shortcutError" class="result err">{{ shortcutError }}</p>
+          <p
+            v-else-if="recordingShortcut"
+            class="card-desc"
+            style="margin-top: 6px"
+          >
+            按下组合键（需含 ⌘ 或 ⌃），Esc 取消
+          </p>
         </div>
       </template>
 
@@ -724,5 +834,15 @@ onMounted(async () => {
   flex: 1 1 auto;
   overflow-y: auto;
   padding: var(--space-4);
+}
+/* 快捷键录制按钮：等宽、最小宽度，录制态用强调色描边 */
+.shortcut-rec {
+  min-width: 76px;
+  font-variant-numeric: tabular-nums;
+}
+.shortcut-rec.recording {
+  border-color: var(--accent);
+  color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 30%, transparent);
 }
 </style>

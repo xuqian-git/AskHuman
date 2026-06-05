@@ -22,6 +22,7 @@ import {
   speechAvailable,
 } from "../lib/ipc";
 import { startDrag } from "@crabnebula/tauri-plugin-drag";
+import { formatShortcut, matchShortcut } from "../lib/shortcut";
 import { renderMarkdown } from "../lib/markdown";
 import { applyTheme, fileToDataUrl } from "../lib/theme";
 import type {
@@ -57,6 +58,11 @@ const speechError = ref<string | null>(null);
 const speechStatus = ref<string | null>(null);
 // 识别语言（来自设置；auto/空 → 后端按系统首选语言）。
 const speechLang = ref("auto");
+// 语音输入快捷键（来自设置；空串 = 关闭快捷键，仅麦克风按钮可用）。
+const speechShortcut = ref("cmd+d");
+const speechHotkeyLabel = computed(() =>
+  speechShortcut.value ? formatShortcut(speechShortcut.value) : ""
+);
 // 插入模型（复刻 demo）：文本布局 = [...已提交...][实时片段]。
 // interimStart 指向实时片段起点；interimLen 为其长度。committed 在 interimStart 处永久插入；
 // volatile 就地替换 [interimStart, interimStart+interimLen]。用户中途移动光标→固定并 flush。
@@ -163,6 +169,7 @@ const previewing = ref(false);
 let unlistenIndex: UnlistenFn | null = null;
 let unlistenFocus: UnlistenFn | null = null;
 let unlistenDrop: UnlistenFn | null = null;
+let unlistenSettings: UnlistenFn | null = null;
 
 function setAttRef(el: Element | null, i: number) {
   if (el) attRefs.value[i] = el as HTMLElement;
@@ -674,6 +681,12 @@ async function setupSpeechListeners() {
 
 function onKeydown(e: KeyboardEvent) {
   const mod = e.metaKey || e.ctrlKey;
+  // 录音中按 Esc：结束本次语音输入（不关闭弹窗）。
+  if (e.key === "Escape" && listening.value) {
+    e.preventDefault();
+    stopListening();
+    return;
+  }
   if (mod && e.key === "Enter") {
     e.preventDefault();
     // 多题：非最后一题始终前往下一题（即使提交按钮已出现），最后一题才提交。
@@ -686,8 +699,12 @@ function onKeydown(e: KeyboardEvent) {
     requestCancel();
     return;
   }
-  // CMD+D：开始/停止语音输入。
-  if (mod && (e.key === "d" || e.key === "D")) {
+  // 语音输入快捷键（可在设置中自定义；空串=关闭）。
+  if (
+    speechSupported.value &&
+    speechShortcut.value &&
+    matchShortcut(e, speechShortcut.value)
+  ) {
     e.preventDefault();
     toggleSpeech();
     return;
@@ -747,13 +764,24 @@ onMounted(async () => {
     }
     addDroppedPaths(event.payload.paths);
   });
-  // 读取识别语言设置 + 探测语音是否可用（macOS 26+）。
+  // 读取识别语言 / 快捷键设置 + 探测语音是否可用（macOS 26+）。
   try {
     const s = await getSettings();
     speechLang.value = s.general.speechLanguage || "auto";
+    speechShortcut.value = s.general.speechShortcut ?? "cmd+d";
   } catch {
-    /* 读取失败：保持 auto */
+    /* 读取失败：保持默认 */
   }
+  // 设置变更实时生效（同进程内设置窗口保存后广播 general 配置）。
+  unlistenSettings = await listen<{
+    speechLanguage?: string;
+    speechShortcut?: string;
+  }>("settings-updated", (e) => {
+    if (typeof e.payload.speechLanguage === "string")
+      speechLang.value = e.payload.speechLanguage || "auto";
+    if (typeof e.payload.speechShortcut === "string")
+      speechShortcut.value = e.payload.speechShortcut;
+  });
   try {
     speechSupported.value = await speechAvailable();
   } catch {
@@ -793,6 +821,7 @@ onBeforeUnmount(() => {
   unlistenIndex?.();
   unlistenFocus?.();
   unlistenDrop?.();
+  unlistenSettings?.();
   stopListening();
   unlistenSpeech.forEach((fn) => fn());
   unlistenSpeech = [];
@@ -967,10 +996,10 @@ onBeforeUnmount(() => {
               type="button"
               :title="
                 speechReady
-                  ? '停止语音输入 ⌘D'
+                  ? '停止语音输入' + (speechHotkeyLabel ? ' ' + speechHotkeyLabel : '')
                   : listening
                   ? '准备中…'
-                  : '语音输入 ⌘D'
+                  : '语音输入' + (speechHotkeyLabel ? ' ' + speechHotkeyLabel : '')
               "
               :aria-label="listening ? '停止语音输入' : '语音输入'"
               @mousedown.prevent

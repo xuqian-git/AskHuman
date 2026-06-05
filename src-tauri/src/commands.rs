@@ -8,7 +8,7 @@ use crate::models::{AskRequest, ChannelAction, ChannelResult, QuestionAnswer};
 use crate::telegram::TelegramClient;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 /// 弹窗初始化负载：请求内容 + 主题 + 是否置顶（前端据此套用样式、初始化导航栏）。
 #[derive(Serialize)]
@@ -211,8 +211,11 @@ pub fn get_settings() -> AppConfig {
 }
 
 #[tauri::command]
-pub fn save_settings(config: AppConfig) -> Result<(), String> {
-    config.save().map_err(|e| e.to_string())
+pub fn save_settings(app: AppHandle, config: AppConfig) -> Result<(), String> {
+    config.save().map_err(|e| e.to_string())?;
+    // 广播 general 配置，令同进程内已打开的弹窗实时生效（如语音语言/快捷键）。
+    let _ = app.emit("settings-updated", &config.general);
+    Ok(())
 }
 
 #[tauri::command]
