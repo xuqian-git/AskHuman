@@ -52,8 +52,12 @@ export interface PopupSubmission {
   answers: QuestionAnswer[];
 }
 
+export type UiLanguage = "auto" | "en" | "zh";
+
 export interface GeneralConfig {
   theme: ThemeMode;
+  /** 界面语言：auto（跟随系统）/ en / zh。回退英文。 */
+  language: UiLanguage;
   alwaysOnTop: boolean;
   appearAnimation: PopupAnimation;
   windowEffect: WindowEffect;

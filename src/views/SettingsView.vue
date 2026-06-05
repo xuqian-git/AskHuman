@@ -1,5 +1,8 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from "vue";
+import { useI18n } from "vue-i18n";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { applyLanguage } from "../i18n";
 import {
   applyWindowEffect,
   cursorHookInstall,
@@ -30,8 +33,11 @@ import type {
   HookStatus,
   PopupAnimation,
   ThemeMode,
+  UiLanguage,
   WindowEffect,
 } from "../lib/types";
+
+const { t } = useI18n();
 
 // 出现动画为 macOS 原生窗口能力，其它平台不展示选择器。
 const isMac = navigator.userAgent.toLowerCase().includes("mac");
@@ -92,6 +98,18 @@ async function changeTheme(theme: ThemeMode) {
   await setTheme(theme);
   await persist();
 }
+
+// 切换界面语言：本窗口立即生效；persist 广播 settings-updated 令其它窗口同步。
+async function changeLanguage(lang: UiLanguage) {
+  if (!config.value) return;
+  config.value.general.language = lang;
+  applyLanguage(lang);
+  await persist();
+}
+
+// 其它窗口改了语言时，本窗口也同步切换。
+let unlistenSettings: UnlistenFn | null = null;
+onBeforeUnmount(() => unlistenSettings?.());
 
 async function changeAnimation(anim: PopupAnimation) {
   if (!config.value) return;
@@ -325,6 +343,13 @@ async function runDingtalkDetect() {
 onMounted(async () => {
   config.value = await getSettings();
   applyTheme(config.value.general.theme);
+  applyLanguage(config.value.general.language);
+  unlistenSettings = await listen<{ language?: UiLanguage }>(
+    "settings-updated",
+    (e) => {
+      if (e.payload.language) applyLanguage(e.payload.language);
+    }
+  );
   prompt.value = await getPrompt();
   await refreshHook();
   if (isMac) {
@@ -370,30 +395,46 @@ onMounted(async () => {
       <!-- 通用 -->
       <template v-if="activeTab === 'general'">
         <div class="card">
-          <p class="card-title">外观</p>
+          <p class="card-title">{{ t("settings.appearance.title") }}</p>
           <div class="row">
-            <span class="label">主题</span>
+            <span class="label">{{ t("settings.appearance.theme") }}</span>
             <span class="spacer"></span>
             <div class="segmented">
               <button
                 :class="{ active: config.general.theme === 'system' }"
                 @click="changeTheme('system')"
               >
-                跟随系统
+                {{ t("settings.appearance.themeSystem") }}
               </button>
               <button
                 :class="{ active: config.general.theme === 'light' }"
                 @click="changeTheme('light')"
               >
-                浅色
+                {{ t("settings.appearance.themeLight") }}
               </button>
               <button
                 :class="{ active: config.general.theme === 'dark' }"
                 @click="changeTheme('dark')"
               >
-                深色
+                {{ t("settings.appearance.themeDark") }}
               </button>
             </div>
+          </div>
+          <hr class="divider" />
+          <div class="row">
+            <span class="label">{{ t("settings.appearance.language") }}</span>
+            <span class="spacer"></span>
+            <select
+              class="select"
+              :value="config.general.language"
+              @change="changeLanguage(($event.target as HTMLSelectElement).value as UiLanguage)"
+            >
+              <option value="auto">
+                {{ t("settings.appearance.languageSystem") }}
+              </option>
+              <option value="en">English</option>
+              <option value="zh">简体中文</option>
+            </select>
           </div>
         </div>
 

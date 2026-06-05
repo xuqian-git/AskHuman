@@ -23,6 +23,7 @@ import {
 } from "../lib/ipc";
 import { startDrag } from "@crabnebula/tauri-plugin-drag";
 import { formatShortcut, matchShortcut } from "../lib/shortcut";
+import { applyLanguage } from "../i18n";
 import { renderMarkdown } from "../lib/markdown";
 import { applyTheme, fileToDataUrl } from "../lib/theme";
 import type {
@@ -774,9 +775,11 @@ onMounted(async () => {
   }
   // 设置变更实时生效（同进程内设置窗口保存后广播 general 配置）。
   unlistenSettings = await listen<{
+    language?: string;
     speechLanguage?: string;
     speechShortcut?: string;
   }>("settings-updated", (e) => {
+    if (typeof e.payload.language === "string") applyLanguage(e.payload.language);
     if (typeof e.payload.speechLanguage === "string")
       speechLang.value = e.payload.speechLanguage || "auto";
     if (typeof e.payload.speechShortcut === "string")

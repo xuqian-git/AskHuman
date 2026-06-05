@@ -53,6 +53,8 @@ pub enum WindowEffect {
 #[serde(rename_all = "camelCase", default)]
 pub struct GeneralConfig {
     pub theme: ThemeMode,
+    /// 界面语言：`"auto"`（跟随系统）/ `"en"` / `"zh"`。回退英文。
+    pub language: String,
     pub always_on_top: bool,
     pub appear_animation: PopupAnimation,
     pub window_effect: WindowEffect,
@@ -66,6 +68,7 @@ impl Default for GeneralConfig {
     fn default() -> Self {
         Self {
             theme: ThemeMode::System,
+            language: "auto".to_string(),
             always_on_top: true,
             appear_animation: PopupAnimation::Alert,
             window_effect: WindowEffect::Glass,
@@ -196,6 +199,7 @@ mod tests {
     fn defaults_are_correct() {
         let c = AppConfig::default();
         assert_eq!(c.general.theme, ThemeMode::System);
+        assert_eq!(c.general.language, "auto");
         assert!(c.general.always_on_top);
         assert_eq!(c.general.appear_animation, PopupAnimation::Alert);
         assert_eq!(c.general.window_effect, WindowEffect::Glass);

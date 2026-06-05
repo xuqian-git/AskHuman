@@ -44,6 +44,7 @@ tauri-plugin-liquid-glass = "0.1"
 dark-light = "2"
 tokio-tungstenite = { version = "0.29.0", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
 futures-util = "0.3.32"
+sys-locale = "0.3.2"
 
 [dev-dependencies]
 tempfile = "3"
