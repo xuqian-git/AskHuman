@@ -1,14 +1,12 @@
 # AGENTS.md
 
-Guidance for AI agents working in this repository.
-
 ## Before a complex task
 
 Read [`docs/overview.md`](docs/overview.md) first to understand the architecture and project layout. When the task is complete, update `docs/overview.md` so it stays accurate.
 
-## Verifying changes to the `askhuman` command
+## Verifying your changes
 
-After iterating on the `askhuman` command, verify the result by running the install script to compile the new code directly into your environment, then use the newly installed version for subsequent prompts:
+After making any change to this project's functionality or logic, verify the result by running the install script to compile the new code directly into your environment, then use the newly installed `AskHuman` for subsequent prompts:
 
 ```bash
 # macOS / Linux
@@ -20,4 +18,4 @@ After iterating on the `askhuman` command, verify the result by running the inst
 
 ## Commit messages
 
-When performing a git commit, write the commit message in English.
+Write git commit messages in English.
