@@ -33,7 +33,7 @@ base64 = "0.22"
 anyhow = "1"
 thiserror = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "multipart"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util"] }
 # 从窗口向系统发起原生文件拖拽（-f 附件胶囊可拖到其它应用打开）。
 tauri-plugin-drag = "2"
 # macOS 26+ Liquid Glass 整窗背景（NSGlassEffectView）；旧系统自动回退到 NSVisualEffectView；

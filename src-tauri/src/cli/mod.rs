@@ -34,6 +34,11 @@ pub fn dispatch() {
         "--settings" => {
             crate::app::run_settings(crate::config::AppConfig::load());
         }
+        // 常驻 Daemon 管理子命令：AskHuman daemon <run|start|stop|restart|status|logs>。
+        // 极端歧义（问题正好是 "daemon"）可用 `AskHuman -q daemon` 规避。
+        "daemon" => {
+            crate::daemon::dispatch(&argv[2..]);
+        }
         // 第一题既可用位置参数，也可用 `-q`/`--question`；提问相关 flag 一律进入提问分支，
         // 由 `parse_ask` 给出精确错误（如缺少问题内容、选项需在问题之后）。
         first

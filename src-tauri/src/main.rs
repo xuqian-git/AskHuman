@@ -10,12 +10,16 @@
 mod app;
 mod channels;
 mod cli;
+#[cfg(unix)]
+mod client;
 mod commands;
 mod config;
+mod daemon;
 mod dingtalk;
 mod feishu;
 mod i18n;
 mod integrations;
+mod ipc;
 #[cfg(target_os = "macos")]
 mod macos_dock_icon;
 #[cfg(target_os = "macos")]
