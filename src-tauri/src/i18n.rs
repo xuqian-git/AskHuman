@@ -163,6 +163,8 @@ pub fn tr(lang: Lang, key: &'static str) -> &'static str {
 
         // —— 远程渠道（Telegram / 钉钉）发给用户的文案 ——
         "channel.questionFrom" => pick(lang, "Question from {source}", "来自 {source} 的提问"),
+        // Message（共享描述）头部：中英一律英文，{source} 默认 "the Loop"。
+        "channel.messageFrom" => pick(lang, "Message from {source}", "Message from {source}"),
         "channel.questionIndexed" => pick(lang, "Question {i}/{n}", "问题 {i}/{n}"),
         "channel.tgSendButton" => pick(lang, "↗️ Send", "↗️ 发送"),
         "channel.tgActionHint" => pick(

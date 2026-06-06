@@ -886,7 +886,9 @@ onBeforeUnmount(() => {
       <span class="brand">
         <span class="brand-dot"></span>
         <span class="brand-title">{{
-          t("popup.questionFrom", { source: sourceName })
+          showQuestionHeader
+            ? t("popup.messageFrom", { source: sourceName })
+            : t("popup.questionFrom", { source: sourceName })
         }}</span>
       </span>
       <span class="nav-actions">

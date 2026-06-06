@@ -9,6 +9,7 @@ export default {
     loading: "Loading…",
     loadError: "Failed to load: {msg}",
     questionFrom: "Question from {source}",
+    messageFrom: "Message from {source}",
     attachments: "Attachments · {n}",
     inputPlaceholder: "Type your reply…",
     addImage: "Add image",
