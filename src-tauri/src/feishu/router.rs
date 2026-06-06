@@ -1,0 +1,197 @@
+//! 飞书长连接 Router：进程内独占一条 `FeishuWs`，把事件按 `open_message_id`（卡片回调）/
+//! `open_id`（聊天消息）分发到对应会话。
+//!
+//! 设计与钉钉 `dingtalk::router` 同构：Reader 任务**只**阻塞在 `ws.recv()`，不放进会被取消的
+//! `select`（避免丢消息）；卡片回调遵循 spec §11：收到即**空 ACK**（满足 3 秒），卡片置灰由会话
+//! 经 OpenAPI `patch_card` 完成（提交 toast 因此从略，与「被抢答收尾」走同一条路）。
+//!
+//! 单进程与 Daemon 复用：Daemon 持共享且常热的 Router；单进程每进程起一个仅挂 1 个会话的同款 Router。
+
+use super::client::FeishuClient;
+use super::ws::{FeishuWs, WsEvent};
+use crate::config::FeishuChannelConfig;
+use serde_json::Value;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+
+/// 分发给某个会话的入站事件。
+pub enum FsInbound {
+    /// 卡片回调（已被 Router 即时空 ACK；会话据此解析提交、经 OpenAPI 置灰）。
+    Card(Value),
+    /// 聊天消息（图片/文件/文字；已被底层 `FeishuWs` 自动 ACK）。
+    Message(Value),
+}
+
+#[derive(Default)]
+struct Routes {
+    /// open_message_id → route_id（卡片精确路由）。
+    cards: HashMap<String, u64>,
+    /// open_id → route_id（聊天消息按「最新活动」归属，见 Q4）。
+    loose: HashMap<String, u64>,
+    /// route_id → 会话入站事件发送端。
+    sinks: HashMap<u64, UnboundedSender<FsInbound>>,
+    /// 原始消息观察者（供「自动识别 open_id」等无法预知 open_id 的场景）。
+    observers: Vec<UnboundedSender<Value>>,
+}
+
+/// 进程内飞书 Router（`Arc` 共享）。
+pub struct FsRouter {
+    routes: Arc<Mutex<Routes>>,
+    next_route: AtomicU64,
+    alive: Arc<AtomicBool>,
+}
+
+impl FsRouter {
+    /// 建连并启动 Reader 任务。失败返回英文错误（调用方按界面语言警告并跳过该渠道）。
+    /// 仅需 app_id/secret/base_url（不需 open_id，便于「自动识别」复用）。
+    pub async fn connect(config: &FeishuChannelConfig) -> Result<Arc<Self>, String> {
+        let client = FeishuClient::new(config).map_err(|e| e.to_string())?;
+        let ws = FeishuWs::connect(
+            client.http().clone(),
+            client.base_url(),
+            client.app_id(),
+            client.app_secret(),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+        let routes = Arc::new(Mutex::new(Routes::default()));
+        let alive = Arc::new(AtomicBool::new(true));
+        tokio::spawn(reader_task(ws, routes.clone(), alive.clone()));
+        Ok(Arc::new(Self {
+            routes,
+            next_route: AtomicU64::new(1),
+            alive,
+        }))
+    }
+
+    /// 连接是否仍然存活（Reader 任务未退出）。
+    pub fn is_alive(&self) -> bool {
+        self.alive.load(Ordering::SeqCst)
+    }
+
+    /// 为一个会话登记一条路由，返回其句柄。
+    pub fn register(self: &Arc<Self>) -> RoutedFs {
+        let route_id = self.next_route.fetch_add(1, Ordering::SeqCst);
+        let (tx, rx) = unbounded_channel();
+        self.routes.lock().unwrap().sinks.insert(route_id, tx);
+        RoutedFs {
+            route_id,
+            routes: self.routes.clone(),
+            rx,
+        }
+    }
+
+    /// 登记一个原始消息观察者（用于「自动识别 open_id」：此时 open_id 未知，需看全部消息）。
+    pub fn observe_message(&self) -> UnboundedReceiver<Value> {
+        let (tx, rx) = unbounded_channel();
+        self.routes.lock().unwrap().observers.push(tx);
+        rx
+    }
+}
+
+/// 一个会话的事件源句柄：经它收事件、登记/注销路由。
+pub struct RoutedFs {
+    route_id: u64,
+    routes: Arc<Mutex<Routes>>,
+    rx: UnboundedReceiver<FsInbound>,
+}
+
+impl RoutedFs {
+    /// 标记本会话「当前活动」：登记卡片精确路由（如有 `message_id`）并认领该 open_id 的聊天消息。
+    pub fn set_active(&self, message_id: Option<&str>, open_id: &str) {
+        let mut r = self.routes.lock().unwrap();
+        if let Some(mid) = message_id {
+            r.cards.insert(mid.to_string(), self.route_id);
+        }
+        if !open_id.is_empty() {
+            r.loose.insert(open_id.to_string(), self.route_id);
+        }
+    }
+
+    /// 取消本会话的活动登记（仅当当前归属仍是自己时才清除）。
+    pub fn clear_active(&self, message_id: Option<&str>, open_id: &str) {
+        let mut r = self.routes.lock().unwrap();
+        if let Some(mid) = message_id {
+            if r.cards.get(mid) == Some(&self.route_id) {
+                r.cards.remove(mid);
+            }
+        }
+        if !open_id.is_empty() && r.loose.get(open_id) == Some(&self.route_id) {
+            r.loose.remove(open_id);
+        }
+    }
+
+    /// 收下一个分发给本会话的事件；`None` 表示连接关闭。
+    pub async fn recv(&mut self) -> Option<FsInbound> {
+        self.rx.recv().await
+    }
+}
+
+impl Drop for RoutedFs {
+    fn drop(&mut self) {
+        let mut r = self.routes.lock().unwrap();
+        r.sinks.remove(&self.route_id);
+        r.cards.retain(|_, v| *v != self.route_id);
+        r.loose.retain(|_, v| *v != self.route_id);
+    }
+}
+
+/// Reader 任务：独占 `FeishuWs`，循环收事件并按路由表分发。
+async fn reader_task(mut ws: FeishuWs, routes: Arc<Mutex<Routes>>, alive: Arc<AtomicBool>) {
+    while let Some(ev) = ws.recv().await {
+        match ev {
+            WsEvent::CardAction { data, frame } => {
+                // 即时空 ACK（满足飞书 3 秒约束）；卡片置灰由会话经 OpenAPI patch_card 完成。
+                ws.respond_ack(&frame).await;
+                let mid = data
+                    .get("context")
+                    .and_then(|c| c.get("open_message_id"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                if mid.is_empty() {
+                    continue;
+                }
+                let sink = {
+                    let r = routes.lock().unwrap();
+                    r.cards.get(mid).and_then(|rid| r.sinks.get(rid).cloned())
+                };
+                if let Some(tx) = sink {
+                    let _ = tx.send(FsInbound::Card(data));
+                }
+            }
+            WsEvent::Message(event) => {
+                dispatch_observers(&routes, &event);
+                let oid = event
+                    .get("sender")
+                    .and_then(|s| s.get("sender_id"))
+                    .and_then(|i| i.get("open_id"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                if oid.is_empty() {
+                    continue;
+                }
+                let sink = {
+                    let r = routes.lock().unwrap();
+                    r.loose.get(oid).and_then(|rid| r.sinks.get(rid).cloned())
+                };
+                if let Some(tx) = sink {
+                    let _ = tx.send(FsInbound::Message(event));
+                }
+            }
+        }
+    }
+    // 连接彻底断开：标记不可用并清空 sinks → 各会话 recv() 得到 None 而结束。
+    alive.store(false, Ordering::SeqCst);
+    routes.lock().unwrap().sinks.clear();
+}
+
+/// 向所有存活的消息观察者广播一条原始事件（顺带清理已失效的发送端）。
+fn dispatch_observers(routes: &Arc<Mutex<Routes>>, event: &Value) {
+    let mut r = routes.lock().unwrap();
+    if r.observers.is_empty() {
+        return;
+    }
+    r.observers.retain(|tx| tx.send(event.clone()).is_ok());
+}

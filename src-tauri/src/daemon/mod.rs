@@ -27,10 +27,12 @@ mod unix_impl {
     use super::lifecycle::{self, DaemonMeta, LockGuard};
     use super::request::{self, RequestEntry, RequestRegistry};
     use crate::channels::dingding::DingTalkChannel;
+    use crate::channels::feishu::FeishuChannel;
     use crate::channels::Channel;
     use crate::client;
     use crate::config::AppConfig;
     use crate::dingtalk::router::DdRouter;
+    use crate::feishu::router::FsRouter;
     use crate::i18n::Lang;
     use crate::ipc::{
         self, transport, ClientMsg, HelloAck, HelloStatus, ServerMsg, StatusInfo, TaskRequest,
@@ -131,6 +133,8 @@ mod unix_impl {
         registry: Arc<RequestRegistry>,
         /// 钉钉长连接 Router（惰性建连、常热复用；连接死亡后按需重连）。
         dd_router: tokio::sync::Mutex<Option<Arc<DdRouter>>>,
+        /// 飞书长连接 Router（惰性建连、常热复用；连接死亡后按需重连）。
+        fs_router: tokio::sync::Mutex<Option<Arc<FsRouter>>>,
     }
 
     async fn serve(_lock: LockGuard) -> i32 {
@@ -167,6 +171,7 @@ mod unix_impl {
             shutdown: tokio::sync::Notify::new(),
             registry: RequestRegistry::new(),
             dd_router: tokio::sync::Mutex::new(None),
+            fs_router: tokio::sync::Mutex::new(None),
         });
 
         // 空闲退出检查。
@@ -502,6 +507,31 @@ mod unix_impl {
         }
     }
 
+    /// 取得（必要时惰性建连）飞书 Router；连接已死则重连。失败返回 None。
+    async fn ensure_fs_router(
+        state: &Arc<ServerState>,
+        cfg: &crate::config::FeishuChannelConfig,
+    ) -> Option<Arc<FsRouter>> {
+        let mut guard = state.fs_router.lock().await;
+        if let Some(r) = guard.as_ref() {
+            if r.is_alive() {
+                return Some(r.clone());
+            }
+        }
+        match FsRouter::connect(cfg).await {
+            Ok(r) => {
+                log("feishu router connected");
+                *guard = Some(r.clone());
+                Some(r)
+            }
+            Err(e) => {
+                log(&format!("feishu router connect failed: {}", e));
+                *guard = None;
+                None
+            }
+        }
+    }
+
     /// 按当前配置把可用 IM 渠道挂到请求协调器上（与弹窗并行抢答）。返回是否至少挂上一个。
     /// 失败的渠道经 `Warn` 流给 CLI stderr，并记 daemon.log。
     async fn attach_im_channels(
@@ -532,6 +562,29 @@ mod unix_impl {
                             crate::i18n::warn_prefix(lang),
                             crate::i18n::tr(lang, "channel.ddConfigInvalidSkip")
                                 .replace("{e}", "Stream connection failed"),
+                        ),
+                    })
+                    .await;
+                }
+            }
+        }
+
+        if crate::app::is_feishu_active(&config) {
+            let fs = &config.channels.feishu;
+            match ensure_fs_router(state, fs).await {
+                Some(router) => {
+                    let ch: Arc<dyn Channel> = Arc::new(FeishuChannel::shared(fs.clone(), router));
+                    entry.coordinator.register(ch.clone());
+                    ch.start(&request, sink.clone());
+                    attached = true;
+                }
+                None => {
+                    let _ = ipc::write_msg(w, &ServerMsg::Warn {
+                        text: format!(
+                            "{}{}",
+                            crate::i18n::warn_prefix(lang),
+                            crate::i18n::tr(lang, "channel.fsConfigInvalidSkip")
+                                .replace("{e}", "WebSocket connection failed"),
                         ),
                     })
                     .await;

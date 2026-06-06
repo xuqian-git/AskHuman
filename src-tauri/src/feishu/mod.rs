@@ -10,6 +10,7 @@
 
 pub mod card;
 pub mod client;
+pub mod router;
 pub mod token;
 pub mod ws;
 

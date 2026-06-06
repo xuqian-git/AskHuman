@@ -15,10 +15,10 @@ use super::{Channel, Preemption, ResultSink};
 use crate::config::FeishuChannelConfig;
 use crate::feishu::card;
 use crate::feishu::client::FeishuClient;
-use crate::feishu::ws::{FeishuWs, WsEvent};
+use crate::feishu::router::{FsInbound, FsRouter, RoutedFs};
 use crate::i18n::{self, Lang};
 use crate::models::{ImageAttachment, MessagePrompt, QuestionAnswer};
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -28,17 +28,36 @@ const POLL_INTERVAL: Duration = Duration::from_secs(1);
 /// Message（正文+附件）发完到发第一道题之间的等待时长，保证「先 message 后题目」的视觉顺序。
 const MESSAGE_SETTLE_DELAY: Duration = Duration::from_millis(500);
 
+/// Router 归属：单进程自建一个仅挂本会话的 Router；Daemon 复用共享且常热的 Router。
+#[derive(Clone)]
+enum FsTransport {
+    Own,
+    Shared(Arc<FsRouter>),
+}
+
 /// 薄外层：接 Coordinator（并行抢答），把会话委托给 `run_conversation` + `FeishuSession`。
 pub struct FeishuChannel {
     config: FeishuChannelConfig,
     preempt: Arc<Preemption>,
+    transport: FsTransport,
 }
 
 impl FeishuChannel {
+    /// 单进程外层：本会话自建并独占一条连接（每进程一个 Router、仅挂本会话）。
     pub fn new(config: FeishuChannelConfig) -> Self {
         Self {
             config,
             preempt: Arc::new(Preemption::new()),
+            transport: FsTransport::Own,
+        }
+    }
+
+    /// Daemon 外层：复用共享且常热的 Router（跨请求复用，根治多连接抢消息）。
+    pub fn shared(config: FeishuChannelConfig, router: Arc<FsRouter>) -> Self {
+        Self {
+            config,
+            preempt: Arc::new(Preemption::new()),
+            transport: FsTransport::Shared(router),
         }
     }
 }
@@ -52,10 +71,27 @@ impl Channel for FeishuChannel {
         let config = self.config.clone();
         let preempt = self.preempt.clone();
         let request = request.clone();
+        let transport = self.transport.clone();
         tauri::async_runtime::spawn(async move {
-            let mut session = FeishuSession::new(config);
+            let lang = Lang::current();
+            // 取得本会话的事件源句柄（Own：现连一个 Router；Shared：复用）。`_keep` 持有
+            // Own Router 直至会话结束；Shared 的 Router 由 Daemon 持有。
+            let (events, _keep): (RoutedFs, Option<Arc<FsRouter>>) = match transport {
+                FsTransport::Own => match FsRouter::connect(&config).await {
+                    Ok(router) => (router.register(), Some(router)),
+                    Err(e) => {
+                        eprintln!(
+                            "{}{}",
+                            i18n::warn_prefix(lang),
+                            i18n::tr(lang, "channel.fsConfigInvalidSkip").replace("{e}", &e)
+                        );
+                        return;
+                    }
+                },
+                FsTransport::Shared(router) => (router.register(), None),
+            };
+            let mut session = FeishuSession::new(config, events);
             if let Err(e) = session.open().await {
-                let lang = Lang::current();
                 eprintln!(
                     "{}{}",
                     i18n::warn_prefix(lang),
@@ -72,19 +108,19 @@ impl Channel for FeishuChannel {
     }
 }
 
-/// 传输实现：持有 client 与长连接（跨题复用）。
+/// 传输实现：持有 OpenAPI client（发送/置灰）与 Router 事件源句柄（接收，长连接由 Router 独占）。
 pub struct FeishuSession {
     config: FeishuChannelConfig,
     client: Option<FeishuClient>,
-    ws: Option<FeishuWs>,
+    events: Option<RoutedFs>,
 }
 
 impl FeishuSession {
-    pub fn new(config: FeishuChannelConfig) -> Self {
+    pub fn new(config: FeishuChannelConfig, events: RoutedFs) -> Self {
         Self {
             config,
             client: None,
-            ws: None,
+            events: Some(events),
         }
     }
 }
@@ -96,20 +132,12 @@ impl MessagingChannel for FeishuSession {
     }
 
     async fn open(&mut self) -> Result<(), String> {
+        // 长连接由 Router 独占，这里只需 OpenAPI client（发送卡片/消息/置灰）。
         let client = FeishuClient::new(&self.config).map_err(|e| e.to_string())?;
         if client.open_id().is_empty() {
             return Err(i18n::tr(Lang::current(), "err.fsEmptyConfig").replace("{field}", "Open ID"));
         }
-        let ws = FeishuWs::connect(
-            client.http().clone(),
-            client.base_url(),
-            client.app_id(),
-            client.app_secret(),
-        )
-        .await
-        .map_err(|e| e.to_string())?;
         self.client = Some(client);
-        self.ws = Some(ws);
         Ok(())
     }
 
@@ -169,9 +197,13 @@ impl MessagingChannel for FeishuSession {
             ctx.header
         };
 
-        let Self { client, ws, config } = self;
+        let Self {
+            client,
+            events,
+            config,
+        } = self;
         let client = client.as_ref()?;
-        let ws = ws.as_mut()?;
+        let events = events.as_mut()?;
         let open_id = config.open_id.trim().to_string();
 
         let placeholder = i18n::tr(ctx.lang, "channel.fsInputPlaceholder");
@@ -194,21 +226,24 @@ impl MessagingChannel for FeishuSession {
                     i18n::warn_prefix(ctx.lang),
                     i18n::tr(ctx.lang, "channel.fsCardDeliverFailed").replace("{e}", &e.to_string())
                 );
-                return ask_question_text(client, ws, &open_id, ctx, preempt).await;
+                return ask_question_text(client, events, &open_id, ctx, preempt).await;
             }
         };
+
+        // 登记卡片精确路由 + 认领本 open_id 的聊天消息。
+        events.set_active(Some(&message_id), &open_id);
 
         // 2. 等卡片「提交」；作答期间累积聊天里的图片/文件；被抢答则收尾返回 None。
         let mut images: Vec<ImageAttachment> = Vec::new();
         let mut files: Vec<String> = Vec::new();
         while !preempt.is_cancelled() {
-            let ev = match tokio::time::timeout(POLL_INTERVAL, ws.recv()).await {
+            let ev = match tokio::time::timeout(POLL_INTERVAL, events.recv()).await {
                 Ok(Some(ev)) => ev,
                 Ok(None) => break,  // 长连接彻底断开
                 Err(_) => continue, // 超时：回到循环顶部重新检查 cancelled
             };
             match ev {
-                WsEvent::CardAction { data, frame } => {
+                FsInbound::Card(data) => {
                     let parsed = card::parse_card_submit(&data, ctx.options);
                     match &parsed {
                         Some(s) => crate::feishu::ws::debug_log(&format!(
@@ -223,16 +258,10 @@ impl MessagingChannel for FeishuSession {
                             data
                         )),
                     }
-                    match parsed {
-                        Some(s) if s.message_id == message_id && s.open_id == open_id => {
-                            // 3 秒内回包：toast 提示「已提交」。
-                            let toast = i18n::tr(ctx.lang, "channel.fsSubmitted");
-                            ws.respond_card(
-                                &frame,
-                                &json!({ "toast": { "type": "success", "content": toast } }),
-                            )
-                            .await;
-                            // best-effort 把卡片 PATCH 成终态（复刻钉钉：禁用表单 + 保留勾选 + 回显补充文字 + 按钮「已提交」）。
+                    if let Some(s) = parsed {
+                        if s.message_id == message_id && s.open_id == open_id {
+                            // 即时空 ACK 已由 Router 完成；这里经 OpenAPI 把卡片 PATCH 成终态
+                            // （禁用表单 + 保留勾选 + 回显补充文字 + 按钮「已提交」）。
                             let finalized = card::build_finalized_card(&card::Finalized {
                                 title,
                                 text: ctx.text,
@@ -244,6 +273,7 @@ impl MessagingChannel for FeishuSession {
                                 button_label: i18n::tr(ctx.lang, "channel.fsSubmitted"),
                             });
                             let _ = client.patch_card(&message_id, &finalized).await;
+                            events.clear_active(Some(&message_id), &open_id);
                             return Some(QuestionAnswer {
                                 selected_options: s.selected_options,
                                 user_input: s.user_input,
@@ -251,11 +281,10 @@ impl MessagingChannel for FeishuSession {
                                 files,
                             });
                         }
-                        // 非本卡片 / 非提交 → 空 ACK 确认，继续等待。
-                        _ => ws.respond_ack(&frame).await,
                     }
+                    // 非本卡片 / 非提交：忽略，继续等待。
                 }
-                WsEvent::Message(event) => {
+                FsInbound::Message(event) => {
                     if event_open_id(&event) == open_id {
                         accumulate_attachment(client, &event, &mut images, &mut files, ctx.lang)
                             .await;
@@ -282,18 +311,20 @@ impl MessagingChannel for FeishuSession {
             button_label: &status,
         });
         let _ = client.patch_card(&message_id, &finalized).await;
+        events.clear_active(Some(&message_id), &open_id);
         None
     }
 
     async fn close(&mut self) {
-        self.ws = None;
+        // 丢弃事件源句柄 → 从 Router 注销路由（Daemon 下及时清理，避免陈旧路由堆积）。
+        self.events = None;
     }
 }
 
 /// 兜底：纯文本 + 编号选项问一题（卡片投放失败时使用）。用户回一条消息即完成该题。
 async fn ask_question_text(
     client: &FeishuClient,
-    ws: &mut FeishuWs,
+    events: &mut RoutedFs,
     open_id: &str,
     ctx: &QuestionCtx<'_>,
     preempt: &Preemption,
@@ -307,25 +338,30 @@ async fn ask_question_text(
         );
     }
 
+    // 文本兜底无卡片：认领本 open_id 的聊天消息即可（不登记卡片精确路由）。
+    events.set_active(None, open_id);
+
     while !preempt.is_cancelled() {
-        let ev = match tokio::time::timeout(POLL_INTERVAL, ws.recv()).await {
+        let ev = match tokio::time::timeout(POLL_INTERVAL, events.recv()).await {
             Ok(Some(ev)) => ev,
             Ok(None) => break,
             Err(_) => continue,
         };
         match ev {
-            WsEvent::Message(event) => {
+            FsInbound::Message(event) => {
                 if event_open_id(&event) != open_id {
                     continue;
                 }
                 if let Some(answer) = message_to_answer(client, &event, ctx.options).await {
+                    events.clear_active(None, open_id);
                     return Some(answer);
                 }
             }
-            // 文本兜底路径不期望卡片回调；空 ACK 确认跳过。
-            WsEvent::CardAction { frame, .. } => ws.respond_ack(&frame).await,
+            // 文本兜底路径不期望卡片回调；忽略。
+            FsInbound::Card(_) => {}
         }
     }
+    events.clear_active(None, open_id);
     None
 }
 

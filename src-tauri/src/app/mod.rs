@@ -291,12 +291,26 @@ fn run_headless(request: AskRequest, config: AppConfig) -> ! {
 
         if is_feishu_active(&config) {
             use crate::channels::feishu::FeishuSession;
+            use crate::feishu::router::FsRouter;
             let cfg = config.channels.feishu.clone();
             let req = request.clone();
             let sink = coordinator.clone();
             let preempt = preempt.clone();
             handles.push(tokio::spawn(async move {
-                let mut session = FeishuSession::new(cfg);
+                // 单进程：每进程起一个仅挂本会话的 Router（统一走 Router 路径）。
+                let router = match FsRouter::connect(&cfg).await {
+                    Ok(r) => r,
+                    Err(e) => {
+                        stderr_redirect::eprintln_real(&format!(
+                            "{}{}",
+                            i18n::warn_prefix(lang),
+                            i18n::tr(lang, "app.feishuInvalid").replace("{e}", &e)
+                        ));
+                        return;
+                    }
+                };
+                let events = router.register();
+                let mut session = FeishuSession::new(cfg, events);
                 if let Err(e) = session.open().await {
                     stderr_redirect::eprintln_real(&format!(
                         "{}{}",
