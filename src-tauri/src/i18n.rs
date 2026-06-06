@@ -76,8 +76,8 @@ pub fn tr(lang: Lang, key: &'static str) -> &'static str {
         "status.confirmContinue" => pick(lang, "User confirmed to continue", "用户确认继续"),
 
         // —— 窗口标题 ——
-        "title.popup" => "HumanInLoop",
-        "title.settings" => pick(lang, "HumanInLoop Settings", "HumanInLoop 设置"),
+        "title.popup" => "AskHuman",
+        "title.settings" => pick(lang, "AskHuman Settings", "AskHuman 设置"),
 
         // —— macOS 附件右键菜单 ——
         "menu.open" => pick(lang, "Open", "打开"),
@@ -263,8 +263,8 @@ pub fn tr(lang: Lang, key: &'static str) -> &'static str {
         // —— Telegram 测试连接（commands.telegram_test / test_connection）——
         "cmd.tgTestRemote" => pick(
             lang,
-            "🤖 HumanInLoop test message\n\nThis is a test message — your Telegram Bot is configured correctly!",
-            "🤖 HumanInLoop 测试消息\n\n这是一条测试消息，表示 Telegram Bot 配置成功！",
+            "🤖 AskHuman test message\n\nThis is a test message — your Telegram Bot is configured correctly!",
+            "🤖 AskHuman 测试消息\n\n这是一条测试消息，表示 Telegram Bot 配置成功！",
         ),
         "cmd.tgTestSent" => pick(
             lang,
@@ -280,8 +280,8 @@ pub fn tr(lang: Lang, key: &'static str) -> &'static str {
         ),
         "cmd.ddTestRemote" => pick(
             lang,
-            "✅ HumanInLoop DingTalk connection test succeeded",
-            "✅ HumanInLoop 钉钉连接测试成功",
+            "✅ AskHuman DingTalk connection test succeeded",
+            "✅ AskHuman 钉钉连接测试成功",
         ),
         "cmd.ddTestSent" => pick(
             lang,
@@ -309,8 +309,8 @@ pub fn tr(lang: Lang, key: &'static str) -> &'static str {
         ),
         "cmd.fsTestRemote" => pick(
             lang,
-            "✅ HumanInLoop Feishu connection test succeeded",
-            "✅ HumanInLoop 飞书连接测试成功",
+            "✅ AskHuman Feishu connection test succeeded",
+            "✅ AskHuman 飞书连接测试成功",
         ),
         "cmd.fsTestSent" => pick(
             lang,

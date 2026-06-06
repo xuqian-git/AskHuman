@@ -209,7 +209,7 @@ impl FeishuWs {
             .unwrap_or("")
             .to_string();
         let frame_type = frame.header(HEADER_TYPE).to_string();
-        // 诊断：设 HUMANINLOOP_FEISHU_DEBUG=1 时记录每个数据帧的类型，便于确认卡片回调是否到达。
+        // 诊断：设 ASKHUMAN_FEISHU_DEBUG=1 时记录每个数据帧的类型，便于确认卡片回调是否到达。
         debug_log(&format!(
             "[feishu-ws] data frame: type={} event_type={}",
             frame_type, event_type
@@ -368,15 +368,19 @@ fn combine_frag(
     Some(full)
 }
 
-/// 是否开启飞书长连接诊断日志（环境变量 `HUMANINLOOP_FEISHU_DEBUG` 非空且非 "0"）。
+/// 是否开启飞书长连接诊断日志（环境变量 `ASKHUMAN_FEISHU_DEBUG` 非空且非 "0"；
+/// 兼容旧变量名 `HUMANINLOOP_FEISHU_DEBUG`）。
 pub fn debug_enabled() -> bool {
-    std::env::var("HUMANINLOOP_FEISHU_DEBUG")
-        .map(|v| !v.is_empty() && v != "0")
-        .unwrap_or(false)
+    let on = |name: &str| {
+        std::env::var(name)
+            .map(|v| !v.is_empty() && v != "0")
+            .unwrap_or(false)
+    };
+    on("ASKHUMAN_FEISHU_DEBUG") || on("HUMANINLOOP_FEISHU_DEBUG")
 }
 
-/// 诊断日志：写入 `~/.humaninloop/feishu-debug.log`（GUI 模式 stderr 被静默，文件更可靠），
-/// 同时尽力写 stderr。仅当开启 `HUMANINLOOP_FEISHU_DEBUG` 时生效。
+/// 诊断日志：写入 `~/.askhuman/feishu-debug.log`（GUI 模式 stderr 被静默，文件更可靠），
+/// 同时尽力写 stderr。仅当开启 `ASKHUMAN_FEISHU_DEBUG`（或兼容旧 `HUMANINLOOP_FEISHU_DEBUG`）时生效。
 pub fn debug_log(msg: &str) {
     if !debug_enabled() {
         return;

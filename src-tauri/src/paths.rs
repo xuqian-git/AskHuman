@@ -7,19 +7,29 @@ pub fn home() -> PathBuf {
     dirs::home_dir().unwrap_or_else(|| PathBuf::from("."))
 }
 
-/// 配置目录 `~/.humaninloop`。
+/// 配置目录 `~/.askhuman`（写入与读取的规范位置）。
 pub fn config_dir() -> PathBuf {
+    home().join(".askhuman")
+}
+
+/// 旧版配置目录 `~/.humaninloop`（仅用于向后兼容读取）。
+pub fn legacy_config_dir() -> PathBuf {
     home().join(".humaninloop")
 }
 
-/// 配置文件 `~/.humaninloop/config.json`。
+/// 配置文件 `~/.askhuman/config.json`。
 pub fn config_file() -> PathBuf {
     config_dir().join("config.json")
 }
 
-/// 本次请求的图片落盘目录 `temp/humaninloop/<request_id>/`。
+/// 旧版配置文件 `~/.humaninloop/config.json`（仅用于向后兼容读取）。
+pub fn legacy_config_file() -> PathBuf {
+    legacy_config_dir().join("config.json")
+}
+
+/// 本次请求的图片落盘目录 `temp/askhuman/<request_id>/`。
 pub fn request_temp_dir(request_id: &str) -> PathBuf {
-    std::env::temp_dir().join("humaninloop").join(request_id)
+    std::env::temp_dir().join("askhuman").join(request_id)
 }
 
 /// Cursor 目录 `~/.cursor`。
@@ -32,7 +42,12 @@ pub fn cursor_hooks_json() -> PathBuf {
     cursor_dir().join("hooks.json")
 }
 
-/// `~/.cursor/hooks/humaninloop-timeout.sh`。
+/// `~/.cursor/hooks/askhuman-timeout.sh`。
 pub fn cursor_hook_script() -> PathBuf {
+    cursor_dir().join("hooks").join("askhuman-timeout.sh")
+}
+
+/// 旧版 hook 脚本 `~/.cursor/hooks/humaninloop-timeout.sh`（仅用于向后兼容清理）。
+pub fn legacy_cursor_hook_script() -> PathBuf {
     cursor_dir().join("hooks").join("humaninloop-timeout.sh")
 }

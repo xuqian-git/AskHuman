@@ -1,7 +1,7 @@
 "use strict";
 
 // 解析当前平台的 AskHuman 二进制路径，供下游程序集成调用。
-// 解析顺序：环境变量 HUMANINLOOP_BINARY → 平台子包 → 系统 PATH。
+// 解析顺序：环境变量 ASKHUMAN_BINARY（兼容旧 HUMANINLOOP_BINARY）→ 平台子包 → 系统 PATH。
 
 const fs = require("fs");
 const path = require("path");
@@ -39,7 +39,7 @@ function isExecutableFile(p) {
 }
 
 function fromEnv() {
-  const p = process.env.HUMANINLOOP_BINARY;
+  const p = process.env.ASKHUMAN_BINARY || process.env.HUMANINLOOP_BINARY;
   return p && fs.existsSync(p) ? p : null;
 }
 

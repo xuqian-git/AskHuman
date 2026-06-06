@@ -1,4 +1,5 @@
-//! 应用配置：`~/.humaninloop/config.json` 读写、默认值、容错解码。
+//! 应用配置：`~/.askhuman/config.json` 读写、默认值、容错解码。
+//! 读取时若新位置缺失则回退旧 `~/.humaninloop/config.json`（向后兼容）。
 
 use crate::paths;
 use serde::{Deserialize, Serialize};
@@ -219,9 +220,18 @@ impl AppConfig {
         Ok(())
     }
 
-    /// 读取默认位置 `~/.humaninloop/config.json`。
+    /// 读取默认位置 `~/.askhuman/config.json`；新位置缺失时回退旧
+    /// `~/.humaninloop/config.json`（向后兼容老用户）。
     pub fn load() -> Self {
-        Self::load_from(&paths::config_file())
+        let primary = paths::config_file();
+        if primary.exists() {
+            return Self::load_from(&primary);
+        }
+        let legacy = paths::legacy_config_file();
+        if legacy.exists() {
+            return Self::load_from(&legacy);
+        }
+        Self::default()
     }
 
     /// 写入默认位置。

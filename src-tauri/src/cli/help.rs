@@ -125,7 +125,7 @@ pub fn agent_help_text(lang: Lang) -> String {
 }
 
 pub fn version_text() -> String {
-    format!("HumanInLoop v{}", env!("CARGO_PKG_VERSION"))
+    format!("AskHuman v{}", env!("CARGO_PKG_VERSION"))
 }
 
 #[cfg(test)]

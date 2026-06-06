@@ -6,12 +6,15 @@ use anyhow::{Context, Result};
 use serde_json::{json, Value};
 
 /// 识别本应用条目的标记（脚本文件名）。
-pub const MARKER: &str = "humaninloop-timeout.sh";
+pub const MARKER: &str = "askhuman-timeout.sh";
+
+/// 旧版标记，用于识别 / 清理历史安装（向后兼容）。
+pub const LEGACY_MARKER: &str = "humaninloop-timeout.sh";
 
 /// 钩子脚本内容（安装时写入并 chmod 0755）。grep 正则与 Swift 版逐字一致。
 pub const SCRIPT_CONTENT: &str = r##"#!/usr/bin/env bash
-# humaninloop-timeout.sh
-# 由 HumanInLoop 自动安装 / 移除，请勿手动编辑。
+# askhuman-timeout.sh
+# 由 AskHuman 自动安装 / 移除，请勿手动编辑。
 #
 # 作用：作为 Cursor 的 preToolUse 钩子，检测 Shell 工具调用是否会执行 AskHuman
 # 命令；命中时将工具调用 timeout 提升至 24 小时（86400000ms），防止等待用户回应
@@ -104,6 +107,11 @@ pub fn uninstall() -> Result<String> {
     if script.exists() {
         let _ = std::fs::remove_file(&script);
     }
+    // 向后兼容：清理旧版脚本文件。
+    let legacy = paths::legacy_cursor_hook_script();
+    if legacy.exists() {
+        let _ = std::fs::remove_file(&legacy);
+    }
     let lang = crate::i18n::Lang::current();
     Ok(crate::i18n::tr(lang, "cmd.hookRemoved").to_string())
 }
@@ -139,7 +147,7 @@ fn entry_has_marker(entry: &Value) -> bool {
     entry
         .get("command")
         .and_then(|c| c.as_str())
-        .map(|c| c.contains(MARKER))
+        .map(|c| c.contains(MARKER) || c.contains(LEGACY_MARKER))
         .unwrap_or(false)
 }
 
@@ -221,7 +229,22 @@ fn atomic_write(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
 mod tests {
     use super::*;
 
-    const SCRIPT: &str = "/home/u/.cursor/hooks/humaninloop-timeout.sh";
+    const SCRIPT: &str = "/home/u/.cursor/hooks/askhuman-timeout.sh";
+    const LEGACY_SCRIPT: &str = "/home/u/.cursor/hooks/humaninloop-timeout.sh";
+
+    #[test]
+    fn recognizes_legacy_marker() {
+        // 旧版安装应被识别（向后兼容）：重装时替换、卸载时移除。
+        let root = json!({
+            "version": 1,
+            "hooks": { "preToolUse": [ { "command": LEGACY_SCRIPT, "matcher": "Shell" } ] }
+        });
+        assert!(has_marker(&root));
+        let upserted = upsert_entry(root, SCRIPT);
+        let arr = upserted["hooks"]["preToolUse"].as_array().unwrap();
+        assert_eq!(arr.len(), 1, "旧条目应被替换而非新增");
+        assert_eq!(arr[0]["command"], SCRIPT);
+    }
 
     #[test]
     fn upsert_then_has_marker() {

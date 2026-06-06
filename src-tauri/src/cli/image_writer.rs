@@ -8,7 +8,7 @@ use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
 use std::path::Path;
 
-/// 把某个问题的图片落盘到 `temp/humaninloop/<request_id>/q<question_index+1>/`，返回绝对路径列表。
+/// 把某个问题的图片落盘到 `temp/askhuman/<request_id>/q<question_index+1>/`，返回绝对路径列表。
 ///
 /// 按问题划分子目录，避免多问题间 `img-1.png` 等默认文件名相互覆盖。
 /// 错误文案按 `lang` 本地化。
