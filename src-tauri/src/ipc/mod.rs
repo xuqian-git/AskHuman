@@ -78,6 +78,26 @@ pub struct TaskRequest {
     pub lang: String,
 }
 
+/// 自动识别 userId/open_id 请求（设置进程 → Daemon，Q6）：用表单当前凭据，
+/// 等用户私聊机器人发送识别码后返回其 id。Daemon 若已有同 `app_key` 的活动长连接则**观察现有连接**
+/// （零冲突），否则自行临时开一条连接完成识别。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DetectRequest {
+    /// 渠道类型："dingtalk" | "feishu"。
+    pub kind: String,
+    /// 钉钉 client_id / 飞书 app_id（也是「是否复用现有连接」的匹配键）。
+    pub app_key: String,
+    /// 钉钉 client_secret / 飞书 app_secret。
+    pub app_secret: String,
+    /// 飞书自定义 base_url（钉钉忽略，可传空）。
+    pub base_url: String,
+    /// 用户需私聊发送的识别码。
+    pub code: String,
+    /// 设置进程解析好的界面语言（"en" / "zh"），供 Daemon 本地化超时/断连等提示。
+    pub lang: String,
+}
+
 /// Daemon → GUI Helper 的题目下发（show 是 submit 的子集 + Daemon 分配的 request_id + 上下文）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -105,6 +125,8 @@ pub enum ClientMsg {
     Submit(TaskRequest),
     /// GUI Helper 握手：出示 Daemon 下发的一次性 token。
     GuiHello { token: String },
+    /// 设置进程请求「自动识别 userId/open_id」（Q6）。握手后发送，阻塞等单个结果。
+    Detect(DetectRequest),
     /// GUI Helper 回传用户作答（`action` 区分发送/取消）。
     Answer {
         request_id: String,
@@ -128,6 +150,8 @@ pub enum ServerMsg {
     Warn { text: String },
     /// 终态：渲染好的结果文本 + 退出码（D→CLI）。CLI 原样打印 stdout 后按码退出。
     Final { stdout: String, exit_code: i32 },
+    /// 自动识别成功，回带识别出的 userId/open_id（D→设置进程，Q6）。失败用 `Error`。
+    Detected { id: String },
     /// 下发题目（D→GUI）。
     Show(ShowPayload),
     /// 被其它渠道抢答，通知 GUI 收尾关窗（D→GUI）。

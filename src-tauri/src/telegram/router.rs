@@ -53,6 +53,8 @@ pub struct TgRouter {
     /// 活动序号源（跨会话单调递增，决定「最新活动卡片」）。
     next_seq: Arc<AtomicU64>,
     alive: Arc<AtomicBool>,
+    /// 长轮询任务句柄；`Arc` 被全部丢弃（如单进程会话结束）时 abort，停止轮询。
+    task: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl TgRouter {
@@ -65,13 +67,14 @@ impl TgRouter {
         )
         .map_err(|e| e.to_string())?;
         let routes = Arc::new(Mutex::new(Routes::default()));
-        tokio::spawn(reader_task(client, routes.clone()));
+        let task = tokio::spawn(reader_task(client, routes.clone()));
         Ok(Arc::new(Self {
             routes,
             next_route: AtomicU64::new(1),
             next_seq: Arc::new(AtomicU64::new(1)),
             // Telegram 长轮询会自愈瞬时错误、永不「正常结束」，故恒为存活（无需重连）。
             alive: Arc::new(AtomicBool::new(true)),
+            task: Mutex::new(Some(task)),
         }))
     }
 
@@ -90,6 +93,14 @@ impl TgRouter {
             routes: self.routes.clone(),
             seq: self.next_seq.clone(),
             rx,
+        }
+    }
+}
+
+impl Drop for TgRouter {
+    fn drop(&mut self) {
+        if let Some(h) = self.task.lock().unwrap().take() {
+            h.abort();
         }
     }
 }

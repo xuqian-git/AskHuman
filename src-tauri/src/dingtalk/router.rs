@@ -40,9 +40,12 @@ struct Routes {
 
 /// 进程内钉钉 Router（`Arc` 共享）。
 pub struct DdRouter {
+    client_id: String,
     routes: Arc<Mutex<Routes>>,
     next_route: AtomicU64,
     alive: Arc<AtomicBool>,
+    /// Reader 任务句柄；`Arc` 被全部丢弃（如临时识别连接）时 abort，及时关闭底层连接。
+    task: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl DdRouter {
@@ -63,12 +66,19 @@ impl DdRouter {
         .map_err(|e| e.to_string())?;
         let routes = Arc::new(Mutex::new(Routes::default()));
         let alive = Arc::new(AtomicBool::new(true));
-        tokio::spawn(reader_task(stream, routes.clone(), alive.clone()));
+        let task = tokio::spawn(reader_task(stream, routes.clone(), alive.clone()));
         Ok(Arc::new(Self {
+            client_id: client_id.to_string(),
             routes,
             next_route: AtomicU64::new(1),
             alive,
+            task: Mutex::new(Some(task)),
         }))
+    }
+
+    /// 本 Router 绑定的 client_id（用作「自动识别」是否复用现有连接的匹配键）。
+    pub fn client_id(&self) -> &str {
+        &self.client_id
     }
 
     /// 连接是否仍然存活（Reader 任务未退出）。
@@ -94,6 +104,14 @@ impl DdRouter {
         let (tx, rx) = unbounded_channel();
         self.routes.lock().unwrap().observers.push(tx);
         rx
+    }
+}
+
+impl Drop for DdRouter {
+    fn drop(&mut self) {
+        if let Some(h) = self.task.lock().unwrap().take() {
+            h.abort();
+        }
     }
 }
 

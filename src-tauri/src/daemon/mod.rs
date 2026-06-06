@@ -37,7 +37,8 @@ mod unix_impl {
     use crate::telegram::router::TgRouter;
     use crate::i18n::Lang;
     use crate::ipc::{
-        self, transport, ClientMsg, HelloAck, HelloStatus, ServerMsg, StatusInfo, TaskRequest,
+        self, transport, ClientMsg, DetectRequest, HelloAck, HelloStatus, ServerMsg, StatusInfo,
+        TaskRequest,
     };
     use crate::models::{ChannelResult, ChannelAction};
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -304,6 +305,8 @@ mod unix_impl {
                 }
                 ClientMsg::Submit(task) => return Control::Submit(task),
                 ClientMsg::GuiHello { token } => return Control::Gui(token),
+                // 自动识别（Q6）：就地处理（可能阻塞至多 120s 等用户发码），完成后回结果继续循环。
+                ClientMsg::Detect(req) => handle_detect(&req, state, w).await,
                 // Answer 只应在 GUI 接管阶段出现；控制阶段收到即忽略。
                 ClientMsg::Answer { .. } => {}
             }
@@ -647,6 +650,167 @@ mod unix_impl {
         }
 
         attached
+    }
+
+    /// 处理「自动识别 userId/open_id」（Q6）：观察现有同 app_key 的长连接，否则临时开连完成识别。
+    /// 结果经 `Detected`（成功）/ `Error`（失败，已本地化）回设置进程。
+    async fn handle_detect(req: &DetectRequest, state: &Arc<ServerState>, w: &mut OwnedWriteHalf) {
+        let lang = Lang::resolve(&req.lang);
+        let result = match req.kind.as_str() {
+            "dingtalk" => detect_dingtalk(state, req, lang).await,
+            "feishu" => detect_feishu(state, req, lang).await,
+            other => Err(format!("unknown detect kind: {}", other)),
+        };
+        let msg = match result {
+            Ok(id) => ServerMsg::Detected { id },
+            Err(message) => ServerMsg::Error { message },
+        };
+        let _ = ipc::write_msg(w, &msg).await;
+    }
+
+    /// 钉钉识别：优先观察现有同 client_id 的活动连接（零冲突），否则临时开连。
+    async fn detect_dingtalk(
+        state: &Arc<ServerState>,
+        req: &DetectRequest,
+        lang: Lang,
+    ) -> Result<String, String> {
+        let code = req.code.trim().to_string();
+        if code.is_empty() {
+            return Err(crate::i18n::tr(lang, "cmd.detectCodeInvalid").to_string());
+        }
+        // 复用：已有同 client_id 的活动 Router → 观察现有连接（忽略表单 secret）。
+        let existing = {
+            let guard = state.dd_router.lock().await;
+            match guard.as_ref() {
+                Some(r) if r.is_alive() && r.client_id() == req.app_key.trim() => {
+                    Some(r.observe_bot())
+                }
+                _ => None,
+            }
+        };
+        if let Some(mut rx) = existing {
+            return wait_dd_code(&mut rx, &code, lang).await;
+        }
+        // 否则 daemon 自行临时开连；完成后 drop（Drop 中止 reader、关闭连接，零泄漏）。
+        let router = DdRouter::connect(req.app_key.trim(), req.app_secret.trim()).await?;
+        let mut rx = router.observe_bot();
+        let out = wait_dd_code(&mut rx, &code, lang).await;
+        drop(rx);
+        drop(router);
+        out
+    }
+
+    /// 等钉钉单聊文本内容等于识别码的消息，返回 senderStaffId；120s 超时。
+    async fn wait_dd_code(
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<serde_json::Value>,
+        code: &str,
+        lang: Lang,
+    ) -> Result<String, String> {
+        let deadline = Instant::now() + Duration::from_secs(120);
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(crate::i18n::tr(lang, "cmd.detectTimeout").to_string());
+            }
+            match tokio::time::timeout(remaining, rx.recv()).await {
+                Ok(Some(data)) => {
+                    let content = data
+                        .get("text")
+                        .and_then(|t| t.get("content"))
+                        .and_then(|c| c.as_str())
+                        .unwrap_or("")
+                        .trim();
+                    if content == code {
+                        if let Some(sender) = data.get("senderStaffId").and_then(|v| v.as_str()) {
+                            return Ok(sender.to_string());
+                        }
+                    }
+                }
+                Ok(None) => return Err(crate::i18n::tr(lang, "cmd.streamDisconnected").to_string()),
+                Err(_) => return Err(crate::i18n::tr(lang, "cmd.detectTimeout").to_string()),
+            }
+        }
+    }
+
+    /// 飞书识别：优先观察现有同 app_id 的活动连接（零冲突），否则临时开连。
+    async fn detect_feishu(
+        state: &Arc<ServerState>,
+        req: &DetectRequest,
+        lang: Lang,
+    ) -> Result<String, String> {
+        let code = req.code.trim().to_string();
+        if code.is_empty() {
+            return Err(crate::i18n::tr(lang, "cmd.detectCodeInvalid").to_string());
+        }
+        let existing = {
+            let guard = state.fs_router.lock().await;
+            match guard.as_ref() {
+                Some(r) if r.is_alive() && r.app_id() == req.app_key.trim() => {
+                    Some(r.observe_message())
+                }
+                _ => None,
+            }
+        };
+        if let Some(mut rx) = existing {
+            return wait_fs_code(&mut rx, &code, lang).await;
+        }
+        let cfg = crate::config::FeishuChannelConfig {
+            enabled: true,
+            app_id: req.app_key.trim().to_string(),
+            app_secret: req.app_secret.trim().to_string(),
+            open_id: String::new(),
+            base_url: req.base_url.trim().to_string(),
+        };
+        let router = FsRouter::connect(&cfg).await?;
+        let mut rx = router.observe_message();
+        let out = wait_fs_code(&mut rx, &code, lang).await;
+        drop(rx);
+        drop(router);
+        out
+    }
+
+    /// 等飞书单聊文本内容等于识别码的消息，返回发送者 open_id；120s 超时。
+    async fn wait_fs_code(
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<serde_json::Value>,
+        code: &str,
+        lang: Lang,
+    ) -> Result<String, String> {
+        let deadline = Instant::now() + Duration::from_secs(120);
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(crate::i18n::tr(lang, "cmd.detectTimeout").to_string());
+            }
+            match tokio::time::timeout(remaining, rx.recv()).await {
+                Ok(Some(event)) => {
+                    if let Some((open_id, text)) = fs_text_and_sender(&event) {
+                        if text.trim() == code {
+                            return Ok(open_id);
+                        }
+                    }
+                }
+                Ok(None) => return Err(crate::i18n::tr(lang, "cmd.streamDisconnected").to_string()),
+                Err(_) => return Err(crate::i18n::tr(lang, "cmd.detectTimeout").to_string()),
+            }
+        }
+    }
+
+    /// 从飞书 im.message.receive_v1 的 event 取 (发送者 open_id, 文本)。非文本消息返回 None。
+    fn fs_text_and_sender(event: &serde_json::Value) -> Option<(String, String)> {
+        let open_id = event
+            .get("sender")
+            .and_then(|s| s.get("sender_id"))
+            .and_then(|i| i.get("open_id"))
+            .and_then(|v| v.as_str())?
+            .to_string();
+        let message = event.get("message")?;
+        if message.get("message_type").and_then(|v| v.as_str()) != Some("text") {
+            return None;
+        }
+        let content_str = message.get("content").and_then(|v| v.as_str()).unwrap_or("{}");
+        let content: serde_json::Value = serde_json::from_str(content_str).ok()?;
+        let text = content.get("text").and_then(|v| v.as_str())?.to_string();
+        Some((open_id, text))
     }
 
     /// spawn 一个 GUI Helper 进程（`AskHuman --popup --endpoint <sock> --token <tok>`）。

@@ -38,9 +38,12 @@ struct Routes {
 
 /// 进程内飞书 Router（`Arc` 共享）。
 pub struct FsRouter {
+    app_id: String,
     routes: Arc<Mutex<Routes>>,
     next_route: AtomicU64,
     alive: Arc<AtomicBool>,
+    /// Reader 任务句柄；`Arc` 被全部丢弃（如临时识别连接）时 abort，及时关闭底层连接。
+    task: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl FsRouter {
@@ -48,6 +51,7 @@ impl FsRouter {
     /// 仅需 app_id/secret/base_url（不需 open_id，便于「自动识别」复用）。
     pub async fn connect(config: &FeishuChannelConfig) -> Result<Arc<Self>, String> {
         let client = FeishuClient::new(config).map_err(|e| e.to_string())?;
+        let app_id = client.app_id().to_string();
         let ws = FeishuWs::connect(
             client.http().clone(),
             client.base_url(),
@@ -58,12 +62,19 @@ impl FsRouter {
         .map_err(|e| e.to_string())?;
         let routes = Arc::new(Mutex::new(Routes::default()));
         let alive = Arc::new(AtomicBool::new(true));
-        tokio::spawn(reader_task(ws, routes.clone(), alive.clone()));
+        let task = tokio::spawn(reader_task(ws, routes.clone(), alive.clone()));
         Ok(Arc::new(Self {
+            app_id,
             routes,
             next_route: AtomicU64::new(1),
             alive,
+            task: Mutex::new(Some(task)),
         }))
+    }
+
+    /// 本 Router 绑定的 app_id（用作「自动识别」是否复用现有连接的匹配键）。
+    pub fn app_id(&self) -> &str {
+        &self.app_id
     }
 
     /// 连接是否仍然存活（Reader 任务未退出）。
@@ -88,6 +99,14 @@ impl FsRouter {
         let (tx, rx) = unbounded_channel();
         self.routes.lock().unwrap().observers.push(tx);
         rx
+    }
+}
+
+impl Drop for FsRouter {
+    fn drop(&mut self) {
+        if let Some(h) = self.task.lock().unwrap().take() {
+            h.abort();
+        }
     }
 }
 

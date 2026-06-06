@@ -5,7 +5,9 @@
 
 use crate::daemon::lifecycle;
 use crate::daemon::spawn;
-use crate::ipc::{self, transport, ClientHello, ClientMsg, HelloStatus, ServerMsg, StatusInfo};
+use crate::ipc::{
+    self, transport, ClientHello, ClientMsg, DetectRequest, HelloStatus, ServerMsg, StatusInfo,
+};
 use std::io::{Error, ErrorKind};
 use std::time::{Duration, Instant};
 use tokio::io::BufReader;
@@ -103,6 +105,39 @@ pub async fn wait_until_down(max: Duration) {
             return;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// 请求 Daemon 执行「自动识别 userId/open_id」（Q6）。
+///
+/// 返回语义（供设置进程决定是否回退到进程内临时连接）：
+/// - `None`：**无法接通 Daemon**（自启失败 / 握手失败）→ 调用方可回退进程内识别。
+/// - `Some(Ok(id))`：识别成功。
+/// - `Some(Err(msg))`：Daemon 已执行识别但失败（超时 / 断连）→ 调用方**不应**回退（避免再开冲突连接）。
+pub async fn request_detect(req: DetectRequest) -> Option<Result<String, String>> {
+    if ensure_running().await.is_err() {
+        return None;
+    }
+    let (mut reader, mut writer) = connect_split().await.ok()?;
+    if ipc::write_msg(&mut writer, &ClientMsg::Hello(hello())).await.is_err() {
+        return None;
+    }
+    match ipc::read_msg::<_, ServerMsg>(&mut reader).await {
+        Ok(Some(ServerMsg::HelloAck(ack))) if ack.status == HelloStatus::Ok => {}
+        // 换新中或握手异常：视作暂不可接通，让调用方回退。
+        _ => return None,
+    }
+    // 握手 OK 后发 Detect；此后的失败都视作「Daemon 已接管」的结果，不再回退。
+    if ipc::write_msg(&mut writer, &ClientMsg::Detect(req)).await.is_err() {
+        return Some(Err("failed to send detect request".to_string()));
+    }
+    loop {
+        match ipc::read_msg::<_, ServerMsg>(&mut reader).await {
+            Ok(Some(ServerMsg::Detected { id })) => return Some(Ok(id)),
+            Ok(Some(ServerMsg::Error { message })) => return Some(Err(message)),
+            Ok(Some(_)) => continue,
+            Ok(None) | Err(_) => return Some(Err("daemon connection lost".to_string())),
+        }
     }
 }
 

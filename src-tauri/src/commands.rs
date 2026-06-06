@@ -499,6 +499,24 @@ pub async fn dingtalk_detect_wait(args: DingTalkWaitArgs) -> Result<String, Stri
     if code.is_empty() {
         return Err(crate::i18n::tr(lang, "cmd.detectCodeInvalid").to_string());
     }
+
+    // Q6：经 Daemon 长连接识别（避免与 Daemon 单连接冲突）。Daemon 接管即用其结果；
+    // 接不通 Daemon 才回退进程内临时连接（非 Unix 无 Daemon，直接走回退）。
+    #[cfg(unix)]
+    {
+        let req = crate::ipc::DetectRequest {
+            kind: "dingtalk".to_string(),
+            app_key: client_id.to_string(),
+            app_secret: client_secret.to_string(),
+            base_url: String::new(),
+            code: code.clone(),
+            lang: lang.code().to_string(),
+        };
+        if let Some(result) = crate::client::request_detect(req).await {
+            return result;
+        }
+    }
+
     let http = reqwest::Client::new();
     let mut stream = StreamConn::connect(http, client_id, client_secret, &[TOPIC_BOT_MESSAGE])
         .await
@@ -619,6 +637,23 @@ pub async fn feishu_detect_wait(args: FeishuWaitArgs) -> Result<String, String> 
         return Err(crate::i18n::tr(lang, "cmd.detectCodeInvalid").to_string());
     }
     let base_url = effective_feishu_base(&args.base_url);
+
+    // Q6：经 Daemon 长连接识别（见钉钉同段说明）。
+    #[cfg(unix)]
+    {
+        let req = crate::ipc::DetectRequest {
+            kind: "feishu".to_string(),
+            app_key: app_id.to_string(),
+            app_secret: app_secret.to_string(),
+            base_url: base_url.clone(),
+            code: code.clone(),
+            lang: lang.code().to_string(),
+        };
+        if let Some(result) = crate::client::request_detect(req).await {
+            return result;
+        }
+    }
+
     let http = reqwest::Client::new();
     let mut ws = FeishuWs::connect(http, &base_url, app_id, app_secret)
         .await
