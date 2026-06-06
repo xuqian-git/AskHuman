@@ -76,3 +76,7 @@ Configuration is stored at `~/.askhuman/config.json` and managed by the settings
 ## Development
 
 For local build, test, and release workflow, see the [development guide](docs/development.md).
+
+## License
+
+[MIT](LICENSE) © Naituw

@@ -76,3 +76,7 @@ if (isAvailable()) {
 ## 开发
 
 本地构建、测试与发布流程见[开发文档](docs/development.md)（English）。
+
+## 许可
+
+[MIT](LICENSE) © Naituw
