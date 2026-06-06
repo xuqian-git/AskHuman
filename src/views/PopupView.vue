@@ -189,6 +189,19 @@ function openFile(file: FileAttachment) {
   openPath(file.path).catch(() => {});
 }
 
+// 渲染后的 Markdown 里的链接：用系统默认浏览器打开，避免在弹窗 webview 内跳转。
+function onContentClick(e: MouseEvent) {
+  const anchor = (e.target as HTMLElement | null)?.closest?.("a") as
+    | HTMLAnchorElement
+    | null;
+  if (!anchor) return;
+  const href = anchor.href;
+  if (!/^(https?:|mailto:)/i.test(href)) return;
+  e.preventDefault();
+  e.stopPropagation();
+  openPath(href).catch(() => {});
+}
+
 function focusAttachment(index: number) {
   selectedFile.value = index;
   attRefs.value[index]?.focus();
@@ -942,6 +955,7 @@ onBeforeUnmount(() => {
           v-if="messageText && request.isMarkdown"
           class="markdown-body"
           v-html="messageHtml"
+          @click="onContentClick"
         ></div>
         <pre v-else-if="messageText" class="plain-body">{{ messageText }}</pre>
 
@@ -1005,6 +1019,7 @@ onBeforeUnmount(() => {
             v-if="request.isMarkdown && currentQuestion?.message"
             class="markdown-body"
             v-html="renderedHtml"
+            @click="onContentClick"
           ></div>
           <pre v-else-if="currentQuestion?.message" class="plain-body">{{ currentQuestion?.message }}</pre>
 
