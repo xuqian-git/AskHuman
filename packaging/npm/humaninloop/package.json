@@ -4,10 +4,10 @@
   "description": "Human-in-the-loop interaction tool. The `AskHuman` CLI pops up a window (or uses Telegram) to collect human input and prints the result to stdout — usable standalone or as a dependency.",
   "license": "MIT",
   "author": "Naituw",
-  "homepage": "https://github.com/Naituw/HumanInLoop",
+  "homepage": "https://github.com/Naituw/AskHuman",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Naituw/HumanInLoop.git"
+    "url": "git+https://github.com/Naituw/AskHuman.git"
   },
   "type": "commonjs",
   "main": "index.js",

@@ -20,7 +20,7 @@
 npm i -g askhuman
 ```
 
-也可从 [GitHub Releases](https://github.com/Naituw/HumanInLoop/releases) 下载对应平台压缩包，解压后把 `AskHuman` 放入 `PATH`。从源码构建见[开发文档](docs/development.md)。
+也可从 [GitHub Releases](https://github.com/Naituw/AskHuman/releases) 下载对应平台压缩包，解压后把 `AskHuman` 放入 `PATH`。从源码构建见[开发文档](docs/development.md)。
 
 > Linux 运行 GUI 弹窗需系统具备 WebKitGTK（如 `libwebkit2gtk-4.1`）；缺失且配置了会话型渠道时会自动改走该渠道。
 

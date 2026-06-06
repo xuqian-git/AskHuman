@@ -20,7 +20,7 @@ A cross-platform human-in-the-loop tool. When an AI agent is about to end a conv
 npm i -g askhuman
 ```
 
-You can also download a platform archive from [GitHub Releases](https://github.com/Naituw/HumanInLoop/releases), extract it, and put `AskHuman` on your `PATH`. To build from source, see the [development guide](docs/development.md).
+You can also download a platform archive from [GitHub Releases](https://github.com/Naituw/AskHuman/releases), extract it, and put `AskHuman` on your `PATH`. To build from source, see the [development guide](docs/development.md).
 
 > Running the GUI popup on Linux needs system WebKitGTK (e.g. `libwebkit2gtk-4.1`); if it's missing and a session-based channel is configured, AskHuman uses that channel automatically.
 

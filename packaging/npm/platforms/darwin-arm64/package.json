@@ -4,10 +4,10 @@
   "description": "macOS arm64 binary for humaninloop (AskHuman). Installed automatically as an optional dependency of `humaninloop`.",
   "license": "MIT",
   "author": "Naituw",
-  "homepage": "https://github.com/Naituw/HumanInLoop",
+  "homepage": "https://github.com/Naituw/AskHuman",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Naituw/HumanInLoop.git"
+    "url": "git+https://github.com/Naituw/AskHuman.git"
   },
   "os": [
     "darwin"
