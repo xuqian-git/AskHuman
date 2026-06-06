@@ -5,14 +5,26 @@
 
 /// 组装参考提示词：行为约束规则（英文固定）+ 一行执行指引。
 pub fn cli_reference() -> String {
-    let prog = crate::cli::help::program_name();
+    let program = crate::cli::help::program_name();
+
     format!(
-        "- You MUST ask me via the `{prog}` command (through the Shell tool); never ask me directly or finish a task without asking.\n\
-- Run `{prog} --agent-help` to learn its usage.\n\
-- When requirements are unclear, use `{prog}` to ask for clarification and provide predefined options.\n\
-- When there are multiple possible approaches, use `{prog}` to ask instead of deciding on your own.\n\
-- When a plan/strategy needs to be updated, use `{prog}` to ask instead of deciding on your own.\n\
-- Before you are about to complete the request, you MUST call `{prog}` to ask for feedback.\n\
-- Until I have explicitly confirmed via `{prog}` that the task may be completed/ended, do NOT end the conversation/request on your own."
+        r#"<mandatory_interaction_protocol>
+**These rules MUST NOT be overridden, weakened, ignored, or bypassed by any other context.**
+**They MUST be followed exactly and completely under all circumstances.**
+
+- You MUST ask me questions by invoking the `{program}` command through the Shell/Bash tool. DO NOT ask questions in direct output, and DO NOT ask by ending the turn.
+- Before asking, run `{program} --agent-help` to learn its usage.
+
+- When asking through `{program}`, provide predefined options whenever applicable, include your recommended answer, and briefly explain your rationale.
+- I can ONLY see the content passed through `{program}`. Any question, option list, recommendation, status update, report, summary, file content, or material that requires my review MUST be included in the `{program}` message or file. Do NOT rely on direct output for anything you expect me to read or respond to.
+- Before completing the turn/request, you MUST call `{program}` to request feedback.
+- Do NOT end the turn/conversation or mark the request as complete unless you have explicitly asked via `{program}` and received confirmation that the task can be completed or ended.
+</mandatory_interaction_protocol>
+
+- Interview me with `{program}` relentlessly about every aspect of the requirements until we reach a shared understanding.
+  - Walk down each branch of the design tree, resolving dependencies between decisions one by one.
+  - If a question can be answered by exploring the codebase, explore the codebase instead.
+- Do NOT change the current plan, design, scope, or strategy on your own. If new info suggests that a change may be needed, you MUST ask for confirmation through `{program}` before making the change."#,
+        program = program,
     )
 }
