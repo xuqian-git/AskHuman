@@ -26,7 +26,8 @@ const HEADER_TYPE: &str = "type";
 const HEADER_MESSAGE_ID: &str = "message_id";
 const HEADER_SUM: &str = "sum";
 const HEADER_SEQ: &str = "seq";
-const MSG_TYPE_EVENT: &str = "event";
+// 帧 `type` header 取值："event" / "card" / "ping" / "pong"。业务路由以回包内 header.event_type
+// 为准（卡片回调实测可能以 type=event 投递），仅把 MSG_TYPE_CARD 作为兜底。
 const MSG_TYPE_CARD: &str = "card";
 const MSG_TYPE_PING: &str = "ping";
 const FRAME_CONTROL: i32 = 0;
@@ -184,7 +185,6 @@ impl FeishuWs {
             return None;
         }
 
-        let typ = frame.header(HEADER_TYPE).to_string();
         let msg_id = frame.header(HEADER_MESSAGE_ID).to_string();
         let sum: usize = frame.header(HEADER_SUM).parse().unwrap_or(1);
         let seq: usize = frame.header(HEADER_SEQ).parse().unwrap_or(0);
@@ -200,34 +200,37 @@ impl FeishuWs {
         };
 
         let value: Value = serde_json::from_slice(&payload).ok()?;
-        match typ.as_str() {
-            MSG_TYPE_EVENT => {
-                // 事件：立即空 ACK 再上抛。
-                self.respond_ack(&frame).await;
-                let event_type = value
-                    .get("header")
-                    .and_then(|h| h.get("event_type"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                if event_type == "im.message.receive_v1" {
-                    return Some(WsEvent::Message(
-                        value.get("event").cloned().unwrap_or(Value::Null),
-                    ));
-                }
-                None
-            }
-            MSG_TYPE_CARD => {
-                // 卡片回调：延迟 ACK——由上层算出回包后调 respond_*（须 3 秒内）。
-                Some(WsEvent::CardAction {
-                    data: value.get("event").cloned().unwrap_or(Value::Null),
-                    frame,
-                })
-            }
-            _ => {
-                self.respond_ack(&frame).await;
-                None
-            }
+        // 业务路由以 JSON 内的 header.event_type 为准（权威），不依赖帧 `type` header——
+        // 卡片回调可能以 type="card" 或 type="event" 投递，统一按 event_type 分发更稳。
+        let event_type = value
+            .get("header")
+            .and_then(|h| h.get("event_type"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let frame_type = frame.header(HEADER_TYPE).to_string();
+        // 诊断：设 HUMANINLOOP_FEISHU_DEBUG=1 时记录每个数据帧的类型，便于确认卡片回调是否到达。
+        debug_log(&format!(
+            "[feishu-ws] data frame: type={} event_type={}",
+            frame_type, event_type
+        ));
+
+        if event_type == "card.action.trigger" || frame_type == MSG_TYPE_CARD {
+            // 卡片回调：延迟 ACK——由上层算出回包后调 respond_*（须 3 秒内）。
+            return Some(WsEvent::CardAction {
+                data: value.get("event").cloned().unwrap_or(Value::Null),
+                frame,
+            });
         }
+
+        // 其余事件：立即空 ACK 再按需上抛。
+        self.respond_ack(&frame).await;
+        if event_type == "im.message.receive_v1" {
+            return Some(WsEvent::Message(
+                value.get("event").cloned().unwrap_or(Value::Null),
+            ));
+        }
+        None
     }
 
     /// 空 ACK（事件 / 非匹配卡片）：回 `{"code":200}`。
@@ -363,6 +366,33 @@ fn combine_frag(
     let full: Vec<u8> = slots.iter().flatten().flatten().copied().collect();
     frag.remove(msg_id);
     Some(full)
+}
+
+/// 是否开启飞书长连接诊断日志（环境变量 `HUMANINLOOP_FEISHU_DEBUG` 非空且非 "0"）。
+pub fn debug_enabled() -> bool {
+    std::env::var("HUMANINLOOP_FEISHU_DEBUG")
+        .map(|v| !v.is_empty() && v != "0")
+        .unwrap_or(false)
+}
+
+/// 诊断日志：写入 `~/.humaninloop/feishu-debug.log`（GUI 模式 stderr 被静默，文件更可靠），
+/// 同时尽力写 stderr。仅当开启 `HUMANINLOOP_FEISHU_DEBUG` 时生效。
+pub fn debug_log(msg: &str) {
+    if !debug_enabled() {
+        return;
+    }
+    use std::io::Write;
+    let dir = crate::paths::config_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("feishu-debug.log");
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let _ = writeln!(f, "[{}] {}", ts, msg);
+    }
+    eprintln!("{}", msg);
 }
 
 /// 从 URL query 中取某个整型参数（如 `service_id`）。

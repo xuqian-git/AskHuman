@@ -97,3 +97,6 @@ AskHuman "请看看这个改动？" -f ./diff.patch -q "要继续吗？" -o "继
 ## 7. 反馈意见
 
 （review 中产生的调整意见追加于此，标注日期。）
+
+- **2026-06-06｜修复：卡片回调收不到（点提交转圈回弹）**：实测飞书卡片回调 `card.action.trigger` 经长连接投递时，帧头 `type` 为 `event`（非 `card`）。原实现按帧 `type` 路由，把它当普通事件丢弃。改为**以回包内 `header.event_type` 为准**路由（兼容 `type=event`/`card`），并新增环境变量 `HUMANINLOOP_FEISHU_DEBUG=1` 时写 `~/.humaninloop/feishu-debug.log` 的诊断日志（默认关闭）。
+- **2026-06-06｜终态卡片改为「钉钉模式」**：原终态（类 Telegram）把整张卡片换成「正文 + 一行 ✅ 已提交」，丢弃选项与按钮。改为**复刻钉钉**：同一表单结构下，勾选器 `disabled` 且按用户选择 `checked`、输入框 `default_value` 回显补充文字且 `disabled`、提交按钮 `disabled` 并改文案（提交→「已提交」；被抢答→「已在 {渠道} 回答」且勾选器不勾）。选中项仅禁用并保留高亮，不加删除线。

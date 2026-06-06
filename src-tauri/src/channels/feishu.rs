@@ -209,7 +209,21 @@ impl MessagingChannel for FeishuSession {
             };
             match ev {
                 WsEvent::CardAction { data, frame } => {
-                    match card::parse_card_submit(&data, ctx.options) {
+                    let parsed = card::parse_card_submit(&data, ctx.options);
+                    match &parsed {
+                        Some(s) => crate::feishu::ws::debug_log(&format!(
+                            "[feishu] card submit: open_id_match={} message_id_match={} (got open_id={}, message_id={})",
+                            s.open_id == open_id,
+                            s.message_id == message_id,
+                            s.open_id,
+                            s.message_id
+                        )),
+                        None => crate::feishu::ws::debug_log(&format!(
+                            "[feishu] card action received but not a form submit (no form_value); raw event={}",
+                            data
+                        )),
+                    }
+                    match parsed {
                         Some(s) if s.message_id == message_id && s.open_id == open_id => {
                             // 3 秒内回包：toast 提示「已提交」。
                             let toast = i18n::tr(ctx.lang, "channel.fsSubmitted");
@@ -218,12 +232,17 @@ impl MessagingChannel for FeishuSession {
                                 &json!({ "toast": { "type": "success", "content": toast } }),
                             )
                             .await;
-                            // best-effort 把卡片 PATCH 成终态（灰显，去掉表单）。
-                            let finalized = card::build_finalized_card(
+                            // best-effort 把卡片 PATCH 成终态（复刻钉钉：禁用表单 + 保留勾选 + 回显补充文字 + 按钮「已提交」）。
+                            let finalized = card::build_finalized_card(&card::Finalized {
                                 title,
-                                ctx.text,
-                                i18n::tr(ctx.lang, "channel.fsSubmitted"),
-                            );
+                                text: ctx.text,
+                                is_markdown: ctx.is_markdown,
+                                options: ctx.options,
+                                selected: &s.selected_options,
+                                user_input: s.user_input.as_deref(),
+                                input_placeholder: placeholder,
+                                button_label: i18n::tr(ctx.lang, "channel.fsSubmitted"),
+                            });
                             let _ = client.patch_card(&message_id, &finalized).await;
                             return Some(QuestionAnswer {
                                 selected_options: s.selected_options,
@@ -251,7 +270,17 @@ impl MessagingChannel for FeishuSession {
         } else {
             i18n::tr(ctx.lang, "channel.fsSubmitted").to_string()
         };
-        let finalized = card::build_finalized_card(title, ctx.text, &status);
+        // 被抢答收尾：同样复刻钉钉禁用表单——本端未作答，故不勾选、不回显，按钮文案为「已在 X 回答」。
+        let finalized = card::build_finalized_card(&card::Finalized {
+            title,
+            text: ctx.text,
+            is_markdown: ctx.is_markdown,
+            options: ctx.options,
+            selected: &[],
+            user_input: None,
+            input_placeholder: placeholder,
+            button_label: &status,
+        });
         let _ = client.patch_card(&message_id, &finalized).await;
         None
     }

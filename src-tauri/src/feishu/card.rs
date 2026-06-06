@@ -38,53 +38,111 @@ pub fn build_question_card(
     submit_label: &str,
 ) -> Value {
     let mut elements: Vec<Value> = Vec::new();
-
     if !text.trim().is_empty() {
         elements.push(body_text(text, is_markdown));
     }
-
-    // 表单容器：选项勾选器 + 输入框 + 提交按钮。
-    let mut form_elements: Vec<Value> = Vec::new();
-    for (i, opt) in options.iter().enumerate() {
-        form_elements.push(json!({
-            "tag": "checker",
-            "name": format!("{}{}", OPT_NAME_PREFIX, i),
-            "checked": false,
-            "text": { "tag": "plain_text", "content": opt },
-        }));
-    }
-    form_elements.push(json!({
-        "tag": "input",
-        "name": INPUT_NAME,
-        "placeholder": { "tag": "plain_text", "content": input_placeholder },
-    }));
-    form_elements.push(json!({
-        "tag": "button",
-        "name": "submit",
-        "form_action_type": "submit",
-        "text": { "tag": "plain_text", "content": submit_label },
-        "type": "primary",
-        "behaviors": [ { "type": "callback", "value": { "action": "submit" } } ],
-    }));
-    elements.push(json!({
-        "tag": "form",
-        "name": "answer_form",
-        "elements": form_elements,
-    }));
-
+    elements.push(build_form(
+        options,
+        &[],
+        None,
+        false,
+        input_placeholder,
+        submit_label,
+    ));
     assemble_card(title, elements)
 }
 
-/// 组装终态卡片（无表单）：题首 + 正文 + 状态行（如「✅ 已提交」/「✅ 已在 X 回答」）。
-/// 用于提交后 / 被抢答收尾时 PATCH 更新卡片。
-pub fn build_finalized_card(title: &str, text: &str, status: &str) -> Value {
+/// 终态卡片入参（复刻钉钉「已提交」态）。
+pub struct Finalized<'a> {
+    pub title: &'a str,
+    pub text: &'a str,
+    pub is_markdown: bool,
+    pub options: &'a [String],
+    /// 用户已选选项（被抢答收尾时为空 → 勾选器都不勾）。
+    pub selected: &'a [String],
+    /// 补充文字回显（无则 None → 输入框留空）。
+    pub user_input: Option<&'a str>,
+    pub input_placeholder: &'a str,
+    /// 禁用按钮的文案（「已提交」/「已在 X 回答」）。
+    pub button_label: &'a str,
+}
+
+/// 组装终态卡片（复刻钉钉「已提交」态）：沿用同一表单结构，但全部禁用——
+/// 勾选器按用户选择 `checked` 且 `disabled`、输入框 `default_value` 回显补充文字且 `disabled`、
+/// 提交按钮 `disabled` 并改文案。
+pub fn build_finalized_card(p: &Finalized) -> Value {
     let mut elements: Vec<Value> = Vec::new();
-    if !text.trim().is_empty() {
-        // 终态正文统一用 markdown 组件展示（原文若非 markdown 亦可接受）。
-        elements.push(json!({ "tag": "markdown", "content": text }));
+    if !p.text.trim().is_empty() {
+        elements.push(body_text(p.text, p.is_markdown));
     }
-    elements.push(json!({ "tag": "markdown", "content": format!("**{}**", status) }));
-    assemble_card(title, elements)
+    elements.push(build_form(
+        p.options,
+        p.selected,
+        p.user_input,
+        true,
+        p.input_placeholder,
+        p.button_label,
+    ));
+    assemble_card(p.title, elements)
+}
+
+/// 组装表单容器：每选项一个勾选器 + 输入框 + 提交按钮。
+/// `disabled=false`（提问态）：可交互，按钮带 `callback` behaviors。
+/// `disabled=true`（终态）：禁用全部交互，勾选器按 `selected` 勾上，输入框用 `user_input` 回显，按钮无 behaviors。
+fn build_form(
+    options: &[String],
+    selected: &[String],
+    user_input: Option<&str>,
+    disabled: bool,
+    input_placeholder: &str,
+    button_label: &str,
+) -> Value {
+    let mut form_elements: Vec<Value> = Vec::new();
+    for (i, opt) in options.iter().enumerate() {
+        let mut checker = json!({
+            "tag": "checker",
+            "name": format!("{}{}", OPT_NAME_PREFIX, i),
+            "checked": selected.contains(opt),
+            "text": { "tag": "plain_text", "content": opt },
+        });
+        if disabled {
+            checker["disabled"] = Value::Bool(true);
+        }
+        form_elements.push(checker);
+    }
+
+    let mut input = json!({
+        "tag": "input",
+        "name": INPUT_NAME,
+        "placeholder": { "tag": "plain_text", "content": input_placeholder },
+    });
+    if let Some(v) = user_input {
+        input["default_value"] = Value::String(v.to_string());
+    }
+    if disabled {
+        input["disabled"] = Value::Bool(true);
+    }
+    form_elements.push(input);
+
+    let mut button = json!({
+        "tag": "button",
+        "name": "submit",
+        "form_action_type": "submit",
+        "text": { "tag": "plain_text", "content": button_label },
+        "type": "primary",
+    });
+    if disabled {
+        button["disabled"] = Value::Bool(true);
+    } else {
+        button["behaviors"] = json!([ { "type": "callback", "value": { "action": "submit" } } ]);
+    }
+    form_elements.push(button);
+
+    json!({
+        "tag": "form",
+        "name": "answer_form",
+        "elements": form_elements,
+    })
 }
 
 /// 组装卡片骨架：schema 2.0 + 可选 header + body.elements。`config.update_multi` 开启以支持后续更新。
@@ -206,6 +264,45 @@ mod tests {
             .iter()
             .find(|e| e["tag"] == "div");
         assert!(div.is_some());
+    }
+
+    #[test]
+    fn finalized_card_disables_form_and_reflects_selection() {
+        let opts = vec!["继续".to_string(), "停止".to_string()];
+        let sel = vec!["停止".to_string()];
+        let card = build_finalized_card(&Finalized {
+            title: "Question 1/2",
+            text: "要继续吗？",
+            is_markdown: true,
+            options: &opts,
+            selected: &sel,
+            user_input: Some("再想想"),
+            input_placeholder: "补充说明（可选）",
+            button_label: "已提交",
+        });
+        let form = card["body"]["elements"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["tag"] == "form")
+            .unwrap();
+        let fe = form["elements"].as_array().unwrap();
+        // 勾选器：均禁用；仅「停止」勾上。
+        let checkers: Vec<&Value> = fe.iter().filter(|e| e["tag"] == "checker").collect();
+        assert_eq!(checkers.len(), 2);
+        assert_eq!(checkers[0]["checked"], false);
+        assert_eq!(checkers[0]["disabled"], true);
+        assert_eq!(checkers[1]["checked"], true);
+        assert_eq!(checkers[1]["disabled"], true);
+        // 输入框：禁用 + 回显补充文字。
+        let input = fe.iter().find(|e| e["tag"] == "input").unwrap();
+        assert_eq!(input["disabled"], true);
+        assert_eq!(input["default_value"], "再想想");
+        // 按钮：禁用 + 改文案 + 无 behaviors。
+        let button = fe.iter().find(|e| e["tag"] == "button").unwrap();
+        assert_eq!(button["disabled"], true);
+        assert_eq!(button["text"]["content"], "已提交");
+        assert!(button.get("behaviors").is_none());
     }
 
     #[test]
