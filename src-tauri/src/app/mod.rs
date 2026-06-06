@@ -284,17 +284,25 @@ fn launch(state: AppState, view: View) -> tauri::Result<()> {
             crate::commands::dingtalk_detect_wait,
         ])
         .on_window_event(|window, event| {
-            // 仅弹窗参与“关闭即取消 / 记忆尺寸”；设置窗口走默认关闭行为。
-            if window.label() != "popup" {
-                return;
-            }
-            match event {
-                WindowEvent::CloseRequested { .. } => {
-                    if let Some(c) = window.app_handle().try_state::<Arc<Coordinator>>() {
-                        c.submit(ChannelResult::cancel("popup"));
+            match window.label() {
+                // 弹窗：关闭即取消 / 记忆尺寸。
+                "popup" => match event {
+                    WindowEvent::CloseRequested { .. } => {
+                        if let Some(c) = window.app_handle().try_state::<Arc<Coordinator>>() {
+                            c.submit(ChannelResult::cancel("popup"));
+                        }
+                    }
+                    WindowEvent::Resized(_) => persist_popup_size(window),
+                    _ => {}
+                },
+                // 设置窗口关闭时清掉 Liquid Glass 注册表条目：插件按 label 缓存玻璃视图，
+                // 若不清理，下次同 label 重开会走 update 分支去操作已销毁的旧视图，导致背景透明无玻璃。
+                #[cfg(target_os = "macos")]
+                "settings" => {
+                    if matches!(event, WindowEvent::CloseRequested { .. }) {
+                        clear_window_glass(window);
                     }
                 }
-                WindowEvent::Resized(_) => persist_popup_size(window),
                 _ => {}
             }
         })
@@ -462,6 +470,22 @@ fn apply_liquid_glass<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) {
     let _ = window
         .liquid_glass()
         .set_effect(window, LiquidGlassConfig::default());
+}
+
+/// 窗口关闭前移除 Liquid Glass 背景：同时把插件按 label 缓存的注册表条目清掉，
+/// 以便同 label 窗口下次重建时能重新走「create」分支挂上玻璃。须在视图仍存活时调用。
+#[cfg(target_os = "macos")]
+fn clear_window_glass(window: &tauri::Window) {
+    use tauri_plugin_liquid_glass::{LiquidGlassConfig, LiquidGlassExt};
+    if let Some(w) = window.app_handle().get_webview_window(window.label()) {
+        let _ = w.liquid_glass().set_effect(
+            &w,
+            LiquidGlassConfig {
+                enabled: false,
+                ..Default::default()
+            },
+        );
+    }
 }
 
 /// 运行时切换窗口背景效果，供设置页「玻璃/模糊」开关实时作用于已打开窗口。
