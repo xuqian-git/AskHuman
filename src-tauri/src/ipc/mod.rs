@@ -59,6 +59,9 @@ pub struct StatusInfo {
     pub uptime_secs: u64,
     pub socket: String,
     pub active_requests: usize,
+    /// 当前常热的 IM 长连接（"dingtalk" / "feishu" / "telegram"），按已建连且存活计入。
+    #[serde(default)]
+    pub im_connections: Vec<String>,
 }
 
 /// CLI 提交的一次提问任务（A11：`-f` 已在 CLI 解析为绝对路径；硬性上送 source name 与解析好的 lang；

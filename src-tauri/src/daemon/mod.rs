@@ -294,6 +294,7 @@ mod unix_impl {
                         uptime_secs: now_secs().saturating_sub(state.started_at),
                         socket: transport::socket_path().display().to_string(),
                         active_requests: state.registry.active_count(),
+                        im_connections: active_im_connections(state).await,
                     };
                     let _ = ipc::write_msg(w, &ServerMsg::Status(info)).await;
                 }
@@ -652,6 +653,42 @@ mod unix_impl {
         attached
     }
 
+    /// 当前已建连且存活的 IM 长连接名（供 `daemon status` 展示）。
+    async fn active_im_connections(state: &Arc<ServerState>) -> Vec<String> {
+        let mut v = Vec::new();
+        if state
+            .dd_router
+            .lock()
+            .await
+            .as_ref()
+            .map(|r| r.is_alive())
+            .unwrap_or(false)
+        {
+            v.push("dingtalk".to_string());
+        }
+        if state
+            .fs_router
+            .lock()
+            .await
+            .as_ref()
+            .map(|r| r.is_alive())
+            .unwrap_or(false)
+        {
+            v.push("feishu".to_string());
+        }
+        if state
+            .tg_router
+            .lock()
+            .await
+            .as_ref()
+            .map(|r| r.is_alive())
+            .unwrap_or(false)
+        {
+            v.push("telegram".to_string());
+        }
+        v
+    }
+
     /// 处理「自动识别 userId/open_id」（Q6）：观察现有同 app_key 的长连接，否则临时开连完成识别。
     /// 结果经 `Detected`（成功）/ `Error`（失败，已本地化）回设置进程。
     async fn handle_detect(req: &DetectRequest, state: &Arc<ServerState>, w: &mut OwnedWriteHalf) {
@@ -915,5 +952,11 @@ mod unix_impl {
         println!("  uptime     {}s", info.uptime_secs);
         println!("  socket     {}", info.socket);
         println!("  requests   {} active", info.active_requests);
+        let im = if info.im_connections.is_empty() {
+            "none".to_string()
+        } else {
+            info.im_connections.join(", ")
+        };
+        println!("  im conns   {}", im);
     }
 }
