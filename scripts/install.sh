@@ -38,10 +38,24 @@ cp "$BIN_PATH" "$INSTALL_DIR/AskHuman"
 chmod 0755 "$INSTALL_DIR/AskHuman"
 
 if [ "$(uname)" = "Darwin" ]; then
-  # 清除 quarantine 并 ad-hoc 重签名，降低拷贝后被 Gatekeeper 拦截的概率
+  # 清除 quarantine，降低拷贝后被 Gatekeeper 拦截的概率
   xattr -d com.apple.quarantine "$INSTALL_DIR/AskHuman" 2>/dev/null || true
-  echo "==> 重新签名 (ad-hoc)"
-  codesign --force --sign - "$INSTALL_DIR/AskHuman" 2>/dev/null || true
+  # Sign with a stable identity + fixed identifier so the OS keychain trusts the binary across
+  # rebuilds (its designated requirement is cdhash-independent) → secret reads stay prompt-free.
+  # Identity: $CODESIGN_IDENTITY if set, else auto-detect the first local codesigning cert,
+  # else ad-hoc (which falls back to per-build keychain prompts).
+  IDENTITY="${CODESIGN_IDENTITY:-}"
+  if [ -z "$IDENTITY" ]; then
+    IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null | awk '/^[[:space:]]*[0-9]+\)/{print $2; exit}')"
+  fi
+  [ -z "$IDENTITY" ] && IDENTITY="-"
+  if [ "$IDENTITY" = "-" ]; then
+    echo "==> 签名 (ad-hoc; 设置 CODESIGN_IDENTITY 可避免每次重装的钥匙串弹框)"
+  else
+    echo "==> 签名 (identity: $IDENTITY, identifier: com.naituw.humaninloop)"
+  fi
+  codesign -i com.naituw.humaninloop --force --sign "$IDENTITY" "$INSTALL_DIR/AskHuman" || \
+    echo "警告: 签名失败，已跳过" >&2
 fi
 
 echo "==> 完成：$INSTALL_DIR/AskHuman"
