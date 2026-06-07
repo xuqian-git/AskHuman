@@ -27,7 +27,18 @@
   2. `dingtalk/router.rs`：Reader 判 `is_submit` —— 非提交回调（选项切换）直接空 ACK、不转发；提交回调转发给对应会话并带 `oneshot` 回执，**带超时(2.5s)等会话裁决**后回包；孤儿/超时回空包（诚实地不显示成功）。
   3. `channels/dingding.rs`：会话认出本卡片提交即**立刻**经 oneshot 回 `submit_ack_success()`（不在 3 秒关键路径上等任何慢活），随后再经 OpenAPI 写公有终态文案；并把作答期间的图片/文件改为**并发下载**（spawn），保证提交一到就能被立刻处理。
 - **影响范围与超时取舍**：Reader 等待裁决期间只暂停「当下并发的钉钉」（不影响飞书/Popup/Telegram，各自独立连接），且因会话即时回包＋下载并发化，等待几乎为毫秒级、极少触顶。
-- **待办**：飞书走不同 ack 模型（卡片更新靠 OpenAPI `patch_card`，空 ack 通常不报错）、Telegram 用 `answerCallbackQuery`，二者**预计不受此问题影响**；后续按需回归确认，确有同类现象再复制本方案。
+### 飞书卡片「提交」按钮置灰有可见闪烁（Loading→弹回 Submit→才变已提交）✅（已大幅改善）
+
+> 同源问题：飞书 Reader 也是收到回调即空 ACK、置灰靠之后的 OpenAPI `patch_card`，导致按钮先弹回再异步变终态。
+
+- **实现**（与钉钉同构，复用飞书已有但未用的 `respond_card` 同步回包）：
+  1. `feishu/router.rs`：卡片回调改为**带 oneshot 回执转发给会话**；超时(2.5s)等会话裁决——`Some(body)` → `respond_card` 同步更新卡片、`None`/孤儿/超时 → 空 ACK。
+  2. `channels/feishu.rs`：会话认出本卡片提交即**立刻**经 oneshot 回**终态卡片**（`card::callback_update_card` 包装 `build_finalized_card`），按钮 Loading 直接变终态；并把附件下载改为并发。
+  3. 去掉了提交路径上的 `patch_card` 兜底（那次二次渲染是残留快速回弹的来源）；被抢答/断连路径仍用 `patch_card`（无回调可同步回包）。
+- **现状**：置灰快了很多、不再二次渲染；**仍有一下极快的回弹**——经排查为**飞书客户端自身渲染行为**（收到回调先复位按钮再套用新卡片），非本端可控，保持现状。
+
+### Telegram
+- 用 `answerCallbackQuery`，机制不同，**预计无此类问题**；待人工回归确认。
 
 ## daemon 架构：待补充的人工实测
 

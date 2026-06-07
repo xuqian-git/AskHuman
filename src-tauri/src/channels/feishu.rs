@@ -19,7 +19,7 @@ use crate::feishu::router::{FsInbound, FsRouter, RoutedFs};
 use crate::i18n::{self, Lang};
 use crate::models::{ImageAttachment, MessagePrompt, QuestionAnswer};
 use serde_json::Value;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// 抢答轮询粒度：每隔此时长检查一次抢答信号。
@@ -233,9 +233,11 @@ impl MessagingChannel for FeishuSession {
         // 登记卡片精确路由 + 认领本 open_id 的聊天消息。
         events.set_active(Some(&message_id), &open_id);
 
-        // 2. 等卡片「提交」；作答期间累积聊天里的图片/文件；被抢答则收尾返回 None。
-        let mut images: Vec<ImageAttachment> = Vec::new();
-        let mut files: Vec<String> = Vec::new();
+        // 2. 等卡片「提交」；作答期间收到的图片/文件**并发下载**（不阻塞收事件循环，保证提交一到
+        //    就能被立刻处理、即时回包），下载结果累积进共享集合，提交时再收尾。
+        let images: Arc<Mutex<Vec<ImageAttachment>>> = Arc::new(Mutex::new(Vec::new()));
+        let files: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let mut downloads: Vec<tauri::async_runtime::JoinHandle<()>> = Vec::new();
         while !preempt.is_cancelled() {
             let ev = match tokio::time::timeout(POLL_INTERVAL, events.recv()).await {
                 Ok(Some(ev)) => ev,
@@ -243,7 +245,7 @@ impl MessagingChannel for FeishuSession {
                 Err(_) => continue, // 超时：回到循环顶部重新检查 cancelled
             };
             match ev {
-                FsInbound::Card(data) => {
+                FsInbound::Card { data, ack } => {
                     let parsed = card::parse_card_submit(&data, ctx.options);
                     match &parsed {
                         Some(s) => crate::feishu::ws::debug_log(&format!(
@@ -258,10 +260,9 @@ impl MessagingChannel for FeishuSession {
                             data
                         )),
                     }
-                    if let Some(s) = parsed {
-                        if s.message_id == message_id && s.open_id == open_id {
-                            // 即时空 ACK 已由 Router 完成；这里经 OpenAPI 把卡片 PATCH 成终态
-                            // （禁用表单 + 保留勾选 + 回显补充文字 + 按钮「已提交」）。
+                    match parsed {
+                        Some(s) if s.message_id == message_id && s.open_id == open_id => {
+                            // 终态卡片（禁用表单 + 保留勾选 + 回显补充文字 + 按钮「已提交」）。
                             let finalized = card::build_finalized_card(&card::Finalized {
                                 title,
                                 text: ctx.text,
@@ -272,8 +273,16 @@ impl MessagingChannel for FeishuSession {
                                 input_placeholder: placeholder,
                                 button_label: i18n::tr(ctx.lang, "channel.fsSubmitted"),
                             });
-                            let _ = client.patch_card(&message_id, &finalized).await;
+                            // 立刻经 Router 同步回包更新卡片 → 按钮 Loading 直接变终态（无闪烁）。
+                            // 不再追加 OpenAPI patch_card：那次二次渲染正是残留「快速回弹」的来源。
+                            let _ = ack.send(Some(card::callback_update_card(finalized)));
+                            // 收尾并发下载（不在 3 秒关键路径）。
+                            for h in downloads {
+                                let _ = h.await;
+                            }
                             events.clear_active(Some(&message_id), &open_id);
+                            let images = std::mem::take(&mut *images.lock().unwrap());
+                            let files = std::mem::take(&mut *files.lock().unwrap());
                             return Some(QuestionAnswer {
                                 selected_options: s.selected_options,
                                 user_input: s.user_input,
@@ -281,13 +290,22 @@ impl MessagingChannel for FeishuSession {
                                 files,
                             });
                         }
+                        // 非本卡片 / 非提交：回空 ACK，继续等待。
+                        _ => {
+                            let _ = ack.send(None);
+                        }
                     }
-                    // 非本卡片 / 非提交：忽略，继续等待。
                 }
                 FsInbound::Message(event) => {
                     if event_open_id(&event) == open_id {
-                        accumulate_attachment(client, &event, &mut images, &mut files, ctx.lang)
-                            .await;
+                        // 并发下载：spawn 后立刻回到循环收事件，避免大文件下载卡住提交处理。
+                        let client = client.clone();
+                        let images = images.clone();
+                        let files = files.clone();
+                        let lang = ctx.lang;
+                        downloads.push(tauri::async_runtime::spawn(async move {
+                            accumulate_attachment(&client, &event, &images, &files, lang).await;
+                        }));
                     }
                 }
             }
@@ -357,8 +375,10 @@ async fn ask_question_text(
                     return Some(answer);
                 }
             }
-            // 文本兜底路径不期望卡片回调；忽略。
-            FsInbound::Card(_) => {}
+            // 文本兜底路径未登记卡片路由，不会收到卡片回调；忽略（回空 ACK 以防万一）。
+            FsInbound::Card { ack, .. } => {
+                let _ = ack.send(None);
+            }
         }
     }
     events.clear_active(None, open_id);
@@ -366,11 +386,12 @@ async fn ask_question_text(
 }
 
 /// 累积聊天里收到的图片/文件（卡片作答期间）；纯文字等忽略。
+/// 在并发下载任务中调用：下载完成后再锁住共享集合追加（锁期间不 await）。
 async fn accumulate_attachment(
     client: &FeishuClient,
     event: &Value,
-    images: &mut Vec<ImageAttachment>,
-    files: &mut Vec<String>,
+    images: &Mutex<Vec<ImageAttachment>>,
+    files: &Mutex<Vec<String>>,
     lang: Lang,
 ) {
     let Some((msg_type, message_id, content)) = parse_message(event) else {
@@ -382,7 +403,7 @@ async fn accumulate_attachment(
                 return;
             };
             match download_image(client, &message_id, key).await {
-                Ok(img) => images.push(img),
+                Ok(img) => images.lock().unwrap().push(img),
                 Err(e) => eprintln!(
                     "{}{}",
                     i18n::warn_prefix(lang),
@@ -403,7 +424,7 @@ async fn accumulate_attachment(
                 .download_resource_to(&message_id, key, "file", ext)
                 .await
             {
-                Ok(path) => files.push(path),
+                Ok(path) => files.lock().unwrap().push(path),
                 Err(e) => eprintln!(
                     "{}{}",
                     i18n::warn_prefix(lang),

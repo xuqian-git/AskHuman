@@ -9,6 +9,7 @@ use crate::config::FeishuChannelConfig;
 use serde_json::{json, Value};
 use std::time::Duration;
 
+#[derive(Clone)]
 pub struct FeishuClient {
     app_id: String,
     app_secret: String,

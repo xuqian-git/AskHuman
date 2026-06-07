@@ -94,14 +94,16 @@ AskHuman/
       dingtalk/
         mod.rs / token.rs / client.rs / stream.rs / card.rs / textfile.rs / docx.rs
                              钉钉客户端层 + Stream 长连(JSON 帧) + 卡片 + 文本附件处理
-        router.rs            DdRouter：独占 StreamConn + 按 outTrackId/senderStaffId 分发(即时空ACK)
+        router.rs            DdRouter：独占 StreamConn + 按 outTrackId/senderStaffId 分发
+                             (提交回调带 oneshot 交会话裁决→回成功包；非提交/孤儿回空 ACK)
       feishu/
         mod.rs               错误类型 + 模块声明
         token.rs             tenant_access_token 缓存
         client.rs            OpenAPI：发文本/图片/文件/卡片、媒体上传、资源下载、PATCH 卡片
         ws.rs                长连接(WebSocket)：protobuf 帧(pbbp2) + 心跳/分片/回包/重连
         card.rs              卡片 JSON 2.0 组装（表单+勾选器+输入框+提交）+ 回调解析
-        router.rs            FsRouter：独占 FeishuWs + 按 open_message_id/open_id 分发(即时空ACK)
+        router.rs            FsRouter：独占 FeishuWs + 按 open_message_id/open_id 分发
+                             (卡片回调带 oneshot 交会话裁决→同步回包更新卡片；孤儿/超时回空 ACK)
       integrations/
         cursor_hook.rs       Cursor Hook 安装/移除/状态/reveal（mac/Linux；含内嵌脚本）
       ipc/                   IPC 协议：mod.rs(消息类型) / codec.rs(NDJSON) / transport.rs(Unix socket)

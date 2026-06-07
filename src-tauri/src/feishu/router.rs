@@ -14,12 +14,22 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+use tokio::sync::oneshot;
+
+/// 提交回调等待会话裁决的上限：会话认出提交后会**立刻**经 oneshot 回包；此上限仅兜底
+/// 「会话恰好在忙/已退出」的极少数情况；务必 < 飞书 3 秒回包窗口。
+const CARD_ACK_TIMEOUT: Duration = Duration::from_millis(2500);
 
 /// 分发给某个会话的入站事件。
 pub enum FsInbound {
-    /// 卡片回调（已被 Router 即时空 ACK；会话据此解析提交、经 OpenAPI 置灰）。
-    Card(Value),
+    /// 卡片回调：会话裁决后经 `ack` 回包——`Some(body)` 同步更新卡片（按钮 Loading 直接变终态）、
+    /// `None` 回空 ACK（非本卡片/未作答）。由 Router 写回连接（满足飞书 3 秒约束）。
+    Card {
+        data: Value,
+        ack: oneshot::Sender<Option<Value>>,
+    },
     /// 聊天消息（图片/文件/文字；已被底层 `FeishuWs` 自动 ACK）。
     Message(Value),
 }
@@ -162,22 +172,36 @@ async fn reader_task(mut ws: FeishuWs, routes: Arc<Mutex<Routes>>, alive: Arc<At
     while let Some(ev) = ws.recv().await {
         match ev {
             WsEvent::CardAction { data, frame } => {
-                // 即时空 ACK（满足飞书 3 秒约束）；卡片置灰由会话经 OpenAPI patch_card 完成。
-                ws.respond_ack(&frame).await;
                 let mid = data
                     .get("context")
                     .and_then(|c| c.get("open_message_id"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
-                if mid.is_empty() {
-                    continue;
-                }
-                let sink = {
+                let sink = if mid.is_empty() {
+                    None
+                } else {
                     let r = routes.lock().unwrap();
                     r.cards.get(mid).and_then(|rid| r.sinks.get(rid).cloned())
                 };
-                if let Some(tx) = sink {
-                    let _ = tx.send(FsInbound::Card(data));
+                // 转发给会话并带 oneshot 回执；超时等其裁决后回包（满足 3 秒）。会话回 Some(body)
+                // → 同步更新卡片（按钮丝滑变终态）；None / 孤儿 / 超时 → 空 ACK。
+                let resp = match sink {
+                    Some(tx) => {
+                        let (ack_tx, ack_rx) = oneshot::channel();
+                        if tx.send(FsInbound::Card { data, ack: ack_tx }).is_ok() {
+                            match tokio::time::timeout(CARD_ACK_TIMEOUT, ack_rx).await {
+                                Ok(Ok(body)) => body,
+                                _ => None,
+                            }
+                        } else {
+                            None
+                        }
+                    }
+                    None => None,
+                };
+                match resp {
+                    Some(body) => ws.respond_card(&frame, &body).await,
+                    None => ws.respond_ack(&frame).await,
                 }
             }
             WsEvent::Message(event) => {

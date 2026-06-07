@@ -67,6 +67,13 @@ pub struct Finalized<'a> {
     pub button_label: &'a str,
 }
 
+/// 卡片回调的同步「更新卡片」回包体：`{card:{type:"raw",data:<新卡片>}}`。
+/// 点提交时由会话经 Router 同步回此包 → 按钮 Loading 直接变终态（否则空 ACK 会令按钮先弹回 Submit，
+/// 再由 OpenAPI `patch_card` 异步置灰，出现可见闪烁）。
+pub fn callback_update_card(card: Value) -> Value {
+    json!({ "card": { "type": "raw", "data": card } })
+}
+
 /// 组装终态卡片（复刻钉钉「已提交」态）：沿用同一表单结构，但全部禁用——
 /// 勾选器按用户选择 `checked` 且 `disabled`、输入框 `default_value` 回显补充文字且 `disabled`、
 /// 提交按钮 `disabled` 并改文案。
