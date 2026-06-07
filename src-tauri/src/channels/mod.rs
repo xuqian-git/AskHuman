@@ -1,4 +1,4 @@
-//! Channel 抽象：并行运行、首个终态结果由协调器采纳，其余被 `cancel_by_other` 收尾。
+//! Channel 抽象：并行运行、首个终态结果由协调器采纳，其余被 `interrupt` 收尾。
 
 pub mod conversation;
 pub mod dingding;
@@ -14,25 +14,37 @@ use std::sync::{Arc, Mutex};
 /// 投递结果的句柄（协调器，线程安全）。
 pub type ResultSink = Arc<Coordinator>;
 
-/// 抢答信号：被其他端抢答时置位，并记录赢家的展示名（供收尾文案点名）。
-/// 在「外层 Channel / 收尾」与「会话任务」之间共享（Arc）。
+/// Why a session is interrupted before it produced an answer. A single reason covers both
+/// "another channel answered first" and "the whole request was cancelled" — they only differ
+/// in the wording of the card's terminal state.
+#[derive(Clone)]
+pub enum Interruption {
+    /// Another channel answered first; carries the winner's display name.
+    AnsweredBy(String),
+    /// The whole request was cancelled; carries the cancel source display name (empty = generic).
+    Cancelled(String),
+}
+
+/// Interrupt signal: set when a session is interrupted before answering, carrying the reason
+/// (so the terminal card text can name the winner or the cancel source). Shared (Arc) between
+/// the outer Channel / finalizer and the session task.
 pub struct Preemption {
     cancelled: AtomicBool,
-    winner: Mutex<String>,
+    reason: Mutex<Option<Interruption>>,
 }
 
 impl Preemption {
     pub fn new() -> Self {
         Self {
             cancelled: AtomicBool::new(false),
-            winner: Mutex::new(String::new()),
+            reason: Mutex::new(None),
         }
     }
 
-    /// 标记被 `winner`（展示名）抢答。
-    pub fn cancel(&self, winner: &str) {
-        if let Ok(mut w) = self.winner.lock() {
-            *w = winner.to_string();
+    /// Mark this session interrupted with the given reason.
+    pub fn interrupt(&self, reason: Interruption) {
+        if let Ok(mut r) = self.reason.lock() {
+            *r = Some(reason);
         }
         self.cancelled.store(true, Ordering::SeqCst);
     }
@@ -41,9 +53,9 @@ impl Preemption {
         self.cancelled.load(Ordering::SeqCst)
     }
 
-    /// 赢家展示名（未抢答时为空）。
-    pub fn winner(&self) -> String {
-        self.winner.lock().map(|w| w.clone()).unwrap_or_default()
+    /// The interruption reason (None until interrupted).
+    pub fn reason(&self) -> Option<Interruption> {
+        self.reason.lock().ok().and_then(|r| r.clone())
     }
 }
 
@@ -57,6 +69,7 @@ pub trait Channel: Send + Sync {
     fn id(&self) -> &str;
     /// 启动 Channel；到达终态（发送/取消）时向 sink 投递一次结果。
     fn start(&self, request: &AskRequest, sink: ResultSink);
-    /// 被其他 Channel 抢答后收尾（不再投递）；`winner` 为赢家端展示名。
-    fn cancel_by_other(&self, winner: &str);
+    /// Interrupt this channel before it produced a result, finalizing its UI per `reason`
+    /// (preempted by a winner, or the whole request cancelled). Does not deliver a result.
+    fn interrupt(&self, reason: &Interruption);
 }

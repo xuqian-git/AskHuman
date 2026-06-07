@@ -11,7 +11,7 @@
 //! （`MessagingChannel`）+ 薄外层 `FeishuChannel`。
 
 use super::conversation::{run_conversation, MessagingChannel, QuestionCtx};
-use super::{Channel, Preemption, ResultSink};
+use super::{Channel, Interruption, Preemption, ResultSink};
 use crate::config::FeishuChannelConfig;
 use crate::feishu::card;
 use crate::feishu::client::FeishuClient;
@@ -103,8 +103,8 @@ impl Channel for FeishuChannel {
         });
     }
 
-    fn cancel_by_other(&self, winner: &str) {
-        self.preempt.cancel(winner);
+    fn interrupt(&self, reason: &Interruption) {
+        self.preempt.interrupt(reason.clone());
     }
 }
 
@@ -319,11 +319,17 @@ impl MessagingChannel for FeishuSession {
             }
         }
 
-        // 被抢答 / 断连：尽力把卡片 PATCH 为终态（失败忽略）。
-        let status = if preempt.is_cancelled() {
-            i18n::tr(ctx.lang, "channel.fsAnsweredVia").replace("{source}", &preempt.winner())
-        } else {
-            i18n::tr(ctx.lang, "channel.fsSubmitted").to_string()
+        // Interrupted (preempted / cancelled) or disconnected: best-effort PATCH the card to terminal.
+        // Preempted → "Answered via X"; cancelled (with/without source) → "Cancelled [by X]";
+        // disconnect with no reason → generic "Cancelled".
+        let status = match preempt.reason() {
+            Some(Interruption::AnsweredBy(w)) => {
+                i18n::tr(ctx.lang, "channel.fsAnsweredVia").replace("{source}", &w)
+            }
+            Some(Interruption::Cancelled(src)) if !src.is_empty() => {
+                i18n::tr(ctx.lang, "channel.fsCancelledBy").replace("{source}", &src)
+            }
+            _ => i18n::tr(ctx.lang, "channel.fsCancelled").to_string(),
         };
         // 被抢答收尾：同样复刻钉钉禁用表单——本端未作答，故不勾选、不回显，按钮文案为「已在 X 回答」。
         let finalized = card::build_finalized_card(&card::Finalized {

@@ -6,7 +6,7 @@
 //!   经 IPC 向 Helper 下发 `cancel`（窗口由 Helper 自行收尾关闭）。投递答案由 GUI 连接处理器
 //!   直接调用协调器 `submit`，不经此 adapter。
 
-use super::{Channel, ResultSink};
+use super::{Channel, Interruption, ResultSink};
 use crate::models::AskRequest;
 use tauri::{AppHandle, Manager};
 
@@ -29,7 +29,8 @@ impl Channel for PopupChannel {
         // 窗口已由 setup 创建；用户操作经 submit_popup / cancel_popup 命令进入协调器。
     }
 
-    fn cancel_by_other(&self, _winner: &str) {
+    fn interrupt(&self, _reason: &Interruption) {
+        // The popup just closes regardless of why (winner answered / request cancelled).
         if let Some(w) = self.app.get_webview_window("popup") {
             let _ = w.close();
         }
@@ -63,12 +64,17 @@ impl Channel for GuiHelperPopupChannel {
         // GUI Helper 进程由请求处理器 spawn；题目经 `show` 下发，答案经 GUI 连接回传协调器。
     }
 
-    fn cancel_by_other(&self, winner: &str) {
+    fn interrupt(&self, reason: &Interruption) {
+        // The popup ignores the reason text and just closes; pass a string for diagnostics only.
+        let winner = match reason {
+            Interruption::AnsweredBy(w) => w.clone(),
+            Interruption::Cancelled(src) => src.clone(),
+        };
         if let Ok(slot) = self.gui.lock() {
             if let Some(tx) = slot.as_ref() {
                 let _ = tx.send(crate::ipc::ServerMsg::Cancel {
                     request_id: self.request_id.clone(),
-                    winner: winner.to_string(),
+                    winner,
                 });
             }
         }

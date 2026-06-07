@@ -1,12 +1,12 @@
-//! 抢答协调器：并行 Channel 的首个终态结果生效，其余被 `cancel_by_other` 收尾。
+//! 抢答协调器：并行 Channel 的首个终态结果生效，其余被 `interrupt` 收尾。
 //!
 //! 收到首个结果后不立即退出，而是给落败渠道一个**收尾窗口**（最多 ~2s，事件驱动、提前结束）
 //! 把卡片改成终态（钉钉灰显「已提交」、Telegram 编辑卡片为「已回答」等），随后输出结果并退出。
 
 use super::RenderOutcome;
-use crate::channels::{Channel, Preemption};
+use crate::channels::{Channel, Interruption, Preemption};
 use crate::i18n::{self, Lang};
-use crate::models::{AskRequest, ChannelResult};
+use crate::models::{AskRequest, ChannelAction, ChannelResult};
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -123,15 +123,23 @@ impl Coordinator {
             // 进入收尾：此后 GUI 拦下关窗退出，独占由协调器主动 `app.exit`。
             self.finalizing.store(true, Ordering::SeqCst);
             let source = result.source_channel_id.clone();
+            let action = result.action;
             *self.result.lock().unwrap() = Some(result);
 
             let lang = self.lang;
             let winner = display_name(&source, lang);
+            // Reason for interrupting the losing channels: a real answer (Send) attributes the
+            // winner ("Answered via X"); a popup Cancel means the whole request was cancelled by
+            // that source ("Cancelled by Popup").
+            let reason = match action {
+                ChannelAction::Send => Interruption::AnsweredBy(winner.clone()),
+                ChannelAction::Cancel => Interruption::Cancelled(winner.clone()),
+            };
 
             let pending = match &inner.headless {
                 // headless：取消共享信号；落败数 = 渠道数 - 1（赢家）。
                 Some((preempt, count)) => {
-                    preempt.cancel(&winner);
+                    preempt.interrupt(reason.clone());
                     count.saturating_sub(1)
                 }
                 // GUI：逐个取消落败渠道；弹窗瞬时关闭不计入收尾等待。
@@ -143,7 +151,7 @@ impl Coordinator {
                         .cloned()
                         .collect();
                     for ch in &losers {
-                        ch.cancel_by_other(&winner);
+                        ch.interrupt(&reason);
                     }
                     losers.iter().filter(|c| c.id() != "popup").count()
                 }
@@ -177,6 +185,27 @@ impl Coordinator {
             }
             Exiter::Process | Exiter::Ipc(_) => {
                 tokio::spawn(waiter);
+            }
+        }
+    }
+
+    /// Cancel the whole request (CLI disconnected / `daemon stop`): interrupt every channel as
+    /// `Cancelled(source)` so all cards finalize to a cancelled state and the popup closes.
+    /// Unlike `submit`, this does not render or deliver a result (no one is waiting). No-op if a
+    /// result was already submitted. `source` is the localized cancel source ("Caller"; empty = generic).
+    pub fn cancel_request(&self, source: String) {
+        let mut inner = self.inner.lock().unwrap();
+        if inner.finished {
+            return;
+        }
+        inner.finished = true;
+        let reason = Interruption::Cancelled(source);
+        match &inner.headless {
+            Some((preempt, _)) => preempt.interrupt(reason),
+            None => {
+                for ch in &inner.channels {
+                    ch.interrupt(&reason);
+                }
             }
         }
     }

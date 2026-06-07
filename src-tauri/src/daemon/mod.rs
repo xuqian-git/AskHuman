@@ -237,6 +237,13 @@ mod unix_impl {
             }
         }
 
+        // Shutting down: cancel any in-flight requests so their IM cards finalize to "Cancelled".
+        // Unlike CLI-disconnect, the runtime is about to exit, so we give the finalize HTTP calls a
+        // brief bounded window to land (sessions may take up to ~1s to notice the cancel + ~0.3s HTTP).
+        if state.registry.cancel_all_requests() > 0 {
+            tokio::time::sleep(Duration::from_millis(2000)).await;
+        }
+
         // 收尾：主动丢弃常热 Router（其 Drop 中止 reader 任务、关闭 IM 长连接），再清理 socket/meta。
         // 进行中的请求各自持有 Router Arc 克隆，故仅在无人持有时才真正断连。
         *state.dd_router.lock().await = None;
@@ -401,6 +408,11 @@ mod unix_impl {
             o = final_rx.recv() => o,
             _ = wait_cli_eof(&mut reader) => {
                 log(&format!("request {} cli disconnected; cancelling", request_id));
+                // Cancel the whole request: IM cards finalize to "Cancelled by caller", popup closes.
+                // The IM finalize runs in the channels' own tasks (which outlive this entry), so the
+                // daemon need not wait here — it stays alive.
+                let caller = crate::i18n::tr(lang, "channel.sourceCaller").to_string();
+                entry.coordinator.cancel_request(caller);
                 entry.cancel.notify_waiters();
                 state.registry.remove(&request_id);
                 return;

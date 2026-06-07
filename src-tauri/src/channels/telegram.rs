@@ -4,7 +4,7 @@
 //! 本文件提供传输相关实现 `TelegramSession`（`MessagingChannel`）+ 薄外层 `TelegramChannel`。
 
 use super::conversation::{run_conversation, MessagingChannel, QuestionCtx};
-use super::{Channel, Preemption, ResultSink};
+use super::{Channel, Interruption, Preemption, ResultSink};
 use crate::config::TelegramChannelConfig;
 use crate::i18n::{self, Lang};
 use crate::models::{AskRequest, MessagePrompt, QuestionAnswer};
@@ -95,8 +95,8 @@ impl Channel for TelegramChannel {
         });
     }
 
-    fn cancel_by_other(&self, winner: &str) {
-        self.preempt.cancel(winner);
+    fn interrupt(&self, reason: &Interruption) {
+        self.preempt.interrupt(reason.clone());
     }
 }
 
@@ -298,8 +298,18 @@ async fn ask_question(
         }
     }
 
-    // 被抢答：卡片改「已在{赢家}回答」终态、去键盘。
-    let status = i18n::tr(lang, "channel.tgAnsweredVia").replace("{source}", &preempt.winner());
+    // Interrupted: edit the card to its terminal state and drop the keyboard.
+    // Preempted → "Answered via X"; cancelled (with/without source) → "Cancelled [by X]";
+    // poller stopped with no reason → generic "Cancelled".
+    let status = match preempt.reason() {
+        Some(Interruption::AnsweredBy(w)) => {
+            i18n::tr(lang, "channel.tgAnsweredVia").replace("{source}", &w)
+        }
+        Some(Interruption::Cancelled(src)) if !src.is_empty() => {
+            i18n::tr(lang, "channel.tgCancelledBy").replace("{source}", &src)
+        }
+        _ => i18n::tr(lang, "channel.tgCancelled").to_string(),
+    };
     finalize_card(client, card_message_id, header, &content, &status, is_markdown).await;
     events.clear_active(card_message_id);
     None

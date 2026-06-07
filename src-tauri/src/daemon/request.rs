@@ -119,6 +119,19 @@ impl RequestRegistry {
         self.inner.lock().unwrap().by_id.len()
     }
 
+    /// Cancel every active request (daemon shutdown): interrupt all their channels as a generic
+    /// `Cancelled` (no source) so IM cards finalize and popups close, and wake their GUI handlers.
+    /// Returns the number of requests affected, so the caller can decide whether to wait for the
+    /// IM finalize HTTP calls to land before the runtime exits.
+    pub fn cancel_all_requests(&self) -> usize {
+        let inner = self.inner.lock().unwrap();
+        for entry in inner.by_id.values() {
+            entry.coordinator.cancel_request(String::new());
+            entry.cancel.notify_waiters();
+        }
+        inner.by_id.len()
+    }
+
     /// 向所有已连上的活动 GUI Helper 广播一条消息（如 `ConfigChanged` 实时切主题/语言，A12）。
     pub fn broadcast_to_guis(&self, msg: ServerMsg) {
         let inner = self.inner.lock().unwrap();

@@ -11,7 +11,7 @@
 //! （`MessagingChannel`）+ 薄外层 `DingTalkChannel`。
 
 use super::conversation::{run_conversation, MessagingChannel, QuestionCtx};
-use super::{Channel, Preemption, ResultSink};
+use super::{Channel, Interruption, Preemption, ResultSink};
 use crate::config::DingTalkChannelConfig;
 use crate::dingtalk::card;
 use crate::dingtalk::client::DingTalkClient;
@@ -127,8 +127,8 @@ impl Channel for DingTalkChannel {
         });
     }
 
-    fn cancel_by_other(&self, winner: &str) {
-        self.preempt.cancel(winner);
+    fn interrupt(&self, reason: &Interruption) {
+        self.preempt.interrupt(reason.clone());
     }
 }
 
@@ -339,12 +339,17 @@ impl MessagingChannel for DingTalkSession {
             }
         }
 
-        // 被抢答 / 断连：尽力把卡片置为终态（失败忽略）。被抢答点名赢家「已在X回答」，
-        // 断连兜底用「已提交」。
-        let status = if preempt.is_cancelled() {
-            i18n::tr(ctx.lang, "channel.ddAnsweredVia").replace("{source}", &preempt.winner())
-        } else {
-            i18n::tr(ctx.lang, "channel.ddSubmitted").to_string()
+        // Interrupted (preempted / cancelled) or disconnected: best-effort finalize the card.
+        // Preempted → "Answered via X"; cancelled (with/without source) → "Cancelled [by X]";
+        // disconnect with no reason → generic "Cancelled".
+        let status = match preempt.reason() {
+            Some(Interruption::AnsweredBy(w)) => {
+                i18n::tr(ctx.lang, "channel.ddAnsweredVia").replace("{source}", &w)
+            }
+            Some(Interruption::Cancelled(src)) if !src.is_empty() => {
+                i18n::tr(ctx.lang, "channel.ddCancelledBy").replace("{source}", &src)
+            }
+            _ => i18n::tr(ctx.lang, "channel.ddCancelled").to_string(),
         };
         let _ = client
             .update_card_private(

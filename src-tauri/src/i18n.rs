@@ -181,11 +181,19 @@ pub fn tr(lang: Lang, key: &'static str) -> &'static str {
         "channel.sourceTelegram" => pick(lang, "Telegram", "Telegram"),
         "channel.sourceDingTalk" => pick(lang, "DingTalk", "钉钉"),
         "channel.sourceFeishu" => pick(lang, "Feishu", "飞书"),
+        // Cancel source: the caller (CLI/terminal cancelled the request).
+        "channel.sourceCaller" => pick(lang, "Caller", "调用方"),
         "channel.tgReplied" => pick(lang, "✅ Replied", "✅ 已回复"),
         "channel.tgAnsweredVia" => pick(lang, "✅ Answered via {source}", "✅ 已在{source}回答"),
+        // Telegram cancelled terminal state (uses an emoji prefix like other tg states).
+        "channel.tgCancelled" => pick(lang, "🚫 Cancelled", "🚫 已取消"),
+        "channel.tgCancelledBy" => pick(lang, "🚫 Cancelled by {source}", "🚫 已被{source}取消"),
         // 钉钉卡片终态文案（绑定模板变量 submit_status）。卡片自带样式，文案不加 emoji 前缀。
         "channel.ddSubmitted" => pick(lang, "Submitted", "已提交"),
         "channel.ddAnsweredVia" => pick(lang, "Answered via {source}", "已在{source}回答"),
+        // Cancelled terminal state (card carries its own style, no emoji prefix).
+        "channel.ddCancelled" => pick(lang, "Cancelled", "已取消"),
+        "channel.ddCancelledBy" => pick(lang, "Cancelled by {source}", "已被{source}取消"),
         "channel.tgActionHint" => pick(
             lang,
             "💬 To add more, just send text messages here. Anything you send after this card (before tapping Submit) will be included.",
@@ -230,6 +238,9 @@ pub fn tr(lang: Lang, key: &'static str) -> &'static str {
         // 卡片终态文案（PATCH 卡片 / toast）。卡片自带样式，文案不加 emoji 前缀。
         "channel.fsSubmitted" => pick(lang, "Submitted", "已提交"),
         "channel.fsAnsweredVia" => pick(lang, "Answered via {source}", "已在{source}回答"),
+        // Cancelled terminal state (card carries its own style, no emoji prefix).
+        "channel.fsCancelled" => pick(lang, "Cancelled", "已取消"),
+        "channel.fsCancelledBy" => pick(lang, "Cancelled by {source}", "已被{source}取消"),
         "channel.fsTitleFallback" => pick(lang, "Question", "提问"),
         // 卡片表单：输入框占位 + 提交按钮文案。
         "channel.fsInputPlaceholder" => pick(lang, "Add a note (optional)", "补充说明（可选）"),
