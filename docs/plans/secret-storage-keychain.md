@@ -28,7 +28,7 @@ src-tauri/Cargo.toml  [改] 新增 keyring 依赖（按平台 feature）
 - `SettingsView.vue`：`botToken` 改密码框。
 - 状态：已实现、`cargo test` 通过、已安装并实测权限为 0600/0700。
 
-## 1. 阶段 B1：密钥库封装 `secrets.rs`
+## 1. 阶段 B1：密钥库封装 `secrets.rs`（已完成）
 
 目标：提供与上层解耦的密钥库读写，跨平台 + 可用性判定。
 
@@ -41,7 +41,7 @@ src-tauri/Cargo.toml  [改] 新增 keyring 依赖（按平台 feature）
 
 验证：`cargo build`；可加一个被 `#[ignore]` 的本机往返测试（CI 无密钥库，默认不跑）。
 
-## 2. 阶段 B2：配置层接入解析/落盘/迁移 `config.rs`
+## 2. 阶段 B2：配置层接入解析/落盘/迁移 `config.rs`（已完成）
 
 目标：上层读取零改动，密钥真值来自密钥库（兜底 config），并完成自动迁移。
 
@@ -58,7 +58,7 @@ src-tauri/Cargo.toml  [改] 新增 keyring 依赖（按平台 feature）
 
 验证：`cargo test`（现有 config 单测 + 迁移/回退的纯逻辑测试，用可注入的假密钥库或仅测「字段剥离/优先级」纯函数）。
 
-## 3. 阶段 B3：设置页交互
+## 3. 阶段 B3：设置页交互（已完成）
 
 目标：密钥不流出库，UI 用「已保存」占位 + 清除。
 
@@ -71,7 +71,7 @@ src-tauri/Cargo.toml  [改] 新增 keyring 依赖（按平台 feature）
 
 验证：装好后在设置页：未配置→输入→保存→`config.json` 字段空 + 库有条目；重开设置显示「已保存」；清除→条目删除；留空保存→不变。
 
-## 4. 阶段 B4：daemon 衔接确认
+## 4. 阶段 B4：daemon 衔接确认（已完成）
 
 目标：确认热重载/惰性失效在迁库后仍正确，必要时仅做最小适配。
 
@@ -85,7 +85,7 @@ src-tauri/Cargo.toml  [改] 新增 keyring 依赖（按平台 feature）
 
 目标：本地与发布二进制具稳定签名身份，使密钥库读取免弹框且安全不打折。
 
-### C1 本地 `scripts/install.sh`
+### C1 本地 `scripts/install.sh`（已完成）
 - 替换现「ad-hoc 重签」为：
   - identity = `${CODESIGN_IDENTITY:-<自动探测首个有效 codesigning 证书>}`；探测不到则 `-`（ad-hoc）。
   - `codesign -i com.naituw.humaninloop --force --sign "$identity" "$INSTALL_DIR/AskHuman"`。
@@ -93,7 +93,7 @@ src-tauri/Cargo.toml  [改] 新增 keyring 依赖（按平台 feature）
 
 验证：装两次（改动源码使 cdhash 变）后，daemon/设置读密钥库不再弹框（对照阶段实测）。
 
-### C2 发布 `.github/workflows/release.yml`（仅 macOS 两 target）
+### C2 发布 `.github/workflows/release.yml`（仅 macOS 两 target）（已写入，待首次 release 验证）
 - 新增「导入证书 + 签名」步骤：从 Secrets（`.p12` base64 + 密码 + 临时钥匙串密码）建临时钥匙串、导入、解锁、设搜索域，再
   `codesign -i com.naituw.humaninloop --force --options runtime --sign "Developer ID Application: …" <bin>`（`--options runtime` 可留作未来公证用，不公证亦可保留）。
 - 显式 identity，不自动探测；构建后校验 `codesign -dvv` 含预期 TeamIdentifier。

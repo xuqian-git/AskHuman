@@ -1,6 +1,6 @@
 # 需求：渠道密钥安全存储（系统钥匙串 + 构建签名）
 
-> 状态：设计已确认（review 后按计划实现）
+> 状态：已实现——B1–B4 + C1 完成并装机实测通过；C2（CI 签名）已写入 `release.yml`，待首次 tag release 端到端验证。
 > 关联计划：`docs/plans/secret-storage-keychain.md`
 > 影响面：配置读写、设置页、daemon 配置热重载、构建/发布签名。不改对外任务契约与渠道协议。
 
