@@ -89,7 +89,7 @@ src-tauri/src/
 
 - 更新 `docs/overview.md`（已随本计划一并更新「运行模型」「目录结构」「运行流程」）。
 - 用户向文档 `docs/wiki/`：如需新增「daemon 管理命令」说明则补；`AskHuman --agent-help` 文案核对。
-- `docs/TODO.md`：问题 1 标记为「由 daemon 架构解决」。
+- 旧「同 client-id 多开长连接互抢」问题：由 daemon 架构解决。
 - 全量 `cargo test`、`pnpm build`、`./scripts/install.sh` 走查；并发提问手测。
 
 ## 6. 测试策略

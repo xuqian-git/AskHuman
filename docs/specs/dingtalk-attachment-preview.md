@@ -2,7 +2,7 @@
 
 > 状态：已确认（待按计划实现）
 > 关联计划：`docs/plans/dingtalk-attachment-preview.md`
-> 需求来源：`docs/TODO.md` 第 2 条
+> 需求来源：钉钉渠道「文本附件预览」历史待办
 
 ## 1. 背景
 
