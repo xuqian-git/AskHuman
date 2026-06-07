@@ -38,6 +38,8 @@ pub struct CardSubmit {
 /// 组装提问卡片（blocks 数组）。
 /// `title` 题首（空则省略）；`text` 正文（空则省略）；`options` 预定义选项（空则无复选框）；
 /// `is_markdown` 决定正文用 mrkdwn 还是 plain_text；其余为各处文案。
+/// `nonce` 为每张卡片唯一串，拼入各 `input` 块 block_id：Slack 客户端按 block_id 缓存输入草稿，
+/// 唯一化可避免新卡片回填上一题的输入/勾选（见 `docs/plans/slack-channel.md` 反馈意见）。
 #[allow(clippy::too_many_arguments)]
 pub fn build_question_card(
     title: &str,
@@ -48,6 +50,7 @@ pub fn build_question_card(
     input_label: &str,
     input_placeholder: &str,
     submit_label: &str,
+    nonce: &str,
 ) -> Value {
     let mut blocks: Vec<Value> = Vec::new();
     if !title.trim().is_empty() {
@@ -73,7 +76,7 @@ pub fn build_question_card(
                 .collect();
             blocks.push(json!({
                 "type": "input",
-                "block_id": format!("opts_{}", k),
+                "block_id": format!("opts_{}_{}", k, nonce),
                 "optional": true,
                 "label": { "type": "plain_text", "text": options_label, "emoji": true },
                 "element": {
@@ -88,7 +91,7 @@ pub fn build_question_card(
     // 多行文本输入框（不 dispatch_action，仅在提交时随 state.values 一并回传）。
     blocks.push(json!({
         "type": "input",
-        "block_id": "userinput",
+        "block_id": format!("userinput_{}", nonce),
         "optional": true,
         "label": { "type": "plain_text", "text": input_label, "emoji": true },
         "element": {
@@ -299,6 +302,7 @@ mod tests {
             "Note",
             "Add a note",
             "Submit",
+            "n1",
         );
         let bs = blocks(&card);
         // 标题 + 正文 + 1 个复选框 input + 文本 input + actions。
@@ -319,9 +323,29 @@ mod tests {
     }
 
     #[test]
+    fn input_block_ids_carry_nonce() {
+        // 唯一 nonce 应拼入各 input 块 block_id（清除 Slack 跨卡片输入缓存）。
+        let a = build_question_card("t", "x", &["o".into()], false, "L", "N", "p", "S", "AAA");
+        let b = build_question_card("t", "x", &["o".into()], false, "L", "N", "p", "S", "BBB");
+        let id_of = |card: &Value, typ: &str| -> String {
+            blocks(card)
+                .iter()
+                .find(|bl| bl["element"]["type"] == typ)
+                .and_then(|bl| bl["block_id"].as_str())
+                .unwrap_or("")
+                .to_string()
+        };
+        assert!(id_of(&a, "plain_text_input").ends_with("AAA"));
+        assert!(id_of(&a, "checkboxes").ends_with("AAA"));
+        // 不同 nonce → 不同 block_id（避免回填）。
+        assert_ne!(id_of(&a, "plain_text_input"), id_of(&b, "plain_text_input"));
+        assert_ne!(id_of(&a, "checkboxes"), id_of(&b, "checkboxes"));
+    }
+
+    #[test]
     fn options_split_into_chunks_of_ten() {
         let options: Vec<String> = (0..23).map(|i| format!("o{}", i)).collect();
-        let card = build_question_card("t", "x", &options, false, "Options", "Note", "ph", "Submit");
+        let card = build_question_card("t", "x", &options, false, "Options", "Note", "ph", "Submit", "n");
         let bs = blocks(&card);
         let checkbox_blocks: Vec<&Value> = bs
             .iter()
@@ -334,7 +358,7 @@ mod tests {
 
     #[test]
     fn build_card_without_options_omits_checkboxes() {
-        let card = build_question_card("", "随便说点什么", &[], false, "Options", "Note", "ph", "Submit");
+        let card = build_question_card("", "随便说点什么", &[], false, "Options", "Note", "ph", "Submit", "n");
         let bs = blocks(&card);
         assert!(!bs.iter().any(|b| b["element"]["type"] == "checkboxes"));
         assert!(bs.iter().any(|b| b["element"]["type"] == "plain_text_input"));

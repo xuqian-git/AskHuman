@@ -111,3 +111,5 @@ AskHuman "请看看这个改动？" -f ./diff.patch -q "要继续吗？" -o "继
 （review 中产生的调整意见追加于此，标注日期。）
 
 - **2026-06-07（真机联调）**：发现安装文档遗漏「启用 App Home 私聊」这一必备步骤。Slack 自 2021 起默认禁止用户主动 DM 机器人（opt-in），不开则 DM 输入框置灰、提示「Sending messages to this app has been turned off」，导致自动识别的 4 位码与作答期回传图片/文件被挡。需在 App 配置 **Features → App Home → Show Tabs** 打开 **Messages Tab** 并勾选 **Allow users to send Slash commands and messages from the messages tab**，保存后刷新/重装。仅文档修订（`docs/wiki/slack-setup.md` 与 `.en.md` 新增「启用 App Home 私聊」一节 + 故障排查行），不涉及代码逻辑变更。
+
+- **2026-06-07（真机联调 · bug 修复）**：多题连问时，新一题卡片的输入框/复选框会回填上一题的内容。根因是 Slack 客户端按 `block_id`(+`action_id`) 缓存 `input` 块的草稿状态，而原实现各题卡片的 input 块 block_id 为固定常量（`userinput` / `opts_k`）。修法：每张卡片生成唯一 nonce（毫秒时间戳 + 进程内自增序号）拼入各 input 块 block_id，使 Slack 视为全新控件、输入恢复空白；`action_id` 保持不变，故 `parse_submit`（选项按 `opt_` 前缀 / 文本按类型 / 提交按 `submit`）与既有单测不受影响。改动：`slack/blockkit.rs`（`build_question_card` 增 `nonce` 参数）+ `channels/slack.rs`（`next_card_nonce()` 生成并传入）。已加单测 `input_block_ids_carry_nonce`，真机验证连问两题第二题卡片无残留。

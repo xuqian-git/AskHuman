@@ -23,11 +23,25 @@ use crate::slack::client::SlackClient;
 use crate::slack::markdown;
 use crate::slack::router::{RoutedSl, SlInbound, SlRouter};
 use serde_json::Value;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// 抢答轮询粒度：每隔此时长检查一次抢答信号。
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
+
+/// 卡片 nonce 自增计数器（进程内唯一，配合毫秒时间戳保证跨进程/重启也不重复）。
+static CARD_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// 生成每张卡片唯一的 nonce：毫秒时间戳 + 进程内自增序号。
+fn next_card_nonce() -> String {
+    let ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let seq = CARD_SEQ.fetch_add(1, Ordering::Relaxed);
+    format!("{}{}", ms, seq)
+}
 
 /// Message（正文+附件）发完到发第一道题之间的等待时长，保证「先 message 后题目」的视觉顺序。
 const MESSAGE_SETTLE_DELAY: Duration = Duration::from_millis(500);
@@ -228,6 +242,9 @@ impl MessagingChannel for SlackSession {
         let input_label = i18n::tr(ctx.lang, "channel.slInputLabel");
         let placeholder = i18n::tr(ctx.lang, "channel.slInputPlaceholder");
         let submit_label = i18n::tr(ctx.lang, "channel.slSubmitButton");
+        // 每张卡片唯一 nonce 拼入 input 块 block_id：规避 Slack 按 block_id 缓存输入草稿
+        // 导致新卡片回填上一题的输入/勾选。
+        let nonce = next_card_nonce();
         let card = blockkit::build_question_card(
             title,
             ctx.text,
@@ -237,6 +254,7 @@ impl MessagingChannel for SlackSession {
             input_label,
             placeholder,
             submit_label,
+            &nonce,
         );
         // 通知/回退文本（折叠态、推送预览）。
         let notify = fallback_notify(title, ctx);
