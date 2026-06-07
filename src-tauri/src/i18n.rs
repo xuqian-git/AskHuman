@@ -100,6 +100,11 @@ pub fn tr(lang: Lang, key: &'static str) -> &'static str {
 
         // —— CLI 解析/分发错误 ——
         "cli.missingContent" => pick(lang, "missing question content", "缺少提问内容"),
+        "cli.seeAgentHelp" => pick(
+            lang,
+            "Run `{prog} --agent-help` to see the full asking usage.",
+            "运行 `{prog} --agent-help` 查看完整的提问用法说明。",
+        ),
         "cli.unknownOption" => pick(lang, "unknown option {opt}", "未知选项 {opt}"),
         "cli.unknownOptionColon" => pick(lang, "unknown option: {opt}", "未知选项: {opt}"),
         "cli.optionMissingValue" => pick(lang, "{opt} option is missing a value", "{opt} 选项缺少参数值"),

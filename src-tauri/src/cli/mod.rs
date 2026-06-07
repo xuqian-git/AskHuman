@@ -15,7 +15,11 @@ pub fn dispatch() {
     // 完全无参数：报错 + 通用 Help（让用户直接 `AskHuman` 即可看到全部用法，而非仅提问说明）。
     // 注意：有参数但解析失败 / 未知选项的情况，仍展示提问导向的 agent-help（见下方分支）。
     if argv.len() < 2 {
-        eprintln!("{}{}\n", i18n::err_prefix(lang), i18n::tr(lang, "cli.missingContent"));
+        eprintln!("{}{}", i18n::err_prefix(lang), i18n::tr(lang, "cli.missingContent"));
+        eprintln!(
+            "{}\n",
+            i18n::tr(lang, "cli.seeAgentHelp").replace("{prog}", &help::program_name())
+        );
         println!("{}", help::help_text(lang));
         exit(1);
     }
