@@ -11,7 +11,7 @@ async function bootstrap() {
   applyLanguage("auto");
   try {
     const s = await getSettings();
-    applyLanguage(s.general.language);
+    applyLanguage(s.config.general.language);
   } catch {
     /* 读取失败：保持兜底语言 */
   }

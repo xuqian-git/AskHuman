@@ -818,8 +818,8 @@ onMounted(async () => {
   // 读取识别语言 / 快捷键设置 + 探测语音是否可用（macOS 26+）。
   try {
     const s = await getSettings();
-    speechLang.value = s.general.speechLanguage || "auto";
-    speechShortcut.value = s.general.speechShortcut ?? "cmd+d";
+    speechLang.value = s.config.general.speechLanguage || "auto";
+    speechShortcut.value = s.config.general.speechShortcut ?? "cmd+d";
   } catch {
     /* 读取失败：保持默认 */
   }

@@ -36,6 +36,9 @@ import type {
   AppConfig,
   HookStatus,
   PopupAnimation,
+  SecretAction,
+  SecretActions,
+  SecretsPresent,
   ThemeMode,
   UiLanguage,
   WindowEffect,
@@ -50,6 +53,16 @@ type Tab = "general" | "integration" | "channel";
 
 const config = ref<AppConfig | null>(null);
 const activeTab = ref<Tab>("general");
+
+// Secrets are never loaded into the UI; we only know whether each is configured (for the
+// placeholder) and track an explicit "cleared" intent until the next save.
+const secretsPresent = ref<SecretsPresent>({
+  dingdingSecret: false,
+  feishuSecret: false,
+  telegramToken: false,
+});
+const secretCleared = ref({ dingding: false, feishu: false, telegram: false });
+const SECRET_PLACEHOLDER = "••••••••";
 
 // tab 按钮同时是窗口拖拽区：用屏幕坐标区分「点击切换」与「拖动移窗」。
 // 原生拖窗时窗口跟随光标，clientX/Y 几乎不变，故必须用 screenX/Y。
@@ -97,8 +110,62 @@ function clamp(v: number, min: number, max: number) {
 // 是否支持 Liquid Glass（macOS 26+）：决定「玻璃/模糊」开关是否显示。
 const glassSupported = ref(true);
 
+// Build a secret's edit intent: a typed value wins (set); else an explicit clear; else unchanged.
+function secretActionFor(value: string, cleared: boolean): SecretAction {
+  if (value && value.length > 0) return { kind: "set", value };
+  if (cleared) return { kind: "clear" };
+  return { kind: "unchanged" };
+}
+
 async function persist() {
-  if (config.value) await saveSettings(config.value);
+  if (!config.value) return;
+  const c = config.value.channels;
+  const actions: SecretActions = {
+    dingdingSecret: secretActionFor(
+      c.dingding.clientSecret,
+      secretCleared.value.dingding
+    ),
+    feishuSecret: secretActionFor(c.feishu.appSecret, secretCleared.value.feishu),
+    telegramToken: secretActionFor(
+      c.telegram.botToken,
+      secretCleared.value.telegram
+    ),
+  };
+  await saveSettings(config.value, actions);
+  // Reflect the saved state: a set secret becomes a "Saved" placeholder, a cleared one becomes
+  // empty. Wipe the field so the secret is never re-sent on subsequent saves.
+  finalizeSecret(actions.dingdingSecret, "dingdingSecret", "dingding");
+  finalizeSecret(actions.feishuSecret, "feishuSecret", "feishu");
+  finalizeSecret(actions.telegramToken, "telegramToken", "telegram");
+}
+
+function finalizeSecret(
+  action: SecretAction,
+  presentKey: keyof SecretsPresent,
+  clearedKey: "dingding" | "feishu" | "telegram"
+) {
+  if (!config.value) return;
+  if (action.kind === "set") secretsPresent.value[presentKey] = true;
+  else if (action.kind === "clear") secretsPresent.value[presentKey] = false;
+  if (action.kind !== "unchanged") {
+    const c = config.value.channels;
+    if (clearedKey === "dingding") c.dingding.clientSecret = "";
+    else if (clearedKey === "feishu") c.feishu.appSecret = "";
+    else c.telegram.botToken = "";
+  }
+  secretCleared.value[clearedKey] = false;
+}
+
+// "Clear" button: drop the saved secret (deletes the keychain entry on save) and re-persist so the
+// daemon reloads with the secret gone.
+function clearSecret(channel: "dingding" | "feishu" | "telegram") {
+  if (!config.value) return;
+  const c = config.value.channels;
+  if (channel === "dingding") c.dingding.clientSecret = "";
+  else if (channel === "feishu") c.feishu.appSecret = "";
+  else c.telegram.botToken = "";
+  secretCleared.value[channel] = true;
+  persist();
 }
 
 async function changeTheme(theme: ThemeMode) {
@@ -406,7 +473,9 @@ async function runFeishuDetect() {
 }
 
 onMounted(async () => {
-  config.value = await getSettings();
+  const payload = await getSettings();
+  config.value = payload.config;
+  secretsPresent.value = payload.secretsPresent;
   applyTheme(config.value.general.theme);
   applyLanguage(config.value.general.language);
   unlistenSettings = await listen<{ language?: UiLanguage }>(
@@ -819,12 +888,26 @@ onMounted(async () => {
             <hr class="divider" />
             <div class="field">
               <label>{{ t("settings.channels.botToken") }}</label>
-              <input
-                class="input"
-                type="password"
-                v-model="config.channels.telegram.botToken"
-                @change="persist"
-              />
+              <div class="row">
+                <input
+                  class="input"
+                  style="flex: 1"
+                  type="password"
+                  :placeholder="
+                    secretsPresent.telegramToken ? SECRET_PLACEHOLDER : ''
+                  "
+                  v-model="config.channels.telegram.botToken"
+                  @change="persist"
+                />
+                <button
+                  v-if="secretsPresent.telegramToken"
+                  class="btn"
+                  type="button"
+                  @click="clearSecret('telegram')"
+                >
+                  {{ t("settings.channels.clearSecret") }}
+                </button>
+              </div>
             </div>
             <div class="field">
               <label>{{ t("settings.channels.chatId") }}</label>
@@ -893,12 +976,26 @@ onMounted(async () => {
             </div>
             <div class="field">
               <label>{{ t("settings.channels.clientSecret") }}</label>
-              <input
-                class="input"
-                type="password"
-                v-model="config.channels.dingding.clientSecret"
-                @change="persist"
-              />
+              <div class="row">
+                <input
+                  class="input"
+                  style="flex: 1"
+                  type="password"
+                  :placeholder="
+                    secretsPresent.dingdingSecret ? SECRET_PLACEHOLDER : ''
+                  "
+                  v-model="config.channels.dingding.clientSecret"
+                  @change="persist"
+                />
+                <button
+                  v-if="secretsPresent.dingdingSecret"
+                  class="btn"
+                  type="button"
+                  @click="clearSecret('dingding')"
+                >
+                  {{ t("settings.channels.clearSecret") }}
+                </button>
+              </div>
             </div>
             <div class="field">
               <label>{{ t("settings.channels.userId") }}</label>
@@ -1023,12 +1120,26 @@ onMounted(async () => {
             </div>
             <div class="field">
               <label>{{ t("settings.channels.appSecret") }}</label>
-              <input
-                class="input"
-                type="password"
-                v-model="config.channels.feishu.appSecret"
-                @change="persist"
-              />
+              <div class="row">
+                <input
+                  class="input"
+                  style="flex: 1"
+                  type="password"
+                  :placeholder="
+                    secretsPresent.feishuSecret ? SECRET_PLACEHOLDER : ''
+                  "
+                  v-model="config.channels.feishu.appSecret"
+                  @change="persist"
+                />
+                <button
+                  v-if="secretsPresent.feishuSecret"
+                  class="btn"
+                  type="button"
+                  @click="clearSecret('feishu')"
+                >
+                  {{ t("settings.channels.clearSecret") }}
+                </button>
+              </div>
             </div>
             <div class="field">
               <label>{{ t("settings.channels.openId") }}</label>

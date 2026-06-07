@@ -223,13 +223,89 @@ fn theme_str(theme: ThemeMode) -> String {
 
 // ===== 设置页命令 =====
 
-#[tauri::command]
-pub fn get_settings() -> AppConfig {
-    AppConfig::load()
+/// Whether each channel secret is currently configured (keychain or plaintext fallback). Drives
+/// the settings page "Saved" placeholder without ever exposing the secret value.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SecretsPresent {
+    dingding_secret: bool,
+    feishu_secret: bool,
+    telegram_token: bool,
+}
+
+/// Settings payload: the config with secrets blanked, plus per-secret presence flags.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SettingsPayload {
+    config: AppConfig,
+    secrets_present: SecretsPresent,
+}
+
+/// Per-secret edit intent sent by the settings page on save. The secret value never round-trips
+/// through the config object; it is carried only here (and only for `set`).
+#[derive(Deserialize, Default)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum SecretAction {
+    /// Keep the stored secret as-is (the user did not touch the field).
+    #[default]
+    Unchanged,
+    /// Replace the stored secret with `value`.
+    Set { value: String },
+    /// Delete the stored secret from the keychain.
+    Clear,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SecretActions {
+    dingding_secret: SecretAction,
+    feishu_secret: SecretAction,
+    telegram_token: SecretAction,
 }
 
 #[tauri::command]
-pub fn save_settings(app: AppHandle, config: AppConfig) -> Result<(), String> {
+pub fn get_settings() -> SettingsPayload {
+    let mut config = AppConfig::load();
+    // Presence is derived from the resolved value (keychain first, plaintext fallback).
+    let secrets_present = SecretsPresent {
+        dingding_secret: !config.channels.dingding.client_secret.is_empty(),
+        feishu_secret: !config.channels.feishu.app_secret.is_empty(),
+        telegram_token: !config.channels.telegram.bot_token.is_empty(),
+    };
+    // Never let resolved secrets reach the UI; the page shows a fixed-length placeholder instead.
+    config.channels.dingding.client_secret.clear();
+    config.channels.feishu.app_secret.clear();
+    config.channels.telegram.bot_token.clear();
+    SettingsPayload {
+        config,
+        secrets_present,
+    }
+}
+
+#[tauri::command]
+pub fn save_settings(
+    app: AppHandle,
+    mut config: AppConfig,
+    secret_actions: SecretActions,
+) -> Result<(), String> {
+    // Secrets are governed solely by the explicit actions (the incoming config carries blank
+    // placeholders). unchanged → leave the field empty so save() won't touch the keychain;
+    // set → store it via save(); clear → delete from the keychain now.
+    apply_secret_action(
+        &mut config.channels.dingding.client_secret,
+        crate::secrets::ACCOUNT_DINGTALK_SECRET,
+        secret_actions.dingding_secret,
+    );
+    apply_secret_action(
+        &mut config.channels.feishu.app_secret,
+        crate::secrets::ACCOUNT_FEISHU_SECRET,
+        secret_actions.feishu_secret,
+    );
+    apply_secret_action(
+        &mut config.channels.telegram.bot_token,
+        crate::secrets::ACCOUNT_TELEGRAM_TOKEN,
+        secret_actions.telegram_token,
+    );
     config.save().map_err(|e| e.to_string())?;
     // 广播 general 配置，令同进程内已打开的弹窗实时生效（如语音语言/快捷键）。
     let _ = app.emit("settings-updated", &config.general);
@@ -242,6 +318,28 @@ pub fn save_settings(app: AppHandle, config: AppConfig) -> Result<(), String> {
         let _ = w.set_title(crate::i18n::tr(lang, "title.popup"));
     }
     Ok(())
+}
+
+/// Apply one secret's edit intent to the in-memory config field before persisting.
+fn apply_secret_action(field: &mut String, account: &str, action: SecretAction) {
+    match action {
+        SecretAction::Unchanged => field.clear(),
+        SecretAction::Set { value } => *field = value,
+        SecretAction::Clear => {
+            let _ = crate::secrets::delete(account);
+            field.clear();
+        }
+    }
+}
+
+/// Resolve the secret to use for a test/detect call. The settings form sends an empty secret when
+/// the user kept the "Saved" placeholder; fall back to the effective secret (keychain or plaintext
+/// config fallback) so they need not retype it. A non-empty `provided` always wins.
+fn fallback_secret(provided: &str, pick: impl FnOnce(&AppConfig) -> String) -> String {
+    if !provided.trim().is_empty() {
+        return provided.to_string();
+    }
+    pick(&AppConfig::load())
 }
 
 #[tauri::command]
@@ -412,7 +510,8 @@ pub struct TelegramTestArgs {
 #[tauri::command]
 pub async fn telegram_test(args: TelegramTestArgs) -> Result<String, String> {
     let lang = crate::i18n::Lang::current();
-    let client = TelegramClient::new(args.bot_token, args.chat_id, args.api_base_url)
+    let bot_token = fallback_secret(&args.bot_token, |c| c.channels.telegram.bot_token.clone());
+    let client = TelegramClient::new(bot_token, args.chat_id, args.api_base_url)
         .map_err(|e| e.localized(lang))?;
     client.test_connection(lang).await.map_err(|e| e.localized(lang))
 }
@@ -438,10 +537,12 @@ pub async fn dingtalk_test(args: DingTalkTestArgs) -> Result<String, String> {
     if args.user_id.trim().is_empty() {
         return Err(crate::i18n::tr(lang, "cmd.fillUserId").to_string());
     }
+    let client_secret =
+        fallback_secret(&args.client_secret, |c| c.channels.dingding.client_secret.clone());
     let cfg = DingTalkChannelConfig {
         enabled: true,
         client_id: args.client_id,
-        client_secret: args.client_secret,
+        client_secret,
         user_id: args.user_id,
         card_template_id: String::new(),
         ..Default::default()
@@ -467,7 +568,8 @@ pub struct DingTalkDetectArgs {
 pub async fn dingtalk_detect_prepare(args: DingTalkDetectArgs) -> Result<String, String> {
     let lang = crate::i18n::Lang::current();
     let client_id = args.client_id.trim();
-    let client_secret = args.client_secret.trim();
+    let secret = fallback_secret(&args.client_secret, |c| c.channels.dingding.client_secret.clone());
+    let client_secret = secret.trim();
     if client_id.is_empty() || client_secret.is_empty() {
         return Err(crate::i18n::tr(lang, "cmd.fillClientIdSecret").to_string());
     }
@@ -493,7 +595,8 @@ pub async fn dingtalk_detect_wait(args: DingTalkWaitArgs) -> Result<String, Stri
     use std::time::Duration;
     let lang = crate::i18n::Lang::current();
     let client_id = args.client_id.trim();
-    let client_secret = args.client_secret.trim();
+    let secret = fallback_secret(&args.client_secret, |c| c.channels.dingding.client_secret.clone());
+    let client_secret = secret.trim();
     if client_id.is_empty() || client_secret.is_empty() {
         return Err(crate::i18n::tr(lang, "cmd.fillClientIdSecret").to_string());
     }
@@ -575,10 +678,11 @@ pub async fn feishu_test(args: FeishuTestArgs) -> Result<String, String> {
     if args.open_id.trim().is_empty() {
         return Err(crate::i18n::tr(lang, "cmd.fillOpenId").to_string());
     }
+    let app_secret = fallback_secret(&args.app_secret, |c| c.channels.feishu.app_secret.clone());
     let cfg = FeishuChannelConfig {
         enabled: true,
         app_id: args.app_id,
-        app_secret: args.app_secret,
+        app_secret,
         open_id: args.open_id,
         base_url: args.base_url,
     };
@@ -603,7 +707,8 @@ pub struct FeishuDetectArgs {
 pub async fn feishu_detect_prepare(args: FeishuDetectArgs) -> Result<String, String> {
     let lang = crate::i18n::Lang::current();
     let app_id = args.app_id.trim();
-    let app_secret = args.app_secret.trim();
+    let secret = fallback_secret(&args.app_secret, |c| c.channels.feishu.app_secret.clone());
+    let app_secret = secret.trim();
     if app_id.is_empty() || app_secret.is_empty() {
         return Err(crate::i18n::tr(lang, "cmd.fillAppIdSecret").to_string());
     }
@@ -630,7 +735,8 @@ pub async fn feishu_detect_wait(args: FeishuWaitArgs) -> Result<String, String> 
     use std::time::Duration;
     let lang = crate::i18n::Lang::current();
     let app_id = args.app_id.trim();
-    let app_secret = args.app_secret.trim();
+    let secret = fallback_secret(&args.app_secret, |c| c.channels.feishu.app_secret.clone());
+    let app_secret = secret.trim();
     if app_id.is_empty() || app_secret.is_empty() {
         return Err(crate::i18n::tr(lang, "cmd.fillAppIdSecret").to_string());
     }

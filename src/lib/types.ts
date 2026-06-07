@@ -111,6 +111,31 @@ export interface AppConfig {
   channels: ChannelsConfig;
 }
 
+/** Whether each channel secret is currently stored (drives the "Saved" placeholder). */
+export interface SecretsPresent {
+  dingdingSecret: boolean;
+  feishuSecret: boolean;
+  telegramToken: boolean;
+}
+
+/** Settings payload: config with secrets blanked + per-secret presence flags. */
+export interface SettingsPayload {
+  config: AppConfig;
+  secretsPresent: SecretsPresent;
+}
+
+/** Per-secret edit intent sent on save. Secrets never round-trip through the config object. */
+export type SecretAction =
+  | { kind: "unchanged" }
+  | { kind: "set"; value: string }
+  | { kind: "clear" };
+
+export interface SecretActions {
+  dingdingSecret: SecretAction;
+  feishuSecret: SecretAction;
+  telegramToken: SecretAction;
+}
+
 export interface HookStatus {
   installed: boolean;
   hooksJsonExists: boolean;

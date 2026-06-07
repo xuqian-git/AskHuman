@@ -10,6 +10,8 @@ import type {
   HookStatus,
   PopupInit,
   PopupSubmission,
+  SecretActions,
+  SettingsPayload,
   TelegramTestArgs,
   ThemeMode,
   WindowEffect,
@@ -40,10 +42,10 @@ export const fileIconDataUrl = (path: string) =>
 export const showAttachmentMenu = (path: string) =>
   invoke<void>("show_attachment_menu", { path });
 
-export const getSettings = () => invoke<AppConfig>("get_settings");
+export const getSettings = () => invoke<SettingsPayload>("get_settings");
 
-export const saveSettings = (config: AppConfig) =>
-  invoke<void>("save_settings", { config });
+export const saveSettings = (config: AppConfig, secretActions: SecretActions) =>
+  invoke<void>("save_settings", { config, secretActions });
 
 export const getPrompt = () => invoke<string>("get_prompt");
 

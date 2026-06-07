@@ -127,6 +127,7 @@ export default {
       apiBaseUrl: "API Base URL",
       testConnection: "测试连接",
       testing: "测试中…",
+      clearSecret: "清除",
       dingtalkTitle: "钉钉",
       clientId: "ClientId（AppKey）",
       clientSecret: "ClientSecret（AppSecret）",
