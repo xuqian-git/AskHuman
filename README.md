@@ -8,20 +8,19 @@
 
 跨平台的「Human-in-the-loop」交互工具。当 AI Agent 准备结束对话或需要确认时，调用命令行 `AskHuman` 弹出窗口，让你继续提问、勾选选项、补充文字或附带图片，并把结果回传给 AI。
 
-- 单一可执行文件 `AskHuman`，既是 CLI 又能按需弹出 GUI 窗口
+- 单一可执行文件 `AskHuman`，允许 Agent 通过 CLI 方式调用提问
 - 基于 **Tauri 2（Rust + Vue 3）**，支持 **macOS / Windows / Linux**
 - 多通信渠道：本地弹窗 + Telegram + 钉钉 + 飞书，可独立开关、多开并行「抢答」
-- 回复历史：按项目回看最近的消息与回答（含回复渠道），跨所有渠道统一记录
 
 ## 功能预览
 
-Agent 的提问会同时送达本地 GUI 弹窗与钉钉、飞书、Telegram 等 IM 渠道，无论你在电脑前还是手机上，都能在最顺手的渠道随手回复。
+Agent 的提问会同时送达本地 GUI 弹窗与钉钉、飞书、Telegram，并提供关键上下文、附件及预选项，无论你是否在电脑前，都能随时收到通知并回复。
 
 <p align="center">
   <img src="assets/channels.webp" alt="在本地弹窗、钉钉、飞书、Telegram 等多渠道回复 Agent" width="900">
 </p>
 
-每一次提问与回复都会按项目自动留存，随时翻阅历史，回顾当时的消息与你的答案。
+工具会自动记录最近的 Agent 提问及人类回答历史，在回答新问题时，可以随时参考。（若不需要历史记录，可以在设置中关闭）
 
 <p align="center">
   <img src="assets/history.webp" alt="按项目查看消息与回复历史" width="680">

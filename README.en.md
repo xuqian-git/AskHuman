@@ -8,20 +8,19 @@
 
 A cross-platform human-in-the-loop tool. When an AI agent is about to end a conversation or needs confirmation, it runs the `AskHuman` CLI to pop up a window so you can ask follow-ups, pick options, add text, or attach images — and the result is returned to the agent.
 
-- A single executable `AskHuman` that is both a CLI and an on-demand GUI popup
+- A single executable `AskHuman` that lets agents ask questions through the CLI
 - Built on **Tauri 2 (Rust + Vue 3)**, supports **macOS / Windows / Linux**
 - Multiple channels: local popup + Telegram + DingTalk + Feishu, independently toggleable and racing in parallel when several are on
-- Reply history: review recent messages and answers per project (including the reply channel), recorded uniformly across all channels
 
 ## Screenshots
 
-Your agent's questions arrive at the local GUI popup and IM channels like DingTalk, Feishu, and Telegram all at once — whether you're at your desk or on your phone, just reply from whichever is closest at hand.
+Your agent's questions arrive at the local GUI popup and DingTalk, Feishu, and Telegram all at once, along with the key context, attachments, and preset options — so whether or not you're at your desk, you get notified and can reply anytime.
 
 <p align="center">
   <img src="assets/channels.webp" alt="Reply to your agent from the local popup, DingTalk, Feishu, or Telegram" width="900">
 </p>
 
-Every question and reply is kept automatically per project, so you can browse the history anytime and revisit past messages and your answers.
+The tool automatically records the recent history of agent questions and human answers, so you can refer back to it anytime while answering new questions. (If you don't need history, you can turn it off in the settings.)
 
 <p align="center">
   <img src="assets/history.webp" alt="Browse message and reply history per project" width="680">
