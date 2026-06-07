@@ -2,6 +2,10 @@ name: release
 
 # 由 tag 触发：编译 4 平台二进制 → 发布 npm（主包 + 平台子包）→ 创建 GitHub Release。
 # 前置条件：仓库 Secrets 配置 NPM_TOKEN（npmjs automation token）。
+# macOS 二进制用 Developer ID 签名（钥匙串密钥读取免弹框），需额外 Secrets：
+#   MACOS_CERT_P12_BASE64   Developer ID Application 证书（含私钥）的 .p12 经 base64
+#   MACOS_CERT_PASSWORD     导出 .p12 时设置的密码
+#   MACOS_KEYCHAIN_PASSWORD CI 临时钥匙串的任意密码
 # 发版流程：node scripts/bump-version.mjs X.Y.Z → 提交 → git tag vX.Y.Z → git push --tags
 
 on:
@@ -67,6 +71,41 @@ jobs:
       - run: pnpm build
 
       - run: cargo build --release --manifest-path src-tauri/Cargo.toml --target ${{ matrix.target }} --features custom-protocol
+
+      # Sign macOS binaries with the Developer ID cert (explicit, from Secrets — no auto-detect) so
+      # the keychain trusts them across updates (DR is cdhash-independent → secret reads stay
+      # prompt-free for end users). Runs before upload so the published artifact is signed.
+      - name: Sign macOS binary (Developer ID)
+        if: runner.os == 'macOS'
+        env:
+          MACOS_CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          MACOS_KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
+          EXPECTED_TEAM_ID: DMJXDB9H6Q
+        run: |
+          set -euo pipefail
+          BIN="src-tauri/target/${{ matrix.target }}/release/AskHuman"
+          CERT_P12="$RUNNER_TEMP/cert.p12"
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          # GitHub Secrets store text, so the .p12 is base64-encoded; decode it back to a file.
+          echo -n "$MACOS_CERT_P12_BASE64" | base64 --decode -o "$CERT_P12"
+          # Import the cert into a throwaway keychain (Apple's recommended CI pattern).
+          security create-keychain -p "$MACOS_KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$MACOS_KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$CERT_P12" -P "$MACOS_CERT_PASSWORD" -t cert -f pkcs12 -k "$KEYCHAIN" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -k "$MACOS_KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN"
+          # The throwaway keychain holds exactly one identity → deterministic, explicit selection.
+          IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN" | awk '/Developer ID Application/{print $2; exit}')
+          if [ -z "$IDENTITY" ]; then echo "::error::no Developer ID Application identity found in keychain"; exit 1; fi
+          # Fixed identifier keeps the keychain designated requirement cdhash-independent.
+          codesign -i com.naituw.humaninloop --force --options runtime --timestamp --sign "$IDENTITY" "$BIN"
+          codesign --verify --strict --verbose=2 "$BIN"
+          codesign -dvv "$BIN" 2>&1 | tee "$RUNNER_TEMP/codesign.txt"
+          grep -q "TeamIdentifier=$EXPECTED_TEAM_ID" "$RUNNER_TEMP/codesign.txt" \
+            || { echo "::error::unexpected TeamIdentifier (want $EXPECTED_TEAM_ID)"; exit 1; }
+          echo "signed $BIN as $IDENTITY"
 
       - uses: actions/upload-artifact@v4
         with:
