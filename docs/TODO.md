@@ -37,15 +37,15 @@
   3. 去掉了提交路径上的 `patch_card` 兜底（那次二次渲染是残留快速回弹的来源）；被抢答/断连路径仍用 `patch_card`（无回调可同步回包）。
 - **现状**：置灰快了很多、不再二次渲染；**仍有一下极快的回弹**——经排查为**飞书客户端自身渲染行为**（收到回调先复位按钮再套用新卡片），非本端可控，保持现状。
 
-### Telegram
-- 用 `answerCallbackQuery`，机制不同，**预计无此类问题**；待人工回归确认。
+### Telegram ✅
+- 用 `answerCallbackQuery`，机制不同；已人工回归确认：点按钮无报错、卡片正常更新、答案送达，无需改动。
 
 ## daemon 架构：待补充的人工实测
 
 > 已通过的真机实测（install 后经新 daemon→GUI Helper 链路）：① 单题弹窗作答（退出 0）；② **并发两请求弹窗不串台**（A→A、B→B）；③ 取消返回 `[Status]` 再问指引（退出 0）；④ `daemon status` 显示 running 且 `im conns: dingtalk, feishu, telegram`（三连接常热单实例）。下列为尚未逐项跑过、建议后续补做的人工测试：
 
 - [ ] **真实 IM 并发（真 TODO#1）**：同时发起两个请求 → 分别在钉钉 / 飞书 / Telegram 的卡片上作答，验证：(a) 回复不串台（按 `outTrackId`/`open_message_id`/callback `message_id` 路由到正确请求）；(b) 自由文字归属正确（Telegram 归「最新活动卡片」、钉钉聊天按 `senderStaffId`、飞书按 `open_id`）；(c) 同一 client_id 仅一条长连接、无多开互抢。
-- [ ] **飞书 / Telegram 提交回包**：确认它们点提交**不会**出现钉钉那样的『请求失败』误报（预计不会，模型不同）；若有，按钉钉同款方案修。
+- [x] **飞书 / Telegram 提交回包**：飞书已改同步回包（残留回弹为飞书自身渲染）；Telegram 实测正常无需改。
 - [ ] **被抢答 / 跨渠道抢答**：一个请求同时挂多渠道（弹窗 + IM），在某一渠道作答后，其余渠道卡片应即时置灰为「已在 X 回答」（走 OpenAPI `updateCard`/`patchCard`）。
 - [ ] **Phase 3 实时配置（验收 #7）**：弹窗开着时修改 `config.json` 的主题 / 语言（或在设置窗口改并保存）→ 验证打开中的弹窗**实时切换**主题/语言（daemon `config_watch` → `ConfigChanged` → 前端 `settings-updated`）。
 - [ ] **Phase 3 凭据热重载（惰性失效）**：修改某渠道凭据 / 禁用某渠道 → 观察 `daemon.log` 出现 `config reloaded`；下一个请求按新配置重连（旧缓存 Router 被丢弃），进行中的请求保留其原连接直到结束。
