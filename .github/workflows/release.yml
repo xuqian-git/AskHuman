@@ -37,7 +37,7 @@ jobs:
             target: x86_64-unknown-linux-gnu
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           lfs: true # 图标走 Git LFS，需拉取真实文件，否则 tauri 打包读到指针报「Invalid PNG signature」
 
@@ -51,11 +51,11 @@ jobs:
             librsvg2-dev \
             patchelf
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 10
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 20
           cache: pnpm
@@ -109,7 +109,7 @@ jobs:
             || { echo "::error::unexpected TeamIdentifier (want $EXPECTED_TEAM_ID)"; exit 1; }
           echo "signed $BIN as $IDENTITY"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: binary-${{ matrix.target }}
           if-no-files-found: error
@@ -122,16 +122,16 @@ jobs:
     needs: build
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           lfs: true # 与 build 保持一致；图标走 LFS
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 20
           registry-url: "https://registry.npmjs.org"
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           path: artifacts
 
@@ -199,7 +199,7 @@ jobs:
           publish_one "packaging/npm/humaninloop"
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: release-assets/*
           generate_release_notes: true

@@ -28,7 +28,7 @@ jobs:
             target: x86_64-unknown-linux-gnu
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           lfs: true # 图标走 Git LFS，需拉取真实文件，否则 tauri 打包读到指针报「Invalid PNG signature」
 
@@ -42,11 +42,11 @@ jobs:
             librsvg2-dev \
             patchelf
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 10
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 20
           cache: pnpm
@@ -70,7 +70,7 @@ jobs:
       - name: cargo build (release)
         run: cargo build --release --manifest-path src-tauri/Cargo.toml --target ${{ matrix.target }} --features custom-protocol
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: ci-binary-${{ matrix.target }}
           if-no-files-found: ignore
