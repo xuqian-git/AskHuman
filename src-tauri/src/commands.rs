@@ -588,6 +588,43 @@ pub fn cursor_hook_reveal() {
     cursor_hook::reveal();
 }
 
+// ===== Claude Code Hook（PreToolUse 超时延长） =====
+
+use crate::integrations::claude_hook;
+
+/// Claude Code Hook 安装状态（与 Cursor Hook 对称，驱动设置页徽标与按钮）。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaudeHookStatus {
+    installed: bool,
+    settings_exists: bool,
+    supported: bool,
+}
+
+#[tauri::command]
+pub fn claude_hook_status() -> ClaudeHookStatus {
+    ClaudeHookStatus {
+        installed: claude_hook::is_installed(),
+        settings_exists: claude_hook::settings_exists(),
+        supported: claude_hook::supported(),
+    }
+}
+
+#[tauri::command]
+pub fn claude_hook_install() -> Result<String, String> {
+    claude_hook::install().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn claude_hook_uninstall() -> Result<String, String> {
+    claude_hook::uninstall().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn claude_hook_reveal() {
+    claude_hook::reveal();
+}
+
 // ===== Agent 全局规则（Cursor / Claude Code / Codex） =====
 
 use crate::integrations::agent_rules::{self, AgentTarget};

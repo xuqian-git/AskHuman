@@ -82,6 +82,16 @@ pub fn claude_md() -> PathBuf {
     claude_dir().join("CLAUDE.md")
 }
 
+/// Claude Code 用户级设置文件 `~/.claude/settings.json`（hooks / env 等都写在此）。
+pub fn claude_settings_json() -> PathBuf {
+    claude_dir().join("settings.json")
+}
+
+/// Claude Code hook 脚本 `~/.claude/hooks/askhuman-timeout.sh`。
+pub fn claude_hook_script() -> PathBuf {
+    claude_dir().join("hooks").join("askhuman-timeout.sh")
+}
+
 /// Codex 配置目录 `~/.codex`。
 pub fn codex_dir() -> PathBuf {
     home().join(".codex")

@@ -112,20 +112,15 @@ export default {
       hookLabel: "Hook",
       reveal: "定位",
       openFile: "打开",
-      comingSoon: "即将支持",
       installRule: "安装规则",
       hookShort: "检测到调用 AskHuman 时自动把超时延长到 24 小时，避免长时间等待被取消。",
       cursorRulesHint:
         "需项目位于用户主目录（~）之下才会全局生效；其它位置请在 Cursor 设置 → Rules 手动配置。",
-      hookTitle: "Cursor Hook",
       installed: "已安装",
       notInstalled: "未安装",
-      hookDesc:
-        "安装后会在 ~/.cursor/hooks.json 注册 preToolUse 钩子：检测到 Shell 调用 AskHuman 时自动把超时延长到 24 小时，避免长时间等待被强制取消。移除时仅删除本应用注入的条目。",
       install: "安装",
       uninstall: "移除",
-      openHooks: "打开 hooks.json",
-      windowsUnsupported: "Windows 暂不支持 Cursor Hook",
+      windowsUnsupported: "Windows 暂不支持该 Hook",
     },
     channels: {
       popupTitle: "本地弹窗",

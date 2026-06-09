@@ -8,6 +8,7 @@ import type {
   FeishuTestArgs,
   FeishuWaitArgs,
   AgentId,
+  ClaudeHookStatus,
   HistoryEntry,
   HistoryInit,
   HookStatus,
@@ -104,6 +105,16 @@ export const cursorHookInstall = () => invoke<string>("cursor_hook_install");
 export const cursorHookUninstall = () => invoke<string>("cursor_hook_uninstall");
 
 export const cursorHookReveal = () => invoke<void>("cursor_hook_reveal");
+
+export const claudeHookStatus = () =>
+  invoke<ClaudeHookStatus>("claude_hook_status");
+
+export const claudeHookInstall = () => invoke<string>("claude_hook_install");
+
+export const claudeHookUninstall = () =>
+  invoke<string>("claude_hook_uninstall");
+
+export const claudeHookReveal = () => invoke<void>("claude_hook_reveal");
 
 export const agentRuleStatus = (agent: AgentId) =>
   invoke<RuleStatus>("agent_rule_status", { agent });

@@ -10,6 +10,10 @@ import {
   agentRuleStatus,
   agentRuleUninstall,
   applyWindowEffect,
+  claudeHookInstall,
+  claudeHookReveal,
+  claudeHookStatus,
+  claudeHookUninstall,
   cursorHookInstall,
   cursorHookReveal,
   cursorHookStatus,
@@ -45,6 +49,7 @@ import { isGlassSupported } from "tauri-plugin-liquid-glass-api";
 import type {
   AgentId,
   AppConfig,
+  ClaudeHookStatus,
   HookStatus,
   PopupAnimation,
   RuleStatus,
@@ -107,10 +112,19 @@ const hook = ref<HookStatus>({
 const hookMessage = ref<string | null>(null);
 const hookError = ref(false);
 
-// 三个 Agent 的全局 Rules 安装状态 + 操作反馈。
+// Claude Code Hook（与 Cursor Hook 对称）。
+const claudeHook = ref<ClaudeHookStatus>({
+  installed: false,
+  settingsExists: false,
+  supported: true,
+});
+const claudeHookMessage = ref<string | null>(null);
+const claudeHookError = ref(false);
+
+// 各 Agent 的 Rules / Hook 安装状态 + 操作反馈。Codex 暂无可行的超时 Hook（hasHook=false）。
 const AGENTS: { id: AgentId; title: string; hasHook: boolean }[] = [
   { id: "cursor", title: "Cursor", hasHook: true },
-  { id: "claude", title: "Claude Code", hasHook: false },
+  { id: "claude", title: "Claude Code", hasHook: true },
   { id: "codex", title: "Codex", hasHook: false },
 ];
 const emptyRule = (): RuleStatus => ({
@@ -463,6 +477,72 @@ async function uninstallHook() {
   await refreshHook();
 }
 
+async function refreshClaudeHook() {
+  claudeHook.value = await claudeHookStatus();
+}
+
+async function installClaudeHook() {
+  try {
+    claudeHookMessage.value = await claudeHookInstall();
+    claudeHookError.value = false;
+  } catch (e) {
+    claudeHookMessage.value = String(e);
+    claudeHookError.value = true;
+  }
+  await refreshClaudeHook();
+}
+
+async function uninstallClaudeHook() {
+  try {
+    claudeHookMessage.value = await claudeHookUninstall();
+    claudeHookError.value = false;
+  } catch (e) {
+    claudeHookMessage.value = String(e);
+    claudeHookError.value = true;
+  }
+  await refreshClaudeHook();
+}
+
+// 把两种 Hook 归一成同一视图模型，模板按 agent 复用同一段标记。
+interface HookView {
+  installed: boolean;
+  configExists: boolean;
+  supported: boolean;
+  message: string | null;
+  error: boolean;
+}
+
+function hookView(agent: AgentId): HookView {
+  if (agent === "claude") {
+    return {
+      installed: claudeHook.value.installed,
+      configExists: claudeHook.value.settingsExists,
+      supported: claudeHook.value.supported,
+      message: claudeHookMessage.value,
+      error: claudeHookError.value,
+    };
+  }
+  return {
+    installed: hook.value.installed,
+    configExists: hook.value.hooksJsonExists,
+    supported: hook.value.supported,
+    message: hookMessage.value,
+    error: hookError.value,
+  };
+}
+
+function installAgentHook(agent: AgentId) {
+  return agent === "claude" ? installClaudeHook() : installHook();
+}
+
+function uninstallAgentHook(agent: AgentId) {
+  return agent === "claude" ? uninstallClaudeHook() : uninstallHook();
+}
+
+function revealAgentHook(agent: AgentId) {
+  return agent === "claude" ? claudeHookReveal() : cursorHookReveal();
+}
+
 async function copyPrompt() {
   try {
     await navigator.clipboard.writeText(prompt.value);
@@ -664,6 +744,7 @@ onMounted(async () => {
   prompt.value = await getPrompt();
   historyTotal.value = await historyCount();
   await refreshHook();
+  await refreshClaudeHook();
   await Promise.all(AGENTS.map((a) => refreshRule(a.id)));
   if (isMac) {
     try {
@@ -998,27 +1079,30 @@ onMounted(async () => {
             {{ ruleMessage[a.id] }}
           </p>
 
-          <hr class="divider" />
+          <template v-if="a.hasHook">
+            <hr class="divider" />
 
-          <!-- Hook -->
-          <div class="row agent-row">
-            <span class="label">{{ t("settings.integration.hookLabel") }}</span>
-            <template v-if="a.hasHook">
+            <!-- Hook -->
+            <div class="row agent-row">
+              <span class="label">{{ t("settings.integration.hookLabel") }}</span>
               <span class="badge">
-                <span class="dot" :class="hook.installed ? 'on' : 'off'"></span>
+                <span
+                  class="dot"
+                  :class="hookView(a.id).installed ? 'on' : 'off'"
+                ></span>
                 {{
-                  hook.installed
+                  hookView(a.id).installed
                     ? t("settings.integration.installed")
                     : t("settings.integration.notInstalled")
                 }}
               </span>
               <span class="spacer"></span>
               <button
-                v-if="hook.installed"
+                v-if="hookView(a.id).installed"
                 class="btn"
                 type="button"
-                :disabled="!hook.supported"
-                @click="uninstallHook"
+                :disabled="!hookView(a.id).supported"
+                @click="uninstallAgentHook(a.id)"
               >
                 {{ t("settings.integration.uninstall") }}
               </button>
@@ -1026,40 +1110,34 @@ onMounted(async () => {
                 v-else
                 class="btn"
                 type="button"
-                :disabled="!hook.supported"
-                @click="installHook"
+                :disabled="!hookView(a.id).supported"
+                @click="installAgentHook(a.id)"
               >
                 {{ t("settings.integration.install") }}
               </button>
               <button
                 class="btn"
                 type="button"
-                :disabled="!hook.hooksJsonExists"
-                @click="cursorHookReveal"
+                :disabled="!hookView(a.id).configExists"
+                @click="revealAgentHook(a.id)"
               >
-                {{ t("settings.integration.openHooks") }}
+                {{ t("settings.integration.reveal") }}
               </button>
-            </template>
-            <template v-else>
-              <span class="spacer"></span>
-              <span class="badge muted">{{
-                t("settings.integration.comingSoon")
-              }}</span>
-            </template>
-          </div>
-          <p v-if="a.hasHook" class="card-desc agent-hint">
-            {{ t("settings.integration.hookShort") }}
-          </p>
-          <p v-if="a.hasHook && !hook.supported" class="result err">
-            {{ t("settings.integration.windowsUnsupported") }}
-          </p>
-          <p
-            v-else-if="a.hasHook && hookMessage"
-            class="result"
-            :class="hookError ? 'err' : 'ok'"
-          >
-            {{ hookMessage }}
-          </p>
+            </div>
+            <p class="card-desc agent-hint">
+              {{ t("settings.integration.hookShort") }}
+            </p>
+            <p v-if="!hookView(a.id).supported" class="result err">
+              {{ t("settings.integration.windowsUnsupported") }}
+            </p>
+            <p
+              v-else-if="hookView(a.id).message"
+              class="result"
+              :class="hookView(a.id).error ? 'err' : 'ok'"
+            >
+              {{ hookView(a.id).message }}
+            </p>
+          </template>
         </div>
       </template>
 

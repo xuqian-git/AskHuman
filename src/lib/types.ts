@@ -198,6 +198,12 @@ export interface HookStatus {
   supported: boolean;
 }
 
+export interface ClaudeHookStatus {
+  installed: boolean;
+  settingsExists: boolean;
+  supported: boolean;
+}
+
 export type AgentId = "cursor" | "claude" | "codex";
 
 export interface RuleStatus {

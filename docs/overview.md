@@ -48,7 +48,7 @@ AskHuman/
     views/PopupView.vue      弹窗：顶部导航栏（含「历史」按钮）+ Markdown/选项/文本/图片 + -f 附件区
                              (选中/打开/预览/拖出/右键) + 拖入回复文件胶囊 + 底部操作条
     views/SettingsView.vue   设置：通用（含「回复历史」保留条数 + 超额「立即清理」）/ Agent / 通信渠道 三 Tab
-                             （Agent Tab：顶部共用参考提示词卡 + 按 Cursor/Claude Code/Codex 分组的 Rules 安装卡，Cursor 组另含 Hook）
+                             （Agent Tab：顶部共用参考提示词卡 + 按 Cursor/Claude Code/Codex 分组的 Rules 安装卡；Cursor 与 Claude Code 组另含超时 Hook，Codex 无）
     views/HistoryView.vue    独立历史窗口：顶部项目下拉 + 清空菜单；左列表（渠道徽标/相对时间/摘要）右只读详情
     components/HistoryDetail.vue 只读还原一条历史（状态横幅 + 消息/附件 + 每题选项高亮/文本/图片/文件，best-effort）
     lib/ipc.ts               invoke 封装（与后端命令一一对应）
@@ -120,7 +120,10 @@ AskHuman/
         markdown.rs          标准 Markdown → Slack mrkdwn（粗*斜_删~码块引链 + 表格转等宽 + 列表 •）
         router.rs            SlRouter：独占 SlackWs + 按 message_ts/user_id 分发（无 oneshot，ack 在 ws 层）
       integrations/
-        cursor_hook.rs       Cursor Hook 安装/移除/状态/reveal（mac/Linux；含内嵌脚本）
+        cursor_hook.rs       Cursor Hook 安装/移除/状态/reveal（mac/Linux；hooks.json 内嵌脚本）
+        claude_hook.rs       Claude Code Hook：~/.claude/settings.json 注册 PreToolUse(Bash) 脚本 +
+                             抬高 env.BASH_MAX_TIMEOUT_MS；命中 AskHuman 时把该次 Bash timeout 设为 24h
+                             （幂等纯函数 + 单测；卸载不动 env）
         agent_rules.rs       Agent 全局 Rules 安装/卸载/状态/open/reveal：Cursor 独占文件
                              ~/.cursor/rules/askhuman.mdc；Claude ~/.claude/CLAUDE.md、Codex
                              ~/.codex/AGENTS.md 用 AskHuman:begin/end 托管区块（幂等纯函数 + 单测）
@@ -149,6 +152,7 @@ AskHuman/
 - 设置：`get_settings`、`save_settings`、`get_prompt`、`set_theme`、`update_theme`(持久化+应用)、`open_settings`(同进程建设置窗)
 - 历史：`open_history`(弹窗→建历史窗)、`history_init`(主题+当前项目)、`get_history`(按项目/全部，倒序)、`get_history_projects`(项目下拉)、`history_count`、`trim_history`(立即裁剪)、`clear_history`(按项目/全部清空)
 - Cursor Hook：`cursor_hook_status` / `install` / `uninstall` / `reveal`
+- Claude Code Hook：`claude_hook_status` / `install` / `uninstall` / `reveal`
 - Agent 全局 Rules：`agent_rule_status` / `install` / `uninstall` / `reveal` / `open`（入参 `agent`：cursor/claude/codex）
 - Telegram：`telegram_test`
 - 钉钉：`dingtalk_test` / `dingtalk_detect_prepare` / `dingtalk_detect_wait`

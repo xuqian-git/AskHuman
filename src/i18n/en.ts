@@ -113,21 +113,16 @@ export default {
       hookLabel: "Hook",
       reveal: "Locate",
       openFile: "Open",
-      comingSoon: "Coming soon",
       installRule: "Install Rule",
       hookShort:
         "Auto-extends the timeout to 24h when an AskHuman call is detected, so long waits aren't cancelled.",
       cursorRulesHint:
         "Applies globally only when your project lives under your home directory (~). For other locations, configure it manually in Cursor Settings → Rules.",
-      hookTitle: "Cursor Hook",
       installed: "Installed",
       notInstalled: "Not installed",
-      hookDesc:
-        "Once installed, it registers a preToolUse hook in ~/.cursor/hooks.json: when a Shell call invokes AskHuman, the timeout is extended to 24h to avoid being killed while waiting. Removing it only deletes the entry injected by this app.",
       install: "Install",
       uninstall: "Remove",
-      openHooks: "Open hooks.json",
-      windowsUnsupported: "Cursor Hook is not supported on Windows",
+      windowsUnsupported: "This hook is not supported on Windows",
     },
     channels: {
       popupTitle: "Local popup",
