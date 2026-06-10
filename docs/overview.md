@@ -48,7 +48,7 @@ AskHuman/
     views/PopupView.vue      弹窗：顶部导航栏（含「历史」按钮）+ Markdown/选项/文本/图片 + -f 附件区
                              (选中/打开/预览/拖出/右键) + 拖入回复文件胶囊 + 底部操作条
     views/SettingsView.vue   设置：通用（含「回复历史」保留条数 + 超额「立即清理」）/ Agent / 通信渠道 三 Tab
-                             （Agent Tab：顶部共用参考提示词卡 + 按 Cursor/Claude Code/Codex 分组的 Rules 安装卡；Cursor 与 Claude Code 组另含超时 Hook，Codex 无）
+                             （Agent Tab：顶部原理说明 + 「手动集成」标题下的参考提示词卡 + 「自动集成」标题下按 Cursor/Claude Code/Codex 分组的 Rules 安装卡；Cursor 与 Claude Code 组另含超时 Hook，Codex 无）
     views/HistoryView.vue    独立历史窗口：顶部项目下拉 + 清空菜单；左列表（渠道徽标/相对时间/摘要）右只读详情
     components/HistoryDetail.vue 只读还原一条历史（状态横幅 + 消息/附件 + 每题选项高亮/文本/图片/文件，best-effort）
     lib/ipc.ts               invoke 封装（与后端命令一一对应）

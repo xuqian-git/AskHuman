@@ -104,11 +104,13 @@ export default {
       clear: "Clear",
     },
     integration: {
+      overviewDesc:
+        "Add the prompt to your agent's global instructions (Rules, AGENTS.md, CLAUDE.md, etc.) to guide it to proactively interact with you via AskHuman. Copy the prompt below to add it yourself, or use the buttons under \"Automatic integration\" to add it automatically.",
+      manualTitle: "Manual integration",
+      autoTitle: "Automatic integration",
       promptTitle: "Reference prompt",
       copy: "Copy",
       copied: "Copied",
-      promptDesc:
-        "Copy the prompt below and add it to your agent's rules to guide it to interact with you via AskHuman.",
       rulesLabel: "Rules",
       hookLabel: "Hook",
       reveal: "Locate",

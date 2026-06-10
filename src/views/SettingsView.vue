@@ -1005,6 +1005,9 @@ onMounted(async () => {
 
       <!-- Agent -->
       <template v-else-if="activeTab === 'integration'">
+        <p class="section-intro">{{ t("settings.integration.overviewDesc") }}</p>
+
+        <p class="section-title">{{ t("settings.integration.manualTitle") }}</p>
         <div class="card">
           <div class="row">
             <p class="card-title">{{ t("settings.integration.promptTitle") }}</p>
@@ -1017,12 +1020,10 @@ onMounted(async () => {
               }}
             </button>
           </div>
-          <p class="card-desc">
-            {{ t("settings.integration.promptDesc") }}
-          </p>
           <pre class="code-area">{{ prompt }}</pre>
         </div>
 
+        <p class="section-title">{{ t("settings.integration.autoTitle") }}</p>
         <div v-for="a in AGENTS" :key="a.id" class="card agent-card">
           <p class="card-title">{{ a.title }}</p>
 
@@ -1694,6 +1695,27 @@ onMounted(async () => {
   flex: 1 1 auto;
   overflow-y: auto;
   padding: var(--space-4);
+}
+/* Agent 集成页：顶部原理说明 + 「手动/自动集成」分组标题 */
+.section-intro {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  margin: 0 0 var(--space-4);
+}
+.section-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin: 0 0 var(--space-2);
+}
+/* 标题前若紧邻上一组的卡片，补足分组间距 */
+.card + .section-title {
+  margin-top: var(--space-4);
+}
+/* 删除 promptDesc 后，参考提示词与上方标题行需补回间距 */
+.code-area {
+  margin-top: var(--space-3);
 }
 /* Agent 分组卡：压缩留白，避免页面过高 */
 .agent-card {

@@ -103,11 +103,13 @@ export default {
       clear: "清除",
     },
     integration: {
+      overviewDesc:
+        "将提示词添加到对应 Agent 的全局提示词（Rules、AGENTS.md、CLAUDE.md 等）中，引导它主动通过 AskHuman 与你交互。你可以复制下方提示词自行添加，或使用「自动集成」中的按钮一键添加。",
+      manualTitle: "手动集成",
+      autoTitle: "自动集成",
       promptTitle: "参考提示词",
       copy: "复制",
       copied: "已复制",
-      promptDesc:
-        "复制下面的提示词，添加到你对应 Agent 的 Rules 中，引导它通过 AskHuman 与你交互。",
       rulesLabel: "Rules",
       hookLabel: "Hook",
       reveal: "定位",
