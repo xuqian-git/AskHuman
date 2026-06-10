@@ -13,6 +13,15 @@ if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
   Write-Error "需要 Rust 工具链（https://rustup.rs）"; exit 1
 }
 
+# 在途请求提示（与 install.sh 对应；daemon 暂不支持 Windows 时 status 不可用，自然跳过）。
+if (Get-Command AskHuman -ErrorAction SilentlyContinue) {
+  $StatusOut = & AskHuman daemon status 2>$null
+  if ($LASTEXITCODE -eq 0 -and $StatusOut -match 'requests\s+(\d+) active' -and [int]$Matches[1] -gt 0) {
+    Write-Host "提示: daemon 当前有 $($Matches[1]) 个在途请求；安装后将在它们完结后自动换新（期间新提问会等待）。"
+    Write-Host "      立即换新: AskHuman daemon restart --force（会打断在途请求）"
+  }
+}
+
 Write-Host "==> 安装前端依赖"
 pnpm install
 

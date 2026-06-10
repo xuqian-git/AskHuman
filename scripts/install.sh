@@ -16,6 +16,16 @@ if ! command -v cargo >/dev/null 2>&1; then
   exit 1
 fi
 
+# 在途请求提示：daemon 正服务中的提问不会被安装打断——换新会在它们完结后自动发生（graceful drain），
+# 期间新提问会等待。此处只提示，不强杀。
+if command -v AskHuman >/dev/null 2>&1; then
+  ACTIVE="$(AskHuman daemon status 2>/dev/null | sed -n 's/.*requests[[:space:]]*\([0-9][0-9]*\) active.*/\1/p' | head -n1 || true)"
+  if [ -n "${ACTIVE:-}" ] && [ "$ACTIVE" -gt 0 ] 2>/dev/null; then
+    echo "提示: daemon 当前有 $ACTIVE 个在途请求；安装后将在它们完结后自动换新（期间新提问会等待）。"
+    echo "      立即换新: AskHuman daemon restart --force（会打断在途请求）"
+  fi
+fi
+
 echo "==> 安装前端依赖"
 pnpm install
 

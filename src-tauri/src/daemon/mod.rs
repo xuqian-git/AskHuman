@@ -46,7 +46,7 @@ mod unix_impl {
         TaskRequest,
     };
     use crate::models::{ChannelResult, ChannelAction};
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
     use tokio::io::BufReader;
@@ -91,15 +91,21 @@ mod unix_impl {
     }
 
     pub fn dispatch(args: &[String]) -> i32 {
+        let force = args.iter().skip(1).any(|a| a == "--force");
+        // 子命令后仅允许 `--force`（且只对 stop/restart 有意义），其余一律报错。
+        if let Some(extra) = args.iter().skip(1).find(|a| a.as_str() != "--force") {
+            eprintln!("unknown daemon argument: {}", extra);
+            return 1;
+        }
         match args.first().map(|s| s.as_str()).unwrap_or("") {
             "run" => run_cmd(),
             "start" => start_cmd(),
-            "stop" => stop_cmd(),
-            "restart" => restart_cmd(),
+            "stop" => stop_cmd(force),
+            "restart" => restart_cmd(force),
             "status" => status_cmd(),
             "logs" => logs_cmd(),
             "" => {
-                eprintln!("usage: AskHuman daemon <run|start|stop|restart|status|logs>");
+                eprintln!("usage: AskHuman daemon <run|start|stop [--force]|restart [--force]|status|logs>");
                 1
             }
             other => {
@@ -137,6 +143,8 @@ mod unix_impl {
         active: AtomicUsize,
         last_active: Mutex<Instant>,
         shutdown: tokio::sync::Notify,
+        /// 排空状态（graceful drain）：true 时拒绝新 Submit/Detect，在途请求服务到完结后退出。
+        draining: AtomicBool,
         /// 活动请求登记表。
         registry: Arc<RequestRegistry>,
         /// 钉钉长连接 Router（惰性建连、常热复用；连接死亡后按需重连）。
@@ -183,6 +191,7 @@ mod unix_impl {
             active: AtomicUsize::new(0),
             last_active: Mutex::new(Instant::now()),
             shutdown: tokio::sync::Notify::new(),
+            draining: AtomicBool::new(false),
             registry: RequestRegistry::new(),
             dd_router: tokio::sync::Mutex::new(None),
             fs_router: tokio::sync::Mutex::new(None),
@@ -299,6 +308,17 @@ mod unix_impl {
 
             match msg {
                 ClientMsg::Hello(hello) => {
+                    // 已在排空：一律回 Draining（客户端等下线后用新二进制拉起重试）。
+                    if state.draining.load(Ordering::SeqCst) {
+                        let ack = HelloAck {
+                            protocol_version: ipc::PROTOCOL_VERSION,
+                            daemon_version: version(),
+                            status: HelloStatus::Draining,
+                            reason: Some("draining: waiting for active requests".to_string()),
+                        };
+                        let _ = ipc::write_msg(w, &ServerMsg::HelloAck(ack)).await;
+                        continue;
+                    }
                     let now_fp = lifecycle::current_fingerprint();
                     // 指纹按「内容哈希」比对（与路径/mtime 无关）：
                     // 自身盘上二进制内容被换 / 客户端二进制内容不一致 / 协议不一致 → 过时，让位换新。
@@ -308,22 +328,31 @@ mod unix_impl {
                     let auto_restart = std::env::var("ASKHUMAN_DAEMON_AUTORESTART")
                         .map(|v| v != "0")
                         .unwrap_or(true);
-                    let restarting = stale && auto_restart;
+                    // 过时且有在途请求 → 进入排空（不打断在途）；无在途 → 立即换新（零延迟）。
+                    let draining = stale && auto_restart && state.registry.active_count() > 0;
+                    let restarting = stale && auto_restart && !draining;
                     let ack = HelloAck {
                         protocol_version: ipc::PROTOCOL_VERSION,
                         daemon_version: version(),
-                        status: if restarting {
+                        status: if draining {
+                            HelloStatus::Draining
+                        } else if restarting {
                             HelloStatus::Restarting
                         } else {
                             HelloStatus::Ok
                         },
-                        reason: if restarting {
+                        reason: if stale && auto_restart {
                             Some("binary or protocol changed".to_string())
                         } else {
                             None
                         },
                     };
                     let _ = ipc::write_msg(w, &ServerMsg::HelloAck(ack)).await;
+                    if draining {
+                        log("stale binary/protocol detected with active requests; draining");
+                        begin_drain(state);
+                        continue;
+                    }
                     if restarting {
                         log("stale binary/protocol detected; shutting down for restart");
                         state.shutdown.notify_one();
@@ -339,11 +368,18 @@ mod unix_impl {
                         socket: transport::socket_path().display().to_string(),
                         active_requests: state.registry.active_count(),
                         im_connections: active_im_connections(state).await,
+                        draining: state.draining.load(Ordering::SeqCst),
                     };
                     let _ = ipc::write_msg(w, &ServerMsg::Status(info)).await;
                 }
-                ClientMsg::Stop => {
+                ClientMsg::Stop { force } => {
                     let _ = ipc::write_msg(w, &ServerMsg::Stopping).await;
+                    // 默认 graceful：有在途请求时排空后退出；`--force` 或无在途 → 立即退出。
+                    if !force && state.registry.active_count() > 0 {
+                        log("graceful stop requested; draining");
+                        begin_drain(state);
+                        return Control::Closed;
+                    }
                     log("stop requested");
                     state.shutdown.notify_one();
                     return Control::Closed;
@@ -351,11 +387,39 @@ mod unix_impl {
                 ClientMsg::Submit(task) => return Control::Submit(task),
                 ClientMsg::GuiHello { token } => return Control::Gui(token),
                 // 自动识别（Q6）：就地处理（可能阻塞至多 120s 等用户发码），完成后回结果继续循环。
-                ClientMsg::Detect(req) => handle_detect(&req, state, w).await,
+                // 排空期拒绝（兜底；正常情况下客户端在 Hello 即被挡住而回退进程内识别）。
+                ClientMsg::Detect(req) => {
+                    if state.draining.load(Ordering::SeqCst) {
+                        let _ = ipc::write_msg(w, &ServerMsg::Error {
+                            message: "daemon is draining".to_string(),
+                        })
+                        .await;
+                    } else {
+                        handle_detect(&req, state, w).await
+                    }
+                }
                 // Answer 只应在 GUI 接管阶段出现；控制阶段收到即忽略。
                 ClientMsg::Answer { .. } => {}
             }
         }
+    }
+
+    /// 进入排空状态（幂等）：首次置位时 spawn 看门狗，在途请求全部完结后触发退出。
+    fn begin_drain(state: &Arc<ServerState>) {
+        if state.draining.swap(true, Ordering::SeqCst) {
+            return; // 已在排空。
+        }
+        let state = state.clone();
+        tokio::spawn(async move {
+            loop {
+                if state.registry.active_count() == 0 {
+                    log("drain complete; shutting down");
+                    state.shutdown.notify_one();
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+        });
     }
 
     /// CLI 提交一次任务：建请求、spawn GUI Helper、流式回结果；CLI 断开则取消。
@@ -365,6 +429,15 @@ mod unix_impl {
         mut w: OwnedWriteHalf,
         state: &Arc<ServerState>,
     ) {
+        // 排空闸门（兜底，覆盖「Hello Ok → Submit 间隙开始排空」的竞态）：拒绝并断开，
+        // 客户端等本 Daemon 下线后用新二进制重新提交。
+        if state.draining.load(Ordering::SeqCst) {
+            let _ = ipc::write_msg(&mut w, &ServerMsg::Draining {
+                active: state.registry.active_count(),
+            })
+            .await;
+            return;
+        }
         let lang = Lang::resolve(&task.lang);
         let (entry, mut final_rx) = state.registry.create(task);
         let request_id = entry.request_id.clone();
@@ -1140,21 +1213,24 @@ mod unix_impl {
         })
     }
 
-    fn stop_cmd() -> i32 {
+    fn stop_cmd(force: bool) -> i32 {
         block_on(async {
-            if client::request_stop().await {
-                println!("askhuman daemon: stopping");
-            } else {
+            if !client::request_stop(force).await {
                 println!("askhuman daemon: not running");
+                return 0;
             }
+            println!("askhuman daemon: stopping");
+            wait_stopped(force).await;
+            println!("askhuman daemon: stopped");
             0
         })
     }
 
-    fn restart_cmd() -> i32 {
+    fn restart_cmd(force: bool) -> i32 {
         block_on(async {
-            let _ = client::request_stop().await;
-            client::wait_until_down(Duration::from_secs(5)).await;
+            if client::request_stop(force).await {
+                wait_stopped(force).await;
+            }
             match client::ensure_running().await {
                 Ok(()) => {
                     println!("askhuman daemon: restarted");
@@ -1166,6 +1242,29 @@ mod unix_impl {
                 }
             }
         })
+    }
+
+    /// 等 Daemon 下线。force：限时即可；graceful：可能在排空（等在途请求完结），
+    /// 无限等待并周期性打印进度与强制提示。
+    async fn wait_stopped(force: bool) {
+        if force {
+            client::wait_until_down(Duration::from_secs(5)).await;
+            return;
+        }
+        let mut last_hint: Option<Instant> = None;
+        loop {
+            let Some(info) = client::request_status().await else {
+                return; // 已下线。
+            };
+            if info.draining && last_hint.map_or(true, |t| t.elapsed() >= Duration::from_secs(30)) {
+                eprintln!(
+                    "askhuman daemon: draining ({} active request(s) left); waiting… (use --force to terminate now)",
+                    info.active_requests
+                );
+                last_hint = Some(Instant::now());
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
     }
 
     fn status_cmd() -> i32 {
@@ -1199,7 +1298,11 @@ mod unix_impl {
         );
         println!("  uptime     {}s", info.uptime_secs);
         println!("  socket     {}", info.socket);
-        println!("  requests   {} active", info.active_requests);
+        println!(
+            "  requests   {} active{}",
+            info.active_requests,
+            if info.draining { " (draining)" } else { "" }
+        );
         let im = if info.im_connections.is_empty() {
             "none".to_string()
         } else {

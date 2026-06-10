@@ -36,6 +36,9 @@ pub enum HelloStatus {
     Ok,
     /// Daemon 已过时（二进制指纹/协议变化），将自行退出；客户端应等其下线后用新二进制拉起。
     Restarting,
+    /// Daemon 正在排空（graceful drain）：在途请求完结后退出；排空期拒绝新提问。
+    /// 客户端应等其下线后用新二进制拉起再提交。
+    Draining,
 }
 
 /// 对 `ClientHello` 的回应。
@@ -62,6 +65,9 @@ pub struct StatusInfo {
     /// 当前常热的 IM 长连接（"dingtalk" / "feishu" / "telegram" / "slack"），按已建连且存活计入。
     #[serde(default)]
     pub im_connections: Vec<String>,
+    /// 是否处于排空状态（旧 Daemon 回包缺字段 → false）。
+    #[serde(default)]
+    pub draining: bool,
 }
 
 /// CLI 提交的一次提问任务（A11：`-f` 已在 CLI 解析为绝对路径；硬性上送 source name 与解析好的 lang；
@@ -129,8 +135,12 @@ pub enum ClientMsg {
     Hello(ClientHello),
     /// `daemon status`。
     Status,
-    /// `daemon stop`。
-    Stop,
+    /// `daemon stop`：默认 graceful（有在途请求时排空后退出）；`force` 立即退出。
+    /// 旧 Daemon 解析时忽略多余字段，旧 CLI 不带 `force` → 默认 false，双向兼容。
+    Stop {
+        #[serde(default)]
+        force: bool,
+    },
     /// CLI 提交一次提问任务（握手后发送）。
     Submit(TaskRequest),
     /// GUI Helper 握手：出示 Daemon 下发的一次性 token。
@@ -153,6 +163,8 @@ pub enum ServerMsg {
     HelloAck(HelloAck),
     Status(StatusInfo),
     Stopping,
+    /// 排空期收到新 Submit 时的拒绝回复（回完即断开），回带剩余在途请求数。
+    Draining { active: usize },
     Error { message: String },
     /// 任务已受理，回带 Daemon 分配的 request_id（D→CLI）。
     Accepted { request_id: String },
@@ -168,4 +180,58 @@ pub enum ServerMsg {
     Cancel { request_id: String, winner: String },
     /// 配置实时变更，下发新的 `general` 配置给活动 GUI Helper 以即时切主题/语言（D→GUI，A12）。
     ConfigChanged { general: serde_json::Value },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 旧 CLI 发的 `{"type":"stop"}`（无 force 字段）→ force 默认 false。
+    #[test]
+    fn stop_without_force_defaults_false() {
+        let msg: ClientMsg = serde_json::from_str(r#"{"type":"stop"}"#).unwrap();
+        assert!(matches!(msg, ClientMsg::Stop { force: false }));
+    }
+
+    /// 新 CLI 发的带 force 字段可正常解析；序列化形态含 force。
+    #[test]
+    fn stop_with_force_roundtrip() {
+        let json = serde_json::to_string(&ClientMsg::Stop { force: true }).unwrap();
+        assert!(json.contains(r#""type":"stop""#));
+        assert!(json.contains(r#""force":true"#));
+        let msg: ClientMsg = serde_json::from_str(&json).unwrap();
+        assert!(matches!(msg, ClientMsg::Stop { force: true }));
+    }
+
+    /// 内部标签枚举的单元变体应忽略多余字段：旧 Daemon 收到新 CLI 的
+    /// `{"type":"status","extra":…}` 类负载不报错（以 Status 验证该 serde 行为）。
+    #[test]
+    fn unit_variant_ignores_extra_fields() {
+        let msg: ClientMsg = serde_json::from_str(r#"{"type":"status","force":true}"#).unwrap();
+        assert!(matches!(msg, ClientMsg::Status));
+    }
+
+    /// 旧 Daemon 的 StatusInfo 回包缺 draining 字段 → 默认 false。
+    #[test]
+    fn status_info_missing_draining_defaults_false() {
+        let json = r#"{"pid":1,"version":"0.1.0","protocolVersion":1,"uptimeSecs":2,
+            "socket":"/tmp/s","activeRequests":3}"#;
+        let info: StatusInfo = serde_json::from_str(json).unwrap();
+        assert!(!info.draining);
+        assert_eq!(info.active_requests, 3);
+        assert!(info.im_connections.is_empty());
+    }
+
+    /// 新增枚举值序列化往返。
+    #[test]
+    fn draining_variants_roundtrip() {
+        let s = serde_json::to_string(&HelloStatus::Draining).unwrap();
+        assert_eq!(s, r#""draining""#);
+        let back: HelloStatus = serde_json::from_str(&s).unwrap();
+        assert_eq!(back, HelloStatus::Draining);
+
+        let json = serde_json::to_string(&ServerMsg::Draining { active: 2 }).unwrap();
+        let back: ServerMsg = serde_json::from_str(&json).unwrap();
+        assert!(matches!(back, ServerMsg::Draining { active: 2 }));
+    }
 }

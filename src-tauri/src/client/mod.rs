@@ -55,6 +55,11 @@ pub async fn ensure_running() -> std::io::Result<()> {
             // 旧实例将自行退出；等它下线后再拉起新的。
             wait_until_down(Duration::from_secs(5)).await;
         }
+        // 排空中：快速返回错误（本函数被设置进程 Detect 等复用，不能无限阻塞）；
+        // 需要等待的调用方（run_ask / stop / restart）自行处理排空等待。
+        Some(HelloStatus::Draining) => {
+            return Err(Error::new(ErrorKind::WouldBlock, "daemon is draining"));
+        }
         None => {}
     }
 
@@ -83,12 +88,13 @@ pub async fn request_status() -> Option<StatusInfo> {
     }
 }
 
-/// 请求停止；收到 Stopping 回应返回 true，未运行返回 false。
-pub async fn request_stop() -> bool {
+/// 请求停止（force=false 为 graceful：有在途请求时 Daemon 排空后退出）；
+/// 收到 Stopping 回应返回 true，未运行返回 false。
+pub async fn request_stop(force: bool) -> bool {
     let Ok((mut reader, mut writer)) = connect_split().await else {
         return false;
     };
-    if ipc::write_msg(&mut writer, &ClientMsg::Stop).await.is_err() {
+    if ipc::write_msg(&mut writer, &ClientMsg::Stop { force }).await.is_err() {
         return false;
     }
     matches!(
@@ -105,6 +111,30 @@ pub async fn wait_until_down(max: Duration) {
             return;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// 排空等待：旧 Daemon 正在完结在途请求，无限等待其下线（首条提示立即输出，之后每 30s 一条，
+/// 含剩余在途数与强制换新提示）。剩余数经 `Status` 查询获取（不带 Hello，不会误触发 stale 判定）。
+async fn wait_for_drain() {
+    let mut last_hint: Option<Instant> = None;
+    loop {
+        if transport::connect().await.is_err() {
+            return; // 旧 Daemon 已下线，可拉起新的。
+        }
+        if last_hint.map_or(true, |t| t.elapsed() >= Duration::from_secs(30)) {
+            match request_status().await {
+                Some(info) => eprintln!(
+                    "askhuman: daemon is draining ({} active request(s) left); waiting to submit… (run 'AskHuman daemon restart --force' to switch now, interrupting them)",
+                    info.active_requests
+                ),
+                None => eprintln!(
+                    "askhuman: daemon is draining; waiting to submit… (run 'AskHuman daemon restart --force' to switch now)"
+                ),
+            }
+            last_hint = Some(Instant::now());
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
     }
 }
 
@@ -156,52 +186,72 @@ pub fn run_ask(task: crate::ipc::TaskRequest) -> ! {
 async fn run_ask_async(task: crate::ipc::TaskRequest) -> i32 {
     use crate::ipc::ServerMsg;
 
-    // 提交前最多重试若干次：覆盖「自启就绪竞争」与「撞上 Daemon 换新」。提交成功后不再重试（避免重复弹窗）。
-    for _ in 0..3 {
-        if ensure_running().await.is_err() {
-            eprintln!("askhuman: failed to start daemon");
-            return 3;
-        }
-        let Ok((mut reader, mut writer)) = connect_split().await else {
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            continue;
-        };
-        if ipc::write_msg(&mut writer, &ClientMsg::Hello(hello())).await.is_err() {
-            continue;
-        }
-        match ipc::read_msg::<_, ServerMsg>(&mut reader).await {
-            Ok(Some(ServerMsg::HelloAck(ack))) => match ack.status {
-                HelloStatus::Ok => {}
-                HelloStatus::Restarting => {
-                    wait_until_down(Duration::from_secs(5)).await;
-                    continue;
+    // 外层循环：撞上 Daemon 排空（draining）时无限等待其下线，然后重置重试预算重来。
+    // 内层：提交前最多重试若干次，覆盖「自启就绪竞争」与「撞上 Daemon 换新」的瞬时失败。
+    // 提交被受理后不再重试（避免重复弹窗）。
+    'outer: loop {
+        for _ in 0..3 {
+            match ensure_running().await {
+                Ok(()) => {}
+                Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                    wait_for_drain().await;
+                    continue 'outer;
                 }
-            },
-            _ => continue,
-        }
-        // 提交任务。
-        if ipc::write_msg(&mut writer, &ClientMsg::Submit(task.clone())).await.is_err() {
-            continue;
-        }
-        // 流式取回：Warn → stderr；Final → stdout + 退出码；中途断连 → 退出码 3（P4）。
-        loop {
-            match ipc::read_msg::<_, ServerMsg>(&mut reader).await {
-                Ok(Some(ServerMsg::Accepted { .. })) => {}
-                Ok(Some(ServerMsg::Warn { text })) => eprintln!("{}", text),
-                Ok(Some(ServerMsg::Final { stdout, exit_code })) => {
-                    if !stdout.is_empty() {
-                        println!("{}", stdout);
-                    }
-                    return exit_code;
-                }
-                Ok(Some(_)) => {}
-                Ok(None) | Err(_) => {
-                    eprintln!("askhuman: daemon connection lost");
+                Err(_) => {
+                    eprintln!("askhuman: failed to start daemon");
                     return 3;
                 }
             }
+            let Ok((mut reader, mut writer)) = connect_split().await else {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                continue;
+            };
+            if ipc::write_msg(&mut writer, &ClientMsg::Hello(hello())).await.is_err() {
+                continue;
+            }
+            match ipc::read_msg::<_, ServerMsg>(&mut reader).await {
+                Ok(Some(ServerMsg::HelloAck(ack))) => match ack.status {
+                    HelloStatus::Ok => {}
+                    HelloStatus::Restarting => {
+                        wait_until_down(Duration::from_secs(5)).await;
+                        continue;
+                    }
+                    HelloStatus::Draining => {
+                        wait_for_drain().await;
+                        continue 'outer;
+                    }
+                },
+                _ => continue,
+            }
+            // 提交任务。
+            if ipc::write_msg(&mut writer, &ClientMsg::Submit(task.clone())).await.is_err() {
+                continue;
+            }
+            // 流式取回：Warn → stderr；Final → stdout + 退出码；中途断连 → 退出码 3（P4）。
+            loop {
+                match ipc::read_msg::<_, ServerMsg>(&mut reader).await {
+                    Ok(Some(ServerMsg::Accepted { .. })) => {}
+                    // 排空闸门拒绝（只出现在 Accepted 之前）：等旧 Daemon 下线后重来。
+                    Ok(Some(ServerMsg::Draining { .. })) => {
+                        wait_for_drain().await;
+                        continue 'outer;
+                    }
+                    Ok(Some(ServerMsg::Warn { text })) => eprintln!("{}", text),
+                    Ok(Some(ServerMsg::Final { stdout, exit_code })) => {
+                        if !stdout.is_empty() {
+                            println!("{}", stdout);
+                        }
+                        return exit_code;
+                    }
+                    Ok(Some(_)) => {}
+                    Ok(None) | Err(_) => {
+                        eprintln!("askhuman: daemon connection lost");
+                        return 3;
+                    }
+                }
+            }
         }
+        eprintln!("askhuman: could not reach daemon");
+        return 3;
     }
-    eprintln!("askhuman: could not reach daemon");
-    3
 }
