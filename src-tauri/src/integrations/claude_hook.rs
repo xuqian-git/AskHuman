@@ -8,8 +8,11 @@
 //! `PreToolUse` 条目与脚本文件，**不动 `env`**（用户可能依赖该上限）。
 
 use crate::paths;
-use anyhow::{Context, Result};
-use serde_json::{json, Value};
+use anyhow::{anyhow, Context, Result};
+use jsonc_parser::cst::{CstNode, CstRootNode};
+use jsonc_parser::json;
+use jsonc_parser::ParseOptions;
+use serde_json::Value;
 
 /// 识别本应用条目的标记（脚本文件名）。
 pub const MARKER: &str = "askhuman-timeout.sh";
@@ -101,7 +104,7 @@ pub fn settings_exists() -> bool {
 
 /// 是否已安装本应用条目。
 pub fn is_installed() -> bool {
-    read_root().map(|r| has_marker(&r)).unwrap_or(false)
+    read_value().map(|r| has_marker(&r)).unwrap_or(false)
 }
 
 /// 已安装但磁盘脚本与内置脚本不一致（或脚本缺失）→ 需更新。
@@ -132,10 +135,9 @@ pub fn install() -> Result<String> {
             .with_context(|| "failed to set script executable permission")?;
     }
 
-    let root = read_root().unwrap_or_else(|| json!({}));
-    let root = upsert_hook(root, &script.to_string_lossy());
-    let root = ensure_env_max(root);
-    write_root(&root)?;
+    let text = read_text_or_default();
+    let updated = apply_install(&text, &script.to_string_lossy())?;
+    write_text(&updated)?;
 
     let lang = crate::i18n::Lang::current();
     Ok(crate::i18n::tr(lang, "cmd.hookInstalled").to_string())
@@ -150,9 +152,9 @@ pub fn update() -> Result<String> {
 
 /// 移除：删除本应用 PreToolUse 条目 + 删除脚本文件；保留 `env` 与其它条目。
 pub fn uninstall() -> Result<String> {
-    if let Some(root) = read_root() {
-        let updated = remove_hook(root);
-        write_root(&updated)?;
+    if let Ok(text) = std::fs::read_to_string(paths::claude_settings_json()) {
+        let updated = apply_uninstall(&text)?;
+        write_text(&updated)?;
     }
     let script = paths::claude_hook_script();
     if script.exists() {
@@ -184,7 +186,7 @@ pub fn reveal() {
     }
 }
 
-// MARK: - 纯函数（可测试）
+// MARK: - 标记判定（serde 值，供状态查询与测试）
 
 fn group_has_marker(group: &Value) -> bool {
     group
@@ -211,50 +213,11 @@ pub fn has_marker(root: &Value) -> bool {
         .unwrap_or(false)
 }
 
-/// 插入或更新本应用 PreToolUse 条目（matcher=Bash），保留其他条目与未知字段。
-pub fn upsert_hook(mut root: Value, script_path: &str) -> Value {
-    if !root.is_object() {
-        root = json!({});
-    }
-    let obj = root.as_object_mut().unwrap();
-    let hooks = obj.entry("hooks").or_insert_with(|| json!({}));
-    if !hooks.is_object() {
-        *hooks = json!({});
-    }
-    let hooks_obj = hooks.as_object_mut().unwrap();
-    let pre = hooks_obj.entry("PreToolUse").or_insert_with(|| json!([]));
-    if !pre.is_array() {
-        *pre = json!([]);
-    }
-    let arr = pre.as_array_mut().unwrap();
-    let group = json!({
-        "matcher": "Bash",
-        "hooks": [ { "type": "command", "command": script_path } ]
-    });
-    if let Some(slot) = arr.iter_mut().find(|g| group_has_marker(g)) {
-        *slot = group;
-    } else {
-        arr.push(group);
-    }
-    root
-}
-
-/// 确保 `env.BASH_MAX_TIMEOUT_MS` ≥ 24h：缺失或现值更小时设为 24h；现值更大则保留。
-pub fn ensure_env_max(mut root: Value) -> Value {
-    if !root.is_object() {
-        root = json!({});
-    }
-    let obj = root.as_object_mut().unwrap();
-    let env = obj.entry("env").or_insert_with(|| json!({}));
-    if !env.is_object() {
-        *env = json!({});
-    }
-    let env_obj = env.as_object_mut().unwrap();
-    let current = env_obj.get(BASH_MAX_KEY).and_then(parse_ms);
-    if current.map(|v| v < BASH_MAX_MS).unwrap_or(true) {
-        env_obj.insert(BASH_MAX_KEY.to_string(), json!(BASH_MAX_MS.to_string()));
-    }
-    root
+/// CST 数组元素（PreToolUse 组）是否含本应用脚本。
+fn group_node_has_marker(node: &CstNode) -> bool {
+    node.to_serde_value()
+        .map(|v| group_has_marker(&v))
+        .unwrap_or(false)
 }
 
 /// 解析环境变量值（字符串或数字）为毫秒数。
@@ -266,41 +229,114 @@ fn parse_ms(v: &Value) -> Option<u64> {
     }
 }
 
-/// 移除本应用 PreToolUse 条目；若数组 / hooks 变空则删除对应键。不动 `env`。
-pub fn remove_hook(mut root: Value) -> Value {
-    if let Some(obj) = root.as_object_mut() {
-        if let Some(hooks) = obj.get_mut("hooks").and_then(|h| h.as_object_mut()) {
-            let mut drop_pre = false;
-            if let Some(arr) = hooks.get_mut("PreToolUse").and_then(|p| p.as_array_mut()) {
-                arr.retain(|g| !group_has_marker(g));
-                drop_pre = arr.is_empty();
+// MARK: - 文本变换（CST 保留格式最小化编辑，可测试）
+
+/// 在 settings.json 文本中插入 / 更新本应用 PreToolUse 组（matcher=Bash），并确保
+/// `env.BASH_MAX_TIMEOUT_MS` ≥ 24h。**仅触碰本应用注入的内容**，其余字节（缩进、键序、
+/// 用户其它条目与 env）原样保留。解析失败返回 Err（调用方据此中止，不覆盖原文件）。
+fn apply_install(text: &str, script_path: &str) -> Result<String> {
+    let source = if text.trim().is_empty() { "{}" } else { text };
+    let root = CstRootNode::parse(source, &ParseOptions::default())
+        .map_err(|e| anyhow!("解析 settings.json 失败，已中止（不覆盖原文件）：{e}"))?;
+    let root_obj = root
+        .object_value_or_create()
+        .ok_or_else(|| anyhow!("settings.json 根不是 JSON 对象，已中止"))?;
+
+    // hooks.PreToolUse：就地替换本应用组（保留位置），多余重复清除；否则末尾追加。
+    let hooks = root_obj
+        .object_value_or_create("hooks")
+        .ok_or_else(|| anyhow!("settings.json 的 'hooks' 不是对象，已中止"))?;
+    let pre = hooks
+        .array_value_or_create("PreToolUse")
+        .ok_or_else(|| anyhow!("settings.json 的 'PreToolUse' 不是数组，已中止"))?;
+    let mut replaced = false;
+    for g in pre.elements() {
+        if !group_node_has_marker(&g) {
+            continue;
+        }
+        if !replaced {
+            if let Some(obj) = g.as_object() {
+                obj.replace_with(json!({
+                    "matcher": "Bash",
+                    "hooks": [ { "type": "command", "command": script_path } ],
+                }));
+                replaced = true;
+                continue;
             }
-            if drop_pre {
-                hooks.remove("PreToolUse");
+        }
+        g.remove();
+    }
+    if !replaced {
+        pre.ensure_multiline();
+        pre.append(json!({
+            "matcher": "Bash",
+            "hooks": [ { "type": "command", "command": script_path } ],
+        }));
+    }
+
+    // env.BASH_MAX_TIMEOUT_MS ≥ 24h：缺失或现值更小则设为 24h；更大则保留。
+    let env = root_obj
+        .object_value_or_create("env")
+        .ok_or_else(|| anyhow!("settings.json 的 'env' 不是对象，已中止"))?;
+    let current = env.get(BASH_MAX_KEY).and_then(|p| p.to_serde_value());
+    let need_set = current.and_then(|v| parse_ms(&v)).map(|v| v < BASH_MAX_MS).unwrap_or(true);
+    if need_set {
+        if let Some(prop) = env.get(BASH_MAX_KEY) {
+            prop.replace_with(BASH_MAX_KEY, json!(BASH_MAX_MS.to_string()));
+        } else {
+            env.append(BASH_MAX_KEY, json!(BASH_MAX_MS.to_string()));
+        }
+    }
+
+    Ok(root.to_string())
+}
+
+/// 在 settings.json 文本中移除本应用 PreToolUse 组；若数组变空则删除该键。
+/// **不动 `env`** 与用户其它条目。解析失败返回 Err。
+fn apply_uninstall(text: &str) -> Result<String> {
+    let root = CstRootNode::parse(text, &ParseOptions::default())
+        .map_err(|e| anyhow!("解析 settings.json 失败，已中止（不覆盖原文件）：{e}"))?;
+    let Some(root_obj) = root.object_value() else {
+        return Ok(root.to_string());
+    };
+    let Some(hooks) = root_obj.object_value("hooks") else {
+        return Ok(root.to_string());
+    };
+    if let Some(pre) = hooks.array_value("PreToolUse") {
+        for g in pre.elements() {
+            if group_node_has_marker(&g) {
+                g.remove();
             }
-            let hooks_empty = hooks.is_empty();
-            if hooks_empty {
-                obj.remove("hooks");
+        }
+        if pre.elements().is_empty() {
+            if let Some(prop) = hooks.get("PreToolUse") {
+                prop.remove();
             }
         }
     }
-    root
+    Ok(root.to_string())
 }
 
 // MARK: - 私有 IO
 
-fn read_root() -> Option<Value> {
-    let text = std::fs::read_to_string(paths::claude_settings_json()).ok()?;
-    serde_json::from_str(&text).ok()
+/// 读取 settings.json 文本；不存在 / 读失败 → 返回 "{}"（供安装时新建）。
+fn read_text_or_default() -> String {
+    std::fs::read_to_string(paths::claude_settings_json()).unwrap_or_else(|_| "{}".to_string())
 }
 
-fn write_root(root: &Value) -> Result<()> {
+/// 以 JSONC 解析 settings.json 为 serde 值，供状态查询。
+fn read_value() -> Option<Value> {
+    let text = std::fs::read_to_string(paths::claude_settings_json()).ok()?;
+    let value: Value = jsonc_parser::parse_to_serde_value(&text, &ParseOptions::default()).ok()?;
+    Some(value)
+}
+
+fn write_text(text: &str) -> Result<()> {
     let path = paths::claude_settings_json();
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let json = serde_json::to_string_pretty(root)?;
-    atomic_write(&path, json.as_bytes())
+    atomic_write(&path, text.as_bytes())
 }
 
 fn atomic_write(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
@@ -316,82 +352,152 @@ mod tests {
 
     const SCRIPT: &str = "/home/u/.claude/hooks/askhuman-timeout.sh";
 
+    fn to_value(text: &str) -> Value {
+        jsonc_parser::parse_to_serde_value(text, &ParseOptions::default()).unwrap()
+    }
+
     #[test]
-    fn upsert_then_has_marker() {
-        let root = upsert_hook(json!({}), SCRIPT);
-        assert!(has_marker(&root));
-        let arr = root["hooks"]["PreToolUse"].as_array().unwrap();
-        assert_eq!(arr.len(), 1);
+    fn install_into_empty_creates_group_and_env() {
+        let out = apply_install("{}", SCRIPT).unwrap();
+        let v = to_value(&out);
+        assert!(has_marker(&v));
+        let arr = v["hooks"]["PreToolUse"].as_array().unwrap();
         assert_eq!(arr[0]["matcher"], "Bash");
-        assert_eq!(arr[0]["hooks"][0]["command"], SCRIPT);
         assert_eq!(arr[0]["hooks"][0]["type"], "command");
+        assert_eq!(arr[0]["hooks"][0]["command"], SCRIPT);
+        assert_eq!(v["env"][BASH_MAX_KEY], BASH_MAX_MS.to_string());
     }
 
     #[test]
-    fn upsert_is_idempotent() {
-        let root = upsert_hook(json!({}), SCRIPT);
-        let root = upsert_hook(root, SCRIPT);
-        let arr = root["hooks"]["PreToolUse"].as_array().unwrap();
-        assert_eq!(arr.len(), 1, "重复安装不应新增条目");
+    fn install_is_idempotent() {
+        let a = apply_install("{}", SCRIPT).unwrap();
+        let b = apply_install(&a, SCRIPT).unwrap();
+        let v = to_value(&b);
+        assert_eq!(v["hooks"]["PreToolUse"].as_array().unwrap().len(), 1);
+        assert_eq!(v["env"].as_object().unwrap().len(), 1);
     }
 
     #[test]
-    fn upsert_preserves_other_groups() {
-        let root = json!({
-            "hooks": { "PreToolUse": [ { "matcher": "Edit", "hooks": [ { "type": "command", "command": "other.sh" } ] } ] }
-        });
-        let root = upsert_hook(root, SCRIPT);
-        let arr = root["hooks"]["PreToolUse"].as_array().unwrap();
+    fn install_preserves_other_groups() {
+        let input = "{ \"hooks\": { \"PreToolUse\": [ { \"matcher\": \"Edit\", \"hooks\": [ { \"type\": \"command\", \"command\": \"other.sh\" } ] } ] } }";
+        let out = apply_install(input, SCRIPT).unwrap();
+        let v = to_value(&out);
+        let arr = v["hooks"]["PreToolUse"].as_array().unwrap();
         assert_eq!(arr.len(), 2);
         assert!(arr.iter().any(|g| g["hooks"][0]["command"] == "other.sh"));
-        assert!(has_marker(&root));
+        assert!(has_marker(&v));
     }
 
     #[test]
-    fn ensure_env_sets_when_absent() {
-        let root = ensure_env_max(json!({}));
-        assert_eq!(root["env"][BASH_MAX_KEY], json!(BASH_MAX_MS.to_string()));
-    }
-
-    #[test]
-    fn ensure_env_keeps_larger_value() {
+    fn install_keeps_larger_env_value() {
         let bigger = (BASH_MAX_MS + 1).to_string();
-        let root = ensure_env_max(json!({ "env": { BASH_MAX_KEY: bigger.clone() } }));
-        assert_eq!(root["env"][BASH_MAX_KEY], json!(bigger));
+        let input = format!("{{ \"env\": {{ \"{BASH_MAX_KEY}\": \"{bigger}\" }} }}");
+        let out = apply_install(&input, SCRIPT).unwrap();
+        let v = to_value(&out);
+        assert_eq!(v["env"][BASH_MAX_KEY], bigger);
     }
 
     #[test]
-    fn ensure_env_raises_smaller_value() {
-        let root = ensure_env_max(json!({ "env": { BASH_MAX_KEY: "600000" } }));
-        assert_eq!(root["env"][BASH_MAX_KEY], json!(BASH_MAX_MS.to_string()));
+    fn install_raises_smaller_env_value() {
+        let input = format!("{{ \"env\": {{ \"{BASH_MAX_KEY}\": \"600000\", \"FOO\": \"bar\" }} }}");
+        let out = apply_install(&input, SCRIPT).unwrap();
+        let v = to_value(&out);
+        assert_eq!(v["env"][BASH_MAX_KEY], BASH_MAX_MS.to_string());
+        assert_eq!(v["env"]["FOO"], "bar", "env 其它键应保留");
     }
 
     #[test]
-    fn remove_only_ours_and_keeps_env() {
-        let root = json!({
-            "env": { BASH_MAX_KEY: BASH_MAX_MS.to_string(), "FOO": "bar" },
-            "hooks": { "PreToolUse": [
-                { "matcher": "Edit", "hooks": [ { "type": "command", "command": "other.sh" } ] },
-                { "matcher": "Bash", "hooks": [ { "type": "command", "command": SCRIPT } ] }
-            ] }
-        });
-        let root = remove_hook(root);
-        let arr = root["hooks"]["PreToolUse"].as_array().unwrap();
+    fn install_preserves_user_comment_and_escaped_slashes() {
+        let input = "{\n  // 用户注释，勿动\n  \"hooks\": {\n    \"PostToolUse\": [ { \"matcher\": \"Bash\", \"hooks\": [ { \"type\": \"command\", \"command\": \"curl http:\\/\\/x\" } ] } ]\n  }\n}";
+        let out = apply_install(input, SCRIPT).unwrap();
+        assert!(out.contains("// 用户注释，勿动"), "注释应原样保留");
+        assert!(out.contains("http:\\/\\/x"), "转义斜杠应逐字节保留");
+        assert!(out.contains("PostToolUse"));
+        assert!(has_marker(&to_value(&out)));
+    }
+
+    #[test]
+    fn install_replaces_existing_group_in_place() {
+        let input = "{ \"hooks\": { \"PreToolUse\": [ { \"matcher\": \"Bash\", \"hooks\": [ { \"type\": \"command\", \"command\": \"old/askhuman-timeout.sh\" } ] } ] } }";
+        let out = apply_install(input, SCRIPT).unwrap();
+        let v = to_value(&out);
+        let arr = v["hooks"]["PreToolUse"].as_array().unwrap();
+        assert_eq!(arr.len(), 1, "本应用组应被替换而非新增");
+        assert_eq!(arr[0]["hooks"][0]["command"], SCRIPT);
+    }
+
+    #[test]
+    fn install_collapses_duplicate_groups() {
+        let input = "{ \"hooks\": { \"PreToolUse\": [ { \"matcher\": \"Bash\", \"hooks\": [ { \"type\": \"command\", \"command\": \"a/askhuman-timeout.sh\" } ] }, { \"matcher\": \"Bash\", \"hooks\": [ { \"type\": \"command\", \"command\": \"b/askhuman-timeout.sh\" } ] } ] } }";
+        let out = apply_install(input, SCRIPT).unwrap();
+        let v = to_value(&out);
+        let arr = v["hooks"]["PreToolUse"].as_array().unwrap();
+        assert_eq!(arr.len(), 1, "重复的本应用组应被收敛为一条");
+        assert_eq!(arr[0]["hooks"][0]["command"], SCRIPT);
+    }
+
+    #[test]
+    fn install_aborts_on_non_object_root() {
+        assert!(apply_install("[]", SCRIPT).is_err());
+    }
+
+    #[test]
+    fn install_aborts_on_wrong_type_env() {
+        // 解析成功但 env 不是对象 → 中止，绝不破坏。
+        assert!(apply_install("{ \"env\": [] }", SCRIPT).is_err());
+    }
+
+    #[test]
+    fn install_raises_numeric_env_value() {
+        // 现值为数字且更小 → 抬高为 24h（统一存为字符串）。
+        let input = "{ \"env\": { \"BASH_MAX_TIMEOUT_MS\": 600000 } }";
+        let out = apply_install(input, SCRIPT).unwrap();
+        let v = to_value(&out);
+        assert_eq!(v["env"][BASH_MAX_KEY], BASH_MAX_MS.to_string());
+    }
+
+    #[test]
+    fn install_is_byte_stable_fixpoint() {
+        let a = apply_install("{}", SCRIPT).unwrap();
+        let b = apply_install(&a, SCRIPT).unwrap();
+        let c = apply_install(&b, SCRIPT).unwrap();
+        assert_eq!(b, c, "已安装态再安装应为稳定不动点");
+    }
+
+    #[test]
+    fn uninstall_noop_when_absent() {
+        let input = "{ \"hooks\": { \"PreToolUse\": [ { \"matcher\": \"Edit\", \"hooks\": [ { \"type\": \"command\", \"command\": \"other.sh\" } ] } ] } }";
+        let out = apply_uninstall(input).unwrap();
+        let v = to_value(&out);
+        assert!(!has_marker(&v));
+        assert_eq!(v["hooks"]["PreToolUse"][0]["hooks"][0]["command"], "other.sh");
+    }
+
+    #[test]
+    fn uninstall_removes_only_ours_and_keeps_env() {
+        let input = "{ \"env\": { \"BASH_MAX_TIMEOUT_MS\": \"86400000\", \"FOO\": \"bar\" }, \"hooks\": { \"PreToolUse\": [ { \"matcher\": \"Edit\", \"hooks\": [ { \"type\": \"command\", \"command\": \"other.sh\" } ] }, { \"matcher\": \"Bash\", \"hooks\": [ { \"type\": \"command\", \"command\": \"x/askhuman-timeout.sh\" } ] } ] } }";
+        let out = apply_uninstall(input).unwrap();
+        let v = to_value(&out);
+        let arr = v["hooks"]["PreToolUse"].as_array().unwrap();
         assert_eq!(arr.len(), 1);
         assert_eq!(arr[0]["hooks"][0]["command"], "other.sh");
-        assert!(!has_marker(&root));
-        // env 保持不动
-        assert_eq!(root["env"][BASH_MAX_KEY], json!(BASH_MAX_MS.to_string()));
-        assert_eq!(root["env"]["FOO"], "bar");
+        assert!(!has_marker(&v));
+        assert_eq!(v["env"][BASH_MAX_KEY], BASH_MAX_MS.to_string(), "env 应不动");
+        assert_eq!(v["env"]["FOO"], "bar");
     }
 
     #[test]
-    fn remove_drops_empty_keys() {
-        let root = json!({
-            "hooks": { "PreToolUse": [ { "matcher": "Bash", "hooks": [ { "type": "command", "command": SCRIPT } ] } ] }
-        });
-        let root = remove_hook(root);
-        assert!(root.get("hooks").is_none(), "空 hooks 应整体删除");
+    fn uninstall_drops_empty_pretooluse_key() {
+        let input = "{ \"hooks\": { \"PreToolUse\": [ { \"matcher\": \"Bash\", \"hooks\": [ { \"type\": \"command\", \"command\": \"x/askhuman-timeout.sh\" } ] } ] } }";
+        let out = apply_uninstall(input).unwrap();
+        let v = to_value(&out);
+        assert!(v["hooks"].get("PreToolUse").is_none(), "空数组应删除该键");
+    }
+
+    #[test]
+    fn parse_error_aborts_without_overwrite() {
+        assert!(apply_install("{ \"hooks\": ", SCRIPT).is_err());
+        assert!(apply_uninstall("{ \"hooks\": ").is_err());
     }
 
     #[test]

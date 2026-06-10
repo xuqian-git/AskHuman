@@ -25,6 +25,10 @@ tauri-build = { version = "2" }
 tauri = { version = "2", features = ["macos-private-api"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# 以 CST 做“保留格式的最小化编辑”改写 hooks.json / settings.json：
+# 只触碰本应用注入的条目，用户的注释 / 缩进 / 转义（如 http:\/\/）逐字节保留；
+# 解析失败即中止，绝不整份重写覆盖用户文件。
+jsonc-parser = { version = "0.32", features = ["cst", "serde", "serde_json"] }
 uuid = { version = "1", features = ["v4"] }
 # 会话型渠道公共接口（Telegram/钉钉等共享多问题驱动逻辑）需要 async trait。
 async-trait = "0.1"
