@@ -9,15 +9,18 @@ import {
   agentRuleReveal,
   agentRuleStatus,
   agentRuleUninstall,
+  agentRuleUpdate,
   applyWindowEffect,
   claudeHookInstall,
   claudeHookReveal,
   claudeHookStatus,
   claudeHookUninstall,
+  claudeHookUpdate,
   cursorHookInstall,
   cursorHookReveal,
   cursorHookStatus,
   cursorHookUninstall,
+  cursorHookUpdate,
   dingtalkDetectPrepare,
   dingtalkDetectWait,
   dingtalkTest,
@@ -65,6 +68,14 @@ const { t } = useI18n();
 
 // 出现动画为 macOS 原生窗口能力，其它平台不展示选择器。
 const isMac = navigator.userAgent.toLowerCase().includes("mac");
+const isWindows = navigator.userAgent.toLowerCase().includes("win");
+
+// 「在文件管理器中显示」的按平台措辞（访达 / 文件资源管理器 / 文件管理器），单一来源。
+const revealLabel = computed(() => {
+  if (isMac) return t("settings.integration.revealInFinder");
+  if (isWindows) return t("settings.integration.revealInExplorer");
+  return t("settings.integration.revealInFileManager");
+});
 
 type Tab = "general" | "integration" | "channel";
 
@@ -106,6 +117,7 @@ const promptCopied = ref(false);
 
 const hook = ref<HookStatus>({
   installed: false,
+  outdated: false,
   hooksJsonExists: false,
   supported: true,
 });
@@ -115,6 +127,7 @@ const hookError = ref(false);
 // Claude Code Hook（与 Cursor Hook 对称）。
 const claudeHook = ref<ClaudeHookStatus>({
   installed: false,
+  outdated: false,
   settingsExists: false,
   supported: true,
 });
@@ -129,6 +142,7 @@ const AGENTS: { id: AgentId; title: string; hasHook: boolean }[] = [
 ];
 const emptyRule = (): RuleStatus => ({
   installed: false,
+  outdated: false,
   path: "",
   supported: true,
 });
@@ -153,6 +167,23 @@ const ruleError = ref<Record<AgentId, boolean>>({
   codex: false,
 });
 
+// 「打开」按钮的下拉菜单：当前展开菜单所属的 Agent（null = 全部收起）。
+const openMenuAgent = ref<AgentId | null>(null);
+function toggleOpenMenu(agent: AgentId) {
+  openMenuAgent.value = openMenuAgent.value === agent ? null : agent;
+}
+function closeOpenMenu() {
+  openMenuAgent.value = null;
+}
+function chooseReveal(agent: AgentId) {
+  agentRuleReveal(agent);
+  closeOpenMenu();
+}
+function chooseOpen(agent: AgentId) {
+  agentRuleOpen(agent);
+  closeOpenMenu();
+}
+
 async function refreshRule(agent: AgentId) {
   rules.value[agent] = await agentRuleStatus(agent);
 }
@@ -161,6 +192,21 @@ async function installRule(agent: AgentId) {
   ruleBusy.value[agent] = true;
   try {
     ruleMessage.value[agent] = await agentRuleInstall(agent);
+    ruleError.value[agent] = false;
+  } catch (e) {
+    ruleMessage.value[agent] = String(e);
+    ruleError.value[agent] = true;
+  } finally {
+    ruleBusy.value[agent] = false;
+    await refreshRule(agent);
+  }
+}
+
+// 更新：把已安装的旧提示词覆盖为最新版本。
+async function updateRule(agent: AgentId) {
+  ruleBusy.value[agent] = true;
+  try {
+    ruleMessage.value[agent] = await agentRuleUpdate(agent);
     ruleError.value[agent] = false;
   } catch (e) {
     ruleMessage.value[agent] = String(e);
@@ -466,6 +512,17 @@ async function installHook() {
   await refreshHook();
 }
 
+async function updateHook() {
+  try {
+    hookMessage.value = await cursorHookUpdate();
+    hookError.value = false;
+  } catch (e) {
+    hookMessage.value = String(e);
+    hookError.value = true;
+  }
+  await refreshHook();
+}
+
 async function uninstallHook() {
   try {
     hookMessage.value = await cursorHookUninstall();
@@ -492,6 +549,17 @@ async function installClaudeHook() {
   await refreshClaudeHook();
 }
 
+async function updateClaudeHook() {
+  try {
+    claudeHookMessage.value = await claudeHookUpdate();
+    claudeHookError.value = false;
+  } catch (e) {
+    claudeHookMessage.value = String(e);
+    claudeHookError.value = true;
+  }
+  await refreshClaudeHook();
+}
+
 async function uninstallClaudeHook() {
   try {
     claudeHookMessage.value = await claudeHookUninstall();
@@ -506,6 +574,7 @@ async function uninstallClaudeHook() {
 // 把两种 Hook 归一成同一视图模型，模板按 agent 复用同一段标记。
 interface HookView {
   installed: boolean;
+  outdated: boolean;
   configExists: boolean;
   supported: boolean;
   message: string | null;
@@ -516,6 +585,7 @@ function hookView(agent: AgentId): HookView {
   if (agent === "claude") {
     return {
       installed: claudeHook.value.installed,
+      outdated: claudeHook.value.outdated,
       configExists: claudeHook.value.settingsExists,
       supported: claudeHook.value.supported,
       message: claudeHookMessage.value,
@@ -524,6 +594,7 @@ function hookView(agent: AgentId): HookView {
   }
   return {
     installed: hook.value.installed,
+    outdated: hook.value.outdated,
     configExists: hook.value.hooksJsonExists,
     supported: hook.value.supported,
     message: hookMessage.value,
@@ -533,6 +604,10 @@ function hookView(agent: AgentId): HookView {
 
 function installAgentHook(agent: AgentId) {
   return agent === "claude" ? installClaudeHook() : installHook();
+}
+
+function updateAgentHook(agent: AgentId) {
+  return agent === "claude" ? updateClaudeHook() : updateHook();
 }
 
 function uninstallAgentHook(agent: AgentId) {
@@ -1005,6 +1080,11 @@ onMounted(async () => {
 
       <!-- Agent -->
       <template v-else-if="activeTab === 'integration'">
+        <div
+          v-if="openMenuAgent"
+          class="menu-backdrop"
+          @click="closeOpenMenu"
+        ></div>
         <p class="section-intro">{{ t("settings.integration.overviewDesc") }}</p>
 
         <p class="section-title">{{ t("settings.integration.manualTitle") }}</p>
@@ -1044,6 +1124,15 @@ onMounted(async () => {
             <span class="spacer"></span>
             <template v-if="rules[a.id].installed">
               <button
+                v-if="rules[a.id].outdated"
+                class="btn btn-update"
+                type="button"
+                :disabled="ruleBusy[a.id]"
+                @click="updateRule(a.id)"
+              >
+                <span class="dot-update"></span>{{ t("settings.integration.update") }}
+              </button>
+              <button
                 class="btn"
                 type="button"
                 :disabled="ruleBusy[a.id]"
@@ -1051,12 +1140,31 @@ onMounted(async () => {
               >
                 {{ t("settings.integration.uninstall") }}
               </button>
-              <button class="btn" type="button" @click="agentRuleOpen(a.id)">
-                {{ t("settings.integration.openFile") }}
-              </button>
-              <button class="btn" type="button" @click="agentRuleReveal(a.id)">
-                {{ t("settings.integration.reveal") }}
-              </button>
+              <div class="menu-wrap">
+                <button
+                  class="btn"
+                  type="button"
+                  @click.stop="toggleOpenMenu(a.id)"
+                >
+                  {{ t("settings.integration.openFile") }}
+                </button>
+                <div v-if="openMenuAgent === a.id" class="menu-pop">
+                  <button
+                    class="menu-item"
+                    type="button"
+                    @click="chooseReveal(a.id)"
+                  >
+                    {{ revealLabel }}
+                  </button>
+                  <button
+                    class="menu-item"
+                    type="button"
+                    @click="chooseOpen(a.id)"
+                  >
+                    {{ t("settings.integration.openFileAction") }}
+                  </button>
+                </div>
+              </div>
             </template>
             <button
               v-else
@@ -1098,6 +1206,15 @@ onMounted(async () => {
                 }}
               </span>
               <span class="spacer"></span>
+              <button
+                v-if="hookView(a.id).installed && hookView(a.id).outdated"
+                class="btn btn-update"
+                type="button"
+                :disabled="!hookView(a.id).supported"
+                @click="updateAgentHook(a.id)"
+              >
+                <span class="dot-update"></span>{{ t("settings.integration.update") }}
+              </button>
               <button
                 v-if="hookView(a.id).installed"
                 class="btn"
@@ -1744,6 +1861,62 @@ onMounted(async () => {
 }
 .badge.muted {
   opacity: 0.55;
+}
+
+/* 「更新」按钮：边框/背景同普通按钮，仅文字与前置圆点用橙色提示有更新 */
+.btn-update {
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
+  color: var(--accent-orange);
+}
+.btn-update .dot-update {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  margin-right: 5px;
+  border-radius: 50%;
+  background: var(--accent-orange);
+}
+
+/* 「打开」下拉菜单：在文件管理器中显示 / 打开文件 */
+.menu-wrap {
+  position: relative;
+  display: inline-block;
+}
+.menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+}
+.menu-pop {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 60;
+  min-width: 168px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+}
+.menu-item {
+  display: block;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 13px;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.menu-item:hover {
+  background: var(--accent);
+  color: #fff;
 }
 
 /* 快捷键录制按钮：等宽、最小宽度，录制态用强调色描边 */

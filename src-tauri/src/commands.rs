@@ -560,6 +560,8 @@ pub fn speech_available() -> bool {
 #[serde(rename_all = "camelCase")]
 pub struct HookStatus {
     installed: bool,
+    /// 已安装但脚本与最新内置版本不一致 → 需更新。
+    outdated: bool,
     hooks_json_exists: bool,
     supported: bool,
 }
@@ -568,6 +570,7 @@ pub struct HookStatus {
 pub fn cursor_hook_status() -> HookStatus {
     HookStatus {
         installed: cursor_hook::is_installed(),
+        outdated: cursor_hook::needs_update(),
         hooks_json_exists: cursor_hook::hooks_json_exists(),
         supported: cursor_hook::supported(),
     }
@@ -576,6 +579,11 @@ pub fn cursor_hook_status() -> HookStatus {
 #[tauri::command]
 pub fn cursor_hook_install() -> Result<String, String> {
     cursor_hook::install().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn cursor_hook_update() -> Result<String, String> {
+    cursor_hook::update().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -597,6 +605,8 @@ use crate::integrations::claude_hook;
 #[serde(rename_all = "camelCase")]
 pub struct ClaudeHookStatus {
     installed: bool,
+    /// 已安装但脚本与最新内置版本不一致 → 需更新。
+    outdated: bool,
     settings_exists: bool,
     supported: bool,
 }
@@ -605,6 +615,7 @@ pub struct ClaudeHookStatus {
 pub fn claude_hook_status() -> ClaudeHookStatus {
     ClaudeHookStatus {
         installed: claude_hook::is_installed(),
+        outdated: claude_hook::needs_update(),
         settings_exists: claude_hook::settings_exists(),
         supported: claude_hook::supported(),
     }
@@ -613,6 +624,11 @@ pub fn claude_hook_status() -> ClaudeHookStatus {
 #[tauri::command]
 pub fn claude_hook_install() -> Result<String, String> {
     claude_hook::install().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn claude_hook_update() -> Result<String, String> {
+    claude_hook::update().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -634,6 +650,8 @@ use crate::integrations::agent_rules::{self, AgentTarget};
 #[serde(rename_all = "camelCase")]
 pub struct RuleStatus {
     installed: bool,
+    /// 已安装但提示词正文与最新内置版本不一致 → 需更新。
+    outdated: bool,
     /// 展示用文件路径（home 折叠为 ~）。
     path: String,
     supported: bool,
@@ -649,6 +667,7 @@ pub fn agent_rule_status(agent: String) -> Result<RuleStatus, String> {
     let a = parse_agent(&agent)?;
     Ok(RuleStatus {
         installed: agent_rules::is_installed(a),
+        outdated: agent_rules::needs_update(a),
         path: agent_rules::display_path(a),
         supported: agent_rules::supported(a),
     })
@@ -658,6 +677,12 @@ pub fn agent_rule_status(agent: String) -> Result<RuleStatus, String> {
 pub fn agent_rule_install(agent: String) -> Result<String, String> {
     let a = parse_agent(&agent)?;
     agent_rules::install(a).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn agent_rule_update(agent: String) -> Result<String, String> {
+    let a = parse_agent(&agent)?;
+    agent_rules::update(a).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

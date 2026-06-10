@@ -1,12 +1,15 @@
-//! Agent 全局提示词（Rules）安装/卸载/状态：Cursor / Claude Code / Codex。
+//! Agent 全局提示词（Rules）安装/卸载/更新/状态：Cursor / Claude Code / Codex。
 //!
-//! 三者共用同一份提示词正文（`prompts::cli_reference()`），但落点不同：
-//! - Cursor：本应用**独占文件** `~/.cursor/rules/askhuman.mdc`（frontmatter + 头标记 + 正文）。
-//! - Claude Code：**共享文件** `~/.claude/CLAUDE.md` 内的托管区块。
-//! - Codex：**共享文件** `~/.codex/AGENTS.md` 内的托管区块。
+//! 三者共用同一份提示词正文（`prompts::cli_reference()`），均以自有 `begin/end` 托管区块写入，
+//! 区块外的用户内容一律保留；落点不同：
+//! - Cursor：`~/.cursor/rules/askhuman.mdc`（`alwaysApply` frontmatter + 托管区块）。
+//! - Claude Code：`~/.claude/CLAUDE.md` 内的托管区块。
+//! - Codex：`~/.codex/AGENTS.md` 内的托管区块。
 //!
-//! 写共享文件时只在自有 `begin/end` 区块内增删，绝不动用户其它内容；写独占文件时整文件由本
-//! 应用拥有，卸载仅在文件含头标记时删除。区块增删为纯函数，便于单测（幂等、保留他人内容）。
+//! 「更新」用于内置提示词随版本变化后，把已安装的旧正文覆盖为最新（仅替换区块内部）。
+//! Cursor 卸载时若区块外只剩 frontmatter / 空白则删除整个文件，否则保留用户内容。
+//! 旧版 Cursor 独占文件（含 `MANAGED_FILE_MARK` 头标记、无区块）仍识别为已安装，并在
+//! 安装 / 更新时整体迁移为新的区块格式。区块增删为纯函数，便于单测（幂等、保留他人内容）。
 
 use crate::paths;
 use anyhow::{Context, Result};
@@ -16,8 +19,11 @@ use std::path::{Path, PathBuf};
 pub const BLOCK_BEGIN: &str = "<!-- AskHuman:begin DO NOT EDIT (managed by AskHuman) -->";
 /// 共享文件托管区块结束标记。
 pub const BLOCK_END: &str = "<!-- AskHuman:end -->";
-/// 独占文件头标记（用于识别本应用拥有的文件，防止误删用户同名文件）。
+/// 旧版 Cursor 独占文件头标记（仅用于识别 / 迁移历史安装，新格式不再写入）。
 pub const MANAGED_FILE_MARK: &str = "<!-- AskHuman:managed-file DO NOT EDIT (managed by AskHuman) -->";
+
+/// Cursor 规则文件的 frontmatter（令规则始终生效）。
+pub const CURSOR_FRONTMATTER: &str = "---\nalwaysApply: true\n---\n";
 
 /// 目标 Agent。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -97,6 +103,13 @@ fn block_span(text: &str) -> Option<(usize, usize)> {
     Some((start, end_marker + BLOCK_END.len()))
 }
 
+/// 提取托管区块内的正文（begin/end 之间，去掉首尾换行）。不存在则 None。
+pub fn block_body(text: &str) -> Option<String> {
+    let start = text.find(BLOCK_BEGIN)? + BLOCK_BEGIN.len();
+    let end = text[start..].find(BLOCK_END)? + start;
+    Some(text[start..end].trim_matches('\n').to_string())
+}
+
 /// 折叠连续空行（最多保留一行空行）、去除尾部空白，非空时保留单个结尾换行。
 fn tidy(s: &str) -> String {
     let mut out: Vec<&str> = Vec::new();
@@ -117,29 +130,71 @@ fn tidy(s: &str) -> String {
     }
 }
 
-/// 组装 Cursor 独占规则文件内容：`alwaysApply:true` frontmatter + 头标记 + 正文。
-pub fn build_cursor_rule(body: &str) -> String {
-    format!("---\nalwaysApply: true\n---\n{MANAGED_FILE_MARK}\n\n{body}\n")
+/// 组装 Cursor 规则文件内容：在旧文件基础上写入 frontmatter + 托管区块，保留区块外用户内容。
+/// 旧版独占整文件（含头标记、无区块）整体迁移为新格式。
+pub fn build_cursor_rule(old: &str, body: &str) -> String {
+    if is_managed_cursor_file(old) && !has_block(old) {
+        let block = format!("{BLOCK_BEGIN}\n{body}\n{BLOCK_END}");
+        return format!("{CURSOR_FRONTMATTER}{block}\n");
+    }
+    upsert_block(&ensure_cursor_frontmatter(old), body)
 }
 
-/// 独占文件是否由本应用拥有（含头标记）。
+/// 确保文本开头存在 frontmatter；缺失时前置 `alwaysApply` frontmatter。
+fn ensure_cursor_frontmatter(text: &str) -> String {
+    if text.trim().is_empty() {
+        return CURSOR_FRONTMATTER.to_string();
+    }
+    if text.trim_start().starts_with("---") {
+        return text.to_string();
+    }
+    format!("{CURSOR_FRONTMATTER}{text}")
+}
+
+/// 去掉开头的 YAML frontmatter（`---` 到下一个 `---`），返回其后的内容。无 frontmatter 原样返回。
+fn strip_frontmatter(text: &str) -> &str {
+    let trimmed = text.trim_start_matches('\n');
+    if let Some(rest) = trimmed.strip_prefix("---\n") {
+        if let Some(idx) = rest.find("\n---") {
+            return &rest[idx + "\n---".len()..];
+        }
+    }
+    text
+}
+
+/// 移除托管区块后，Cursor 文件的区块外是否只剩 frontmatter / 空白（可整文件删除）。
+fn cursor_residual_is_empty(text: &str) -> bool {
+    strip_frontmatter(text).trim().is_empty()
+}
+
+/// 旧版 Cursor 独占文件是否由本应用拥有（含头标记）。
 pub fn is_managed_cursor_file(text: &str) -> bool {
     text.contains(MANAGED_FILE_MARK)
 }
 
 // MARK: - 状态 / 路径
 
-/// 该 Agent 的规则是否已安装。
+/// 该 Agent 的规则是否已安装（新格式托管区块，或 Cursor 旧格式头标记）。
 pub fn is_installed(agent: AgentTarget) -> bool {
     let path = agent.file();
     let Ok(text) = std::fs::read_to_string(&path) else {
         return false;
     };
-    if agent.is_owned_file() {
-        is_managed_cursor_file(&text)
-    } else {
-        has_block(&text)
+    has_block(&text) || (agent.is_owned_file() && is_managed_cursor_file(&text))
+}
+
+/// 已安装但磁盘上的提示词正文与最新内置版本不一致 → 需更新。
+/// Cursor 旧格式（头标记、无区块）一律视为需更新（点更新即迁移为新格式）。
+pub fn needs_update(agent: AgentTarget) -> bool {
+    let Ok(text) = std::fs::read_to_string(agent.file()) else {
+        return false;
+    };
+    if has_block(&text) {
+        return block_body(&text)
+            .map(|b| b != crate::prompts::cli_reference())
+            .unwrap_or(true);
     }
+    agent.is_owned_file() && is_managed_cursor_file(&text)
 }
 
 /// 当前平台是否支持（三种规则文件读写均跨平台）。
@@ -163,41 +218,55 @@ fn collapse_home(p: &Path) -> String {
 
 // MARK: - 安装 / 卸载
 
-/// 安装：写入推荐提示词（独占文件整写 / 共享文件区块 upsert）。
+/// 安装：写入最新推荐提示词（托管区块 upsert，保留区块外用户内容）。
 pub fn install(agent: AgentTarget) -> Result<String> {
+    write_rule(agent)?;
+    Ok(crate::i18n::tr(crate::i18n::Lang::current(), "cmd.ruleInstalled").to_string())
+}
+
+/// 更新：把已安装的旧提示词覆盖为最新（与安装同样的写入逻辑，仅反馈文案不同）。
+pub fn update(agent: AgentTarget) -> Result<String> {
+    write_rule(agent)?;
+    Ok(crate::i18n::tr(crate::i18n::Lang::current(), "cmd.ruleUpdated").to_string())
+}
+
+/// 把最新提示词写入目标文件（共享文件 upsert 区块 / Cursor 写 frontmatter + 区块、迁移旧格式）。
+fn write_rule(agent: AgentTarget) -> Result<()> {
     let path = agent.file();
     let body = crate::prompts::cli_reference();
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)
             .with_context(|| format!("failed to create directory: {}", dir.display()))?;
     }
+    let old = std::fs::read_to_string(&path).unwrap_or_default();
     let new_text = if agent.is_owned_file() {
-        build_cursor_rule(&body)
+        build_cursor_rule(&old, &body)
     } else {
-        let old = std::fs::read_to_string(&path).unwrap_or_default();
         upsert_block(&old, &body)
     };
     atomic_write(&path, new_text.as_bytes())
         .with_context(|| format!("failed to write rule file: {}", path.display()))?;
-    Ok(crate::i18n::tr(crate::i18n::Lang::current(), "cmd.ruleInstalled").to_string())
+    Ok(())
 }
 
-/// 卸载：独占文件仅在含头标记时删除；共享文件移除托管区块、保留其它内容。
+/// 卸载：移除托管区块、保留区块外用户内容；Cursor 文件若区块外只剩 frontmatter / 空白则整文件删除。
 pub fn uninstall(agent: AgentTarget) -> Result<String> {
     let path = agent.file();
     let lang = crate::i18n::Lang::current();
-    if agent.is_owned_file() {
-        if let Ok(text) = std::fs::read_to_string(&path) {
-            if is_managed_cursor_file(&text) {
+    if let Ok(old) = std::fs::read_to_string(&path) {
+        // Cursor 旧格式独占整文件（头标记、无区块）：直接删除。
+        if agent.is_owned_file() && is_managed_cursor_file(&old) && !has_block(&old) {
+            std::fs::remove_file(&path)
+                .with_context(|| format!("failed to remove rule file: {}", path.display()))?;
+        } else if has_block(&old) {
+            let new_text = remove_block(&old);
+            if agent.is_owned_file() && cursor_residual_is_empty(&new_text) {
                 std::fs::remove_file(&path)
                     .with_context(|| format!("failed to remove rule file: {}", path.display()))?;
+            } else {
+                atomic_write(&path, new_text.as_bytes())
+                    .with_context(|| format!("failed to write rule file: {}", path.display()))?;
             }
-        }
-    } else if let Ok(old) = std::fs::read_to_string(&path) {
-        if has_block(&old) {
-            let new_text = remove_block(&old);
-            atomic_write(&path, new_text.as_bytes())
-                .with_context(|| format!("failed to write rule file: {}", path.display()))?;
         }
     }
     Ok(crate::i18n::tr(lang, "cmd.ruleRemoved").to_string())
@@ -320,12 +389,59 @@ mod tests {
     }
 
     #[test]
-    fn cursor_file_build_and_recognize() {
-        let f = build_cursor_rule(BODY);
+    fn block_body_extracts_inner() {
+        let with = upsert_block("keep me\n", BODY);
+        assert_eq!(block_body(&with).as_deref(), Some(BODY));
+        assert_eq!(block_body("no block"), None);
+    }
+
+    #[test]
+    fn cursor_fresh_install_has_frontmatter_and_block() {
+        let f = build_cursor_rule("", BODY);
         assert!(f.starts_with("---\nalwaysApply: true\n---\n"));
-        assert!(is_managed_cursor_file(&f));
-        assert!(f.contains(BODY));
-        // a user file without the marker must not be recognized as ours
-        assert!(!is_managed_cursor_file("---\nalwaysApply: true\n---\nuser rule\n"));
+        assert!(has_block(&f));
+        assert_eq!(block_body(&f).as_deref(), Some(BODY));
+        // new format no longer writes the legacy file marker
+        assert!(!is_managed_cursor_file(&f));
+    }
+
+    #[test]
+    fn cursor_preserves_user_content_and_updates_block() {
+        let installed = build_cursor_rule("", BODY);
+        let edited = format!("{installed}\nmy own cursor rule\n");
+        let updated = build_cursor_rule(&edited, "NEW BODY");
+        assert!(updated.contains("my own cursor rule"), "user content kept");
+        assert_eq!(block_body(&updated).as_deref(), Some("NEW BODY"));
+        assert_eq!(updated.matches(BLOCK_BEGIN).count(), 1, "single block");
+        assert!(updated.contains("alwaysApply: true"), "frontmatter kept");
+    }
+
+    #[test]
+    fn cursor_migrates_legacy_owned_file() {
+        // 旧格式：frontmatter + 头标记 + 正文（无区块）。
+        let legacy = format!("---\nalwaysApply: true\n---\n{MANAGED_FILE_MARK}\n\nOLD BODY\n");
+        // 旧格式：被识别为已安装（owned + 头标记），但无区块 → 需迁移更新。
+        assert!(is_managed_cursor_file(&legacy) && !has_block(&legacy));
+        let migrated = build_cursor_rule(&legacy, BODY);
+        assert!(has_block(&migrated));
+        assert_eq!(block_body(&migrated).as_deref(), Some(BODY));
+        assert!(!migrated.contains("OLD BODY"), "legacy body replaced");
+        assert!(!is_managed_cursor_file(&migrated), "legacy marker dropped");
+    }
+
+    #[test]
+    fn cursor_residual_empty_only_frontmatter() {
+        let installed = build_cursor_rule("", BODY);
+        let residual = remove_block(&installed);
+        assert!(cursor_residual_is_empty(&residual), "only frontmatter left");
+        let with_user = format!("{}\nkeep this\n", remove_block(&build_cursor_rule("", BODY)));
+        assert!(!cursor_residual_is_empty(&with_user));
+    }
+
+    #[test]
+    fn strip_frontmatter_removes_block() {
+        assert_eq!(strip_frontmatter("---\nalwaysApply: true\n---\n").trim(), "");
+        assert_eq!(strip_frontmatter("---\nk: v\n---\nbody").trim(), "body");
+        assert_eq!(strip_frontmatter("no fm").trim(), "no fm");
     }
 }

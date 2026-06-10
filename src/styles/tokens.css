@@ -28,6 +28,7 @@
   --text-tertiary: rgba(0, 0, 0, 0.38);
   --control-bg: #ffffff;
   --control-border: rgba(0, 0, 0, 0.2);
+  --accent-orange: #ff9500;
 
   /* 毛玻璃色罩：叠在系统材质上，轻微加深、保留通透质感 */
   --vibrancy-tint: rgba(255, 255, 255, 0.3);
@@ -53,6 +54,7 @@
   --text-tertiary: rgba(255, 255, 255, 0.4);
   --control-bg: rgba(255, 255, 255, 0.08);
   --control-border: rgba(255, 255, 255, 0.22);
+  --accent-orange: #ff9f0a;
 
   --vibrancy-tint: rgba(0, 0, 0, 0.3);
 
@@ -77,6 +79,7 @@
     --text-tertiary: rgba(255, 255, 255, 0.4);
     --control-bg: rgba(255, 255, 255, 0.08);
     --control-border: rgba(255, 255, 255, 0.22);
+    --accent-orange: #ff9f0a;
 
     --vibrancy-tint: rgba(0, 0, 0, 0.3);
 

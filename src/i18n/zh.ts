@@ -114,6 +114,10 @@ export default {
       hookLabel: "Hook",
       reveal: "定位",
       openFile: "打开",
+      revealInFinder: "在访达中显示",
+      revealInExplorer: "在文件资源管理器中显示",
+      revealInFileManager: "在文件管理器中显示",
+      openFileAction: "打开文件",
       installRule: "安装规则",
       hookShort: "检测到调用 AskHuman 时自动把超时延长到 24 小时，避免长时间等待被取消。",
       cursorRulesHint:
@@ -121,6 +125,7 @@ export default {
       installed: "已安装",
       notInstalled: "未安装",
       install: "安装",
+      update: "更新",
       uninstall: "移除",
       windowsUnsupported: "Windows 暂不支持该 Hook",
     },

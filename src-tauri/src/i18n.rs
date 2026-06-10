@@ -338,8 +338,10 @@ pub fn tr(lang: Lang, key: &'static str) -> &'static str {
         "cmd.locateExeFailed" => pick(lang, "Failed to locate the program path: {e}", "无法定位程序路径: {e}"),
         "cmd.testPopupFailed" => pick(lang, "Failed to launch the test popup: {e}", "启动测试弹窗失败: {e}"),
         "cmd.hookInstalled" => pick(lang, "Cursor Hook installed", "已安装 Cursor Hook"),
+        "cmd.hookUpdated" => pick(lang, "Hook updated to the latest version", "已更新到最新版本"),
         "cmd.hookRemoved" => pick(lang, "Cursor Hook removed", "已移除 Cursor Hook"),
         "cmd.ruleInstalled" => pick(lang, "Rule written", "已写入规则文件"),
+        "cmd.ruleUpdated" => pick(lang, "Prompt updated to the latest version", "已更新到最新提示词"),
         "cmd.ruleRemoved" => pick(lang, "Rule removed", "已从规则文件移除"),
         "cmd.unknownAgent" => pick(lang, "Unknown agent", "未知的 Agent"),
 

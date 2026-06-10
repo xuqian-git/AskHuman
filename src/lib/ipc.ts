@@ -102,6 +102,8 @@ export const cursorHookStatus = () => invoke<HookStatus>("cursor_hook_status");
 
 export const cursorHookInstall = () => invoke<string>("cursor_hook_install");
 
+export const cursorHookUpdate = () => invoke<string>("cursor_hook_update");
+
 export const cursorHookUninstall = () => invoke<string>("cursor_hook_uninstall");
 
 export const cursorHookReveal = () => invoke<void>("cursor_hook_reveal");
@@ -110,6 +112,8 @@ export const claudeHookStatus = () =>
   invoke<ClaudeHookStatus>("claude_hook_status");
 
 export const claudeHookInstall = () => invoke<string>("claude_hook_install");
+
+export const claudeHookUpdate = () => invoke<string>("claude_hook_update");
 
 export const claudeHookUninstall = () =>
   invoke<string>("claude_hook_uninstall");
@@ -121,6 +125,9 @@ export const agentRuleStatus = (agent: AgentId) =>
 
 export const agentRuleInstall = (agent: AgentId) =>
   invoke<string>("agent_rule_install", { agent });
+
+export const agentRuleUpdate = (agent: AgentId) =>
+  invoke<string>("agent_rule_update", { agent });
 
 export const agentRuleUninstall = (agent: AgentId) =>
   invoke<string>("agent_rule_uninstall", { agent });

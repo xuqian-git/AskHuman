@@ -115,6 +115,10 @@ export default {
       hookLabel: "Hook",
       reveal: "Locate",
       openFile: "Open",
+      revealInFinder: "Show in Finder",
+      revealInExplorer: "Show in File Explorer",
+      revealInFileManager: "Show in File Manager",
+      openFileAction: "Open File",
       installRule: "Install Rule",
       hookShort:
         "Auto-extends the timeout to 24h when an AskHuman call is detected, so long waits aren't cancelled.",
@@ -123,6 +127,7 @@ export default {
       installed: "Installed",
       notInstalled: "Not installed",
       install: "Install",
+      update: "Update",
       uninstall: "Remove",
       windowsUnsupported: "This hook is not supported on Windows",
     },

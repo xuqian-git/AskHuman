@@ -72,6 +72,17 @@ pub fn is_installed() -> bool {
     read_root().map(|r| has_marker(&r)).unwrap_or(false)
 }
 
+/// 已安装但磁盘脚本与内置脚本不一致（或脚本缺失 / 仅旧版脚本）→ 需更新。
+pub fn needs_update() -> bool {
+    if !is_installed() {
+        return false;
+    }
+    match std::fs::read_to_string(paths::cursor_hook_script()) {
+        Ok(content) => content != SCRIPT_CONTENT,
+        Err(_) => true,
+    }
+}
+
 /// 安装：写脚本（chmod 0755）+ 在 hooks.json 注册/更新条目。
 pub fn install() -> Result<String> {
     let script = paths::cursor_hook_script();
@@ -95,6 +106,17 @@ pub fn install() -> Result<String> {
 
     let lang = crate::i18n::Lang::current();
     Ok(crate::i18n::tr(lang, "cmd.hookInstalled").to_string())
+}
+
+/// 更新：用最新脚本与条目覆盖（复用 install），并清理旧版脚本文件。
+pub fn update() -> Result<String> {
+    install()?;
+    let legacy = paths::legacy_cursor_hook_script();
+    if legacy.exists() {
+        let _ = std::fs::remove_file(&legacy);
+    }
+    let lang = crate::i18n::Lang::current();
+    Ok(crate::i18n::tr(lang, "cmd.hookUpdated").to_string())
 }
 
 /// 移除：删除本应用条目 + 删除脚本文件（保留他人条目）。

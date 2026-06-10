@@ -104,6 +104,17 @@ pub fn is_installed() -> bool {
     read_root().map(|r| has_marker(&r)).unwrap_or(false)
 }
 
+/// 已安装但磁盘脚本与内置脚本不一致（或脚本缺失）→ 需更新。
+pub fn needs_update() -> bool {
+    if !is_installed() {
+        return false;
+    }
+    match std::fs::read_to_string(paths::claude_hook_script()) {
+        Ok(content) => content != SCRIPT_CONTENT,
+        Err(_) => true,
+    }
+}
+
 /// 安装：写脚本（chmod 0755）+ 注册/更新 PreToolUse 条目 + 抬高 BASH_MAX_TIMEOUT_MS。
 pub fn install() -> Result<String> {
     let script = paths::claude_hook_script();
@@ -128,6 +139,13 @@ pub fn install() -> Result<String> {
 
     let lang = crate::i18n::Lang::current();
     Ok(crate::i18n::tr(lang, "cmd.hookInstalled").to_string())
+}
+
+/// 更新：用最新脚本与条目覆盖（复用 install），同时确保 env 上限 ≥ 24h。
+pub fn update() -> Result<String> {
+    install()?;
+    let lang = crate::i18n::Lang::current();
+    Ok(crate::i18n::tr(lang, "cmd.hookUpdated").to_string())
 }
 
 /// 移除：删除本应用 PreToolUse 条目 + 删除脚本文件；保留 `env` 与其它条目。
