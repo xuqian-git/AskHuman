@@ -32,5 +32,5 @@
 
 - 提问以消息下发，预定义选项为 inline 按钮；可点按钮、也可直接回复文字，再点「发送」完成作答。
 - **不接收图片**（人 → AI 的图片回传请使用钉钉 / 飞书渠道）。
-- 来源名「Question from {名称}」由环境变量 `ASKHUMAN_ENV_SOURCE_NAME` 定制（见 [配置](./configuration.md)）。
+- 来源名「Question from {名称}」由环境变量 `ASKHUMAN_ENV_SOURCE_NAME` 定制（见 [环境变量](./environment-variables.md)）。
 - Message 的附件（`-f`）会随 Message 一并发送：图片用 `sendPhoto`，其它用 `sendDocument`。

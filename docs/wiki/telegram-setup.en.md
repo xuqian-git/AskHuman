@@ -32,5 +32,5 @@ Click "Test connection" — receiving the test message in Telegram means you're 
 
 - Questions are delivered as messages; predefined options become inline buttons. You can tap buttons or reply with text, then tap "Send" to submit.
 - **Images are not received** (for human → AI image upload, use the DingTalk / Feishu channels).
-- The source name "Question from {name}" is customizable via the `ASKHUMAN_ENV_SOURCE_NAME` environment variable (see [Configuration](./configuration.en.md)).
+- The source name "Question from {name}" is customizable via the `ASKHUMAN_ENV_SOURCE_NAME` environment variable (see [Environment Variables](./environment-variables.en.md)).
 - Message attachments (`-f`) are sent alongside the Message: images via `sendPhoto`, others via `sendDocument`.

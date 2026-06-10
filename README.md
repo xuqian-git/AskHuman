@@ -47,39 +47,49 @@ npm i -g askhuman
 
 ### 一、AskHuman 命令
 
+`AskHuman` 是一个命令行工具，AI Agent 通过它向你提问并取回结果。几个最常见的用法：
+
 ```bash
-# 提问（结果写入 stdout）。无 -q 时第一个参数即问题；-o! 把选项标记为推荐答案
-AskHuman "要继续吗？" -o! "继续" -o "停止"
+# 最基础的提问：第一个参数即问题，-o 添加预选项
+AskHuman "要继续吗？" -o "继续" -o "停止"
 
-# 多问题：第一个参数是共享描述(Message)，每个 -q 是一题，-o 归其前最近的问题
-AskHuman "请确认几点：" -q "保留日志？" -o "保留" -o "清除" -q "开启缓存？" -o "开" -o "关"
+# 带图片、多问题：第一个参数是共享描述，-f 附带文件/图片，每个 -q 是一题，-o! 标记推荐答案
+AskHuman "看看这个改动？" -f ./diagram.png \
+  -q "要继续吗？" -o! "继续" -o "停止" \
+  -q "需要跑测试吗？" -o "跑" -o "跳过"
 
-# 附带文件 / 图片展示（作用于 Message，可多次；支持 绝对 / 相对 / ~ 路径）
-AskHuman "看看这个？" -f ~/Documents/spec.md -f ./diagram.png
-
-# 长 Markdown（含反引号 / $ / 引号）从 stdin 读入 Message，用 heredoc 规避 shell 转义
-AskHuman --stdin -q "要继续吗？" -o "继续" -o "停止" <<'EOF'
-# 标题
-含 `反引号`、$VAR 与 "引号" 的多行内容，全部按字面传入。
-EOF
-
-# 其它
-AskHuman "纯文本" --no-markdown   # 关闭 Markdown 渲染
-AskHuman --settings              # 打开设置界面
-AskHuman --history               # 打开回复历史（默认当前项目；加 --all 看全部项目）
-AskHuman --help                  # 帮助
-AskHuman --version               # 版本
+# 其它常用
+AskHuman --settings   # 打开设置界面
+AskHuman --history    # 打开回复历史（加 --all 看全部项目）
 ```
 
-结果按 `[选择的选项]` / `[用户输入]` / `[图片]` / `[文件]` / `[状态]` 区块写入 stdout，日志走 stderr。完整的调用方式与输出格式见 `AskHuman --agent-help`。
+整个 CLI 的完整用法见 `AskHuman --help`，提问的完整用法见 `AskHuman --agent-help`。
 
-### 二、与 AI Agent 搭配
+### 二、集成到 Agent 中
 
-让 Agent「结束前先问人」，有以下几种使用方式：
+为了让 Agent 在结束或需要确认时主动调用 `AskHuman`，需要把相应提示词加入 Agent 的全局提示词。运行 `AskHuman --settings` 打开设置，进入 **Agents** 面板，按需选择：
 
-- **提示词进 rules**：设置页「集成」Tab 提供可复制的参考提示词，把它加入你的 Agent 规则（如 Cursor 的 rules / `AGENTS.md` / `CLAUDE.md`），引导 Agent 在结束或需要确认时调用 `AskHuman`。
-- **Cursor Hook**（仅 macOS / Linux）：设置页一键安装，向 `~/.cursor/hooks.json` 注册脚本——检测到 Shell 调用 `AskHuman` 时，自动把工具调用超时延长到 24 小时，避免等待你回应时被强制取消。
-- **程序集成**：把 `askhuman` 加入项目依赖（`npm i askhuman`），`npm install` 会自动装上当前平台二进制，运行时解析路径并调用：
+- **手动集成**：复制参考提示词，自行加入你的 Agent 全局提示词（如 Cursor Rules / `AGENTS.md` / `CLAUDE.md`）。
+- **自动集成**：一键为 Cursor / Claude Code / Codex 安装全局 Rules；还可安装超时 Hook（检测到调用 `AskHuman` 时，自动把工具调用超时延长到 24 小时，避免等待你回应时被强制取消）。
+
+### 三、配置沟通渠道
+
+默认即有本地弹窗。你也可以开启钉钉、飞书、Telegram、Slack 等渠道——这样无论是否在电脑前，都能收到提问并回复（多个渠道可同时开启并行「抢答」）。在设置的 **通信渠道** Tab 配置，每个渠道的接入步骤见：
+
+- [钉钉](docs/wiki/dingtalk-setup.md)
+- [飞书 / Lark](docs/wiki/feishu-setup.md)
+- [Telegram](docs/wiki/telegram-setup.md)
+- [Slack](docs/wiki/slack-setup.md)
+
+### 四、通用设置
+
+主题、窗口、语音输入、回复历史等通用偏好见[通用设置](docs/wiki/settings.md)。
+
+## 高级用法
+
+### 程序集成
+
+把 `askhuman` 加入项目依赖（`npm i askhuman`），`npm install` 会自动装上当前平台二进制，运行时解析路径并调用：
 
 ```js
 import { getBinaryPath, isAvailable } from "askhuman";
@@ -95,9 +105,9 @@ if (isAvailable()) {
 > 退出码：成功 / 取消为 `0`；无任何可用 channel 为 `3`；其它异常为 `1`。
 > 自定义来源名：设环境变量 `ASKHUMAN_ENV_SOURCE_NAME=Agent`，弹窗标题与渠道消息头变为 `Question from Agent`。
 
-## 配置
+### 环境变量
 
-配置存于 `~/.askhuman/config.json`，由设置界面读写。通用配置与环境变量见[配置文档](docs/wiki/configuration.md)；各通信渠道接入见 [钉钉](docs/wiki/dingtalk-setup.md) · [飞书 / Lark](docs/wiki/feishu-setup.md) · [Telegram](docs/wiki/telegram-setup.md) · [Slack](docs/wiki/slack-setup.md)。
+可用的环境变量见[环境变量](docs/wiki/environment-variables.md)。
 
 ## 开发
 

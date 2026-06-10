@@ -47,39 +47,50 @@ You can also download a platform archive from [GitHub Releases](https://github.c
 
 ### 1. The AskHuman command
 
+`AskHuman` is a command-line tool that AI agents use to ask you questions and get the result back. The most common usages:
+
 ```bash
-# Ask (result goes to stdout). Without -q, the first argument is the question; -o! marks an option as your recommended answer
-AskHuman "Continue?" -o! "Continue" -o "Stop"
+# The most basic ask: the first argument is the question, -o adds an option
+AskHuman "Continue?" -o "Continue" -o "Stop"
 
-# Multiple questions: the first argument is the shared Message; each -q is a question, -o attaches to the nearest preceding question
-AskHuman "Please confirm a few things:" -q "Keep logs?" -o "Keep" -o "Clear" -q "Enable cache?" -o "On" -o "Off"
+# With an image and multiple questions: the first argument is a shared description,
+# -f attaches a file/image, each -q is a question, -o! marks the recommended answer
+AskHuman "Take a look at this change?" -f ./diagram.png \
+  -q "Continue?" -o! "Continue" -o "Stop" \
+  -q "Run the tests?" -o "Run" -o "Skip"
 
-# Attach files / images for display (apply to the Message, repeatable; absolute / relative / ~ paths)
-AskHuman "Take a look?" -f ~/Documents/spec.md -f ./diagram.png
-
-# Long Markdown (with backticks / $ / quotes): read the Message from stdin via a heredoc to avoid shell quoting
-AskHuman --stdin -q "Continue?" -o "Continue" -o "Stop" <<'EOF'
-# Title
-Multi-line content with `backticks`, $VAR and "quotes" — all passed verbatim.
-EOF
-
-# Others
-AskHuman "Plain text" --no-markdown   # disable Markdown rendering
-AskHuman --settings                   # open the settings UI
-AskHuman --history                    # open reply history (current project; add --all for every project)
-AskHuman --help                       # help
-AskHuman --version                    # version
+# Other common ones
+AskHuman --settings   # open the settings UI
+AskHuman --history    # open reply history (add --all for every project)
 ```
 
-Results are written to stdout in `[Selected options]` / `[User input]` / `[Images]` / `[Files]` / `[Status]` blocks; logs go to stderr. For the full invocation and output format, see `AskHuman --agent-help`.
+For the full CLI usage, see `AskHuman --help`; for the full asking usage, see `AskHuman --agent-help`.
 
-### 2. Pairing with an AI Agent
+### 2. Integrate with your Agent
 
-To make an agent "ask the human before finishing", there are a few ways to use it:
+To make your agent call `AskHuman` on its own when finishing or needing confirmation, add the relevant prompt to the agent's global instructions. Run `AskHuman --settings`, open the **Agents** panel, and choose:
 
-- **Put the prompt in rules**: the settings "Integrations" tab provides a copyable reference prompt. Add it to your agent's rules (e.g. Cursor rules / `AGENTS.md` / `CLAUDE.md`) to guide the agent to call `AskHuman` when finishing or needing confirmation.
-- **Cursor Hook** (macOS / Linux only): install it with one click from settings. It registers a script in `~/.cursor/hooks.json` that, when it detects a Shell call to `AskHuman`, extends the tool-call timeout to 24 hours so it isn't force-canceled while waiting for your reply.
-- **Program integration**: add `askhuman` to your project (`npm i askhuman`); `npm install` pulls the current platform's binary, and at runtime you resolve the path and call it:
+- **Manual integration** — copy the reference prompt and add it to your agent's global instructions yourself (e.g. Cursor Rules / `AGENTS.md` / `CLAUDE.md`).
+- **Automatic integration** — one click installs global Rules for Cursor / Claude Code / Codex; you can also install the timeout Hook (when it detects a call to `AskHuman`, it extends the tool-call timeout to 24 hours so it isn't force-canceled while waiting for your reply).
+
+### 3. Set up communication channels
+
+The local popup works out of the box. You can also enable DingTalk, Feishu, Telegram, or Slack — so you get questions and can reply whether or not you're at your desk (multiple channels can run in parallel and race for the answer). Configure them in the **Channels** tab; for each channel's onboarding steps, see:
+
+- [DingTalk](docs/wiki/dingtalk-setup.en.md)
+- [Feishu / Lark](docs/wiki/feishu-setup.en.md)
+- [Telegram](docs/wiki/telegram-setup.en.md)
+- [Slack](docs/wiki/slack-setup.en.md)
+
+### 4. General settings
+
+For general preferences such as theme, window behavior, speech input, and reply history, see [General Settings](docs/wiki/settings.en.md).
+
+## Advanced
+
+### Program integration
+
+Add `askhuman` to your project (`npm i askhuman`); `npm install` pulls the current platform's binary, and at runtime you resolve the path and call it:
 
 ```js
 import { getBinaryPath, isAvailable } from "askhuman";
@@ -95,9 +106,9 @@ if (isAvailable()) {
 > Exit codes: success / cancel is `0`; no available channel is `3`; other errors are `1`.
 > Custom source name: set `ASKHUMAN_ENV_SOURCE_NAME=Agent`, and the popup title and channel message headers become `Question from Agent`.
 
-## Configuration
+### Environment variables
 
-Configuration is stored at `~/.askhuman/config.json` and managed by the settings UI. For general config and environment variables, see the [configuration guide](docs/wiki/configuration.en.md); for channel onboarding, see [Telegram](docs/wiki/telegram-setup.en.md) · [Slack](docs/wiki/slack-setup.en.md) · [DingTalk](docs/wiki/dingtalk-setup.en.md) · [Feishu / Lark](docs/wiki/feishu-setup.en.md).
+For the available environment variables, see [Environment Variables](docs/wiki/environment-variables.en.md).
 
 ## Development
 
