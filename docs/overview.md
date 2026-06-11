@@ -132,11 +132,17 @@ AskHuman/
                              独占文件含 MANAGED_FILE_MARK 仍识别为已安装、安装/更新时迁移为区块格式）；
                              Claude ~/.claude/CLAUDE.md、Codex ~/.codex/AGENTS.md。needs_update：区块内
                              正文 ≠ 最新提示词（或旧版无区块）→ 需更新（幂等纯函数 + 单测）
-      ipc/                   IPC 协议：mod.rs(消息类型) / codec.rs(NDJSON) / transport.rs(Unix socket)
+      ipc/                   IPC 协议：mod.rs(消息类型，含 ServerMsg::UpdateState) / codec.rs(NDJSON) / transport.rs(Unix socket)
       client/                (Unix) CLI 作为 Daemon 客户端：连接/握手/自启/submit/detect/status/stop
-      daemon/                (Unix) 常驻 Daemon：mod.rs(分发/serve) / lifecycle.rs(单实例·指纹·空闲) /
-                             spawn.rs(脱离启动) / request.rs(请求登记表·Coordinator·GUI token) /
+      daemon/                (Unix) 常驻 Daemon：mod.rs(分发/serve + 自更新后台检查/广播/指纹感知) /
+                             lifecycle.rs(单实例·指纹·空闲) / spawn.rs(脱离启动) /
+                             request.rs(请求登记表·Coordinator·GUI token·broadcast_to_guis) /
                              config_watch.rs(notify 监听 config.json + 去抖)
+      update/                版本自更新：mod.rs(检测/比较/Updater/select/check) / direct.rs(GitHub 资产替换) /
+                             npm.rs(npm i -g) / notes.rs(release notes 取/聚合) / state.rs(update.json)
+
+  cliff.toml                 git-cliff 配置：Conventional Commits → 面向用户的 release notes
+  docs/release-notes/        每版本可选覆盖文件 v<版本>.md（存在即用其内容，否则 git-cliff 生成）
 ```
 
 ## 运行流程
@@ -164,6 +170,7 @@ AskHuman/
 - 钉钉：`dingtalk_test` / `dingtalk_detect_prepare` / `dingtalk_detect_wait`
 - 飞书：`feishu_test` / `feishu_detect_prepare` / `feishu_detect_wait`
 - Slack：`slack_test` / `slack_detect_prepare` / `slack_detect_wait`
+- 版本自更新：`get_app_version` / `update_check`(manual) / `update_get_notes`(aggregate) / `update_apply`(落盘+进度事件) / `update_dismiss` / `popup_update_state`(弹窗拉初值) / `restart_settings`(设置进程重开)
 
 窗口拖拽用 `data-tauri-drag-region`（导航栏/底部空白/设置 tab 栏）；置顶用前端 `@tauri-apps/api/window` setAlwaysOnTop。
 文件拖入用 `onDragDropEvent`（原生路径）；`-f` 附件拖出用 `tauri-plugin-drag` 的 `startDrag`。
@@ -186,6 +193,21 @@ AskHuman/
 > 密钥安全：五项密钥（`dingding.clientSecret`/`feishu.appSecret`/`telegram.botToken`/`slack.botToken`/`slack.appToken`）默认迁入系统钥匙串，`config.json` 中留空；内存 `AppConfig` 始终携带解析后的真值，读取点零改动。文件权限收紧 0600/目录 0700；钥匙串不可用时回退明文。macOS 需稳定签名身份免弹框（本地 `install.sh` 自动探测证书 / 发布走 Developer ID）。详见 `docs/specs/secret-storage-keychain.md`。
 >
 > `AppConfig::load()` 会解析密钥（读钥匙串）；只需 general/主题/语言/历史上限等非密钥项的路径一律改用 `AppConfig::load_without_secrets()`（读 config.json + 旧路径回退 + 收紧权限，但跳过密钥解析），避免无关命令（如 `--version`/`--help`）触发钥匙串读取、进而在签名不匹配时弹密码框。当前用 `load_without_secrets` 的：`i18n::Lang::current()`（语言）、`--settings`/`--history` 与窗口创建（主题）、`record_history`（history_limit）、`update_theme`/`persist_popup_size`（改后 `save()` 对空密钥字段原样不动、既不读也不写钥匙串）。确需密钥的保持 `load()`：daemon 初始化/attach IM/热重载、`get_settings` 的「已保存」判定、`fallback_secret`、非 unix 的 `run_ask`。
+
+## 版本自更新（self-update）
+
+> 需求/方案见 `docs/specs/self-update.md`、`docs/plans/self-update.md`。核心理念：**apply 只把新二进制落盘，不 restart**；「答完所有在途弹窗后再换新、不打断作答」完全复用既有 daemon graceful-drain。
+
+- **后端模块 `src-tauri/src/update/`**：
+  - `mod.rs`：`detect_install_kind()`（读 `current_exe()` 路径含 `node_modules/@humaninloop|askhuman` → Npm，否则 Direct）、`compare_versions`/`normalize_version`、`target_triple`、`Updater` trait、`select_updater`、`check()`（查远端并与本地比较 → `UpdateInfo`）。两类 HTTP 客户端：`http_client()`（仅 npm registry / 资产下载，不带鉴权头）与 `github_client()`（GitHub API 专用，若环境变量 `ASKHUMAN_GITHUB_TOKEN`/`GITHUB_TOKEN` 存在则带 `Authorization: Bearer`，把未认证 60/时/IP 提到认证 5000/时/账号，解决代理共享出口 IP 限流；token 头标 sensitive 不入日志）；`github_status_error()` 把 403/429 归一为带 `rate-limited` 标记的错误，前端据此显示友好文案并引导手动下载 / 设 token（参考项目仅做友好文案、未加 token）。
+  - `direct.rs`（`DirectUpdater`）：GitHub Releases `/releases/latest` 查版本；apply 下载平台资产（按目标三元组匹配 `AskHuman-<triple>-v<ver>.{tar.gz,zip}`）→ 解压（shell out tar/unzip）→ 找 `AskHuman` →（macOS）`codesign` 验签 + 校验 TeamID `DMJXDB9H6Q` → 备份 `<exe>.<ver>.bak` → 同目录临时文件 + `chmod 0755` + `rename` 原子替换。Windows 暂不自动替换（仅提示）。
+  - `npm.rs`（`NpmUpdater`）：npm registry 查 `latest`；apply 跑 `npm i -g askhuman@latest`，失败/缺 npm → 回带手动命令的错误。
+  - `notes.rs`：`latest_notes()` / `notes_for_tag()` / `aggregated_notes(from,to)`（懒加载，拉一次 `/releases` 列表过滤 (from,to] 区间，从新到旧拼接）。
+  - `state.rs`：`~/.askhuman/update.json`（`latest_version`/`release_notes`/`checked_at`/`dismissed_versions`/`pending`），原子写。
+- **daemon 集成**：启动 +20s 查一次、之后每 24h → 落 `update.json` → 有变化 `broadcast_to_guis(ServerMsg::UpdateState{available,latest_version,pending})`；另起 15s 周期监听盘上二进制指纹（应用内更新 / 外部 `npm i -g`）→ 置 `pending` + 广播；GuiHello 握手即带当前态。`ServerMsg::UpdateState` 变体名 camelCase、字段 snake_case（同二进制两端，与既有 `Final{exit_code}` 一致）。
+- **GUI Helper → 前端**：读到 `UpdateState` → 写进程内缓存（`commands::set_pushed_update`）+ emit `update-state`；弹窗挂载先 `popup_update_state` 取初值再监听事件（规避竞态）。
+- **前端**：弹窗右上角更新入口（绿点）+ 浮层（版本/日志/「答完才生效、不打断」/更新按钮）+ 顶部「待生效」横条（`PopupView.vue`）；设置「通用」Tab 新增「关于」区（当前/最新版本、检查更新、更新带进度、聚合更新日志 markdown、查看全部发布、更新后「重启设置页面」`restart_settings`）（`SettingsView.vue`）。
+- **发布流程**：仓库根 `cliff.toml` 用 git-cliff 从 Conventional Commits 生成 release notes（仅 feat/fix/perf/security/revert；breaking 置顶；scope 粗体前缀；`Release-Note:`/`Release-Note: skip` 单条覆盖，skip 由 body 模板按 footer 过滤以免无 body 提交误伤）。`release.yml`：`fetch-depth:0` + 安装 git-cliff，若 `docs/release-notes/v<版本>.md` 存在用其内容、否则 `git-cliff --latest` 生成，`body_path` 替换 `generate_release_notes`。提交规范见 `AGENTS.md`。
 
 ## 构建 / 开发 / 测试
 
