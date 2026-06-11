@@ -1,0 +1,84 @@
+# git-cliff 配置：从 Conventional Commits 自动生成「面向用户」的 release notes。
+# 规则见 docs/specs/self-update.md（D15/D16/D20）与 AGENTS.md「Commit messages」。
+#
+# 纳入用户日志的类型：feat / fix / perf / security / revert；其余（chore/docs/style/
+# refactor/test/ci/build 及非常规提交）跳过。breaking（`type!:` 或 `BREAKING CHANGE:`）置顶单列。
+# scope 渲染为粗体前缀。单条覆盖：footer `Release-Note: <文案>` 替换标题、`Release-Note: skip` 排除。
+
+[changelog]
+header = ""
+# 单条渲染宏：优先用 `Release-Note:` footer 文案；`Release-Note: skip` 不输出；
+# 否则用「**scope**: 描述」（git-cliff 在 conventional 模式下 message 已去掉 type 前缀）。
+body = """
+{% macro entry(commit) %}{% set rn = commit.footers | filter(attribute="token", value="Release-Note") %}{% if rn | length > 0 %}{% set rnval = rn | first | get(key="value") | trim %}{% if rnval != "skip" %}- {{ rnval | upper_first }}{{ "\n" }}{% endif %}{% else %}- {% if commit.scope %}**{{ commit.scope }}**: {% endif %}{{ commit.message | upper_first }}{{ "\n" }}{% endif %}{% endmacro entry -%}
+{% set breaking = commits | filter(attribute="breaking", value=true) -%}
+{% if breaking | length > 0 %}
+### ⚠ Breaking Changes
+{% for commit in breaking %}{{ self::entry(commit=commit) }}{%- endfor %}
+{%- endif -%}
+{% set feats = commits | filter(attribute="group", value="feat") | filter(attribute="breaking", value=false) -%}
+{% if feats | length > 0 %}
+### ✨ Features
+{% for commit in feats %}{{ self::entry(commit=commit) }}{%- endfor %}
+{%- endif -%}
+{% set fixes = commits | filter(attribute="group", value="fix") | filter(attribute="breaking", value=false) -%}
+{% if fixes | length > 0 %}
+### 🐞 Fixes
+{% for commit in fixes %}{{ self::entry(commit=commit) }}{%- endfor %}
+{%- endif -%}
+{% set perfs = commits | filter(attribute="group", value="perf") | filter(attribute="breaking", value=false) -%}
+{% if perfs | length > 0 %}
+### 💎 Performance
+{% for commit in perfs %}{{ self::entry(commit=commit) }}{%- endfor %}
+{%- endif -%}
+{% set secs = commits | filter(attribute="group", value="security") | filter(attribute="breaking", value=false) -%}
+{% if secs | length > 0 %}
+### 🔒 Security
+{% for commit in secs %}{{ self::entry(commit=commit) }}{%- endfor %}
+{%- endif -%}
+{% set reverts = commits | filter(attribute="group", value="revert") | filter(attribute="breaking", value=false) -%}
+{% if reverts | length > 0 %}
+### ⏪ Revert
+{% for commit in reverts %}{{ self::entry(commit=commit) }}{%- endfor %}
+{%- endif -%}
+{% if previous and previous.version and version %}
+**Full Changelog**: https://github.com/Naituw/AskHuman/compare/{{ previous.version }}...{{ version }}
+{% endif %}
+"""
+footer = ""
+trim = true
+
+[git]
+conventional_commits = true
+filter_unconventional = false
+split_commits = false
+protect_breaking_commits = true
+filter_commits = true
+tag_pattern = "v[0-9].*"
+topo_order = false
+sort_commits = "newest"
+
+# 收纳 feat/fix/perf/security/revert，其余一律 skip（含 catch-all 的非常规提交）。
+# `Release-Note: skip` 不在此处理（footer 在 body 中、无 body 的提交会触发 field error 误伤），
+# 改由 body 模板按 footer 值过滤。
+commit_parsers = [
+  { message = "^feat", group = "feat" },
+  { message = "^fix", group = "fix" },
+  { message = "^perf", group = "perf" },
+  { message = "^security", group = "security" },
+  { message = "^revert", group = "revert" },
+  { message = "^chore", skip = true },
+  { message = "^docs", skip = true },
+  { message = "^style", skip = true },
+  { message = "^refactor", skip = true },
+  { message = "^test", skip = true },
+  { message = "^ci", skip = true },
+  { message = "^build", skip = true },
+  { message = ".*", skip = true },
+]
+
+# 清理 merge 提交标题（即便被 skip，也避免污染解析）。
+commit_preprocessors = [
+  { pattern = '^Merge pull request #\\d+ from [^\\s]+', replace = "" },
+  { pattern = '^Merge branch ', replace = "" },
+]
