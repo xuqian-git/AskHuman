@@ -58,7 +58,7 @@ stdout contains only the result blocks (`[Selected options]` / `[User input]` / 
 
 ## Platforms and system dependencies
 
-Supports macOS (arm64/x64), Windows (x64), and Linux (x64).
+Supports macOS (arm64/x64) and Linux (x64).
 
 > Running the GUI popup on Linux needs system WebKitGTK (e.g. `libwebkit2gtk-4.1`). If it's missing and a session-based channel is configured (Telegram / Slack / DingTalk / Feishu), AskHuman uses that channel automatically; if none is available, it signals degradation with exit code `3`.
 
