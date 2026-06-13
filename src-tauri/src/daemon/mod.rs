@@ -245,6 +245,18 @@ mod unix_impl {
             crate::update::state::set_pending(true);
             log("binary on disk changed; marking update pending");
             state.registry.broadcast_to_guis(update_state_msg(state));
+            // 主动换新（与 Hello 分支同一套语义，spec self-update）：盘上二进制已变即触发排空换新，
+            // 不再被动等下一次握手。长连接（状态窗口订阅 / 工作中 agent）只保活、自身不再发 Hello，
+            // 若无人握手旧 daemon 会一直停在旧二进制——这里主动 begin_drain 补上：有在途 ASK 则排空到
+            // 完结再退（不打断），无在途立即退；退出前 persist 的 agent 注册表由新 daemon load 复核恢复。
+            // 受 ASKHUMAN_DAEMON_AUTORESTART 开关控制（默认开），与 Hello 分支保持一致。
+            let auto_restart = std::env::var("ASKHUMAN_DAEMON_AUTORESTART")
+                .map(|v| v != "0")
+                .unwrap_or(true);
+            if auto_restart {
+                log("binary on disk changed; draining for restart");
+                begin_drain(state);
+            }
         }
     }
 

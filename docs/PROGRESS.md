@@ -138,3 +138,9 @@ turn-start↔turn-end 成对；`/clear` 轮换 session_id 但 pid 不变 → 会
   `Coordinator::is_finalizing` 判收尾，避免拦截死循环）。
 - 取消确认面板 `.confirm-box` 背景透明 → 改不透明 `--bg`（同更新浮层修复）。
   改动文件：`src-tauri/src/app/mod.rs`、`src/views/PopupView.vue`；install 实测两项均通过。
+- 二进制变化主动换新（实测通过）：原换新只由 Hello 触发（监听只标 `pending`），长连接（状态窗口
+  订阅 / 工作中 agent）保活旧 daemon 时若无人握手则一直停在旧二进制。改 `daemon/mod.rs::check_pending_update`：
+  15s 指纹监听检测到 stale 即 `begin_drain`（有在途 ASK 排空、无在途立即退），受 `ASKHUMAN_DAEMON_AUTORESTART`
+  （默认开）控制；agent 状态由退出前 `persist()` + 新 daemon `load()` 存活复核恢复（工作中原样保留）。
+  隔离自测（重签名改盘上二进制、不发 Hello）：日志依次出现 `marking update pending`→`draining for restart`
+  →`drain complete; shutting down`，证明监听路径主动换新生效。
