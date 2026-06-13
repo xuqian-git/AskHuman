@@ -159,7 +159,7 @@ pub fn parse_ask(
             _ => {
                 // 位置参数：仅允许作为第一个 token（Message），且需在任何 -q 之前。
                 if seen_positional || seen_question_flag {
-                    return Err(tr(lang, "cli.positionalOnlyMessage").to_string());
+                    return Err(tr(lang, "cli.positionalOnlyMessage").replace("{arg}", arg));
                 }
                 message_text = arg.clone();
                 seen_positional = true;
