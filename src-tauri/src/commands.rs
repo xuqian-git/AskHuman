@@ -264,6 +264,16 @@ pub fn agents_init(state: State<AppState>) -> AgentsInit {
     }
 }
 
+/// 由 Agent 状态窗口前端在 `agents-updated` 监听就绪后调用，启动到 daemon 的快照订阅
+/// （幂等）。延迟到此刻才连 daemon，是为避免 daemon 的首帧立即快照早于前端监听而丢失。
+#[tauri::command]
+pub fn agents_start_subscription(app: AppHandle) {
+    #[cfg(unix)]
+    crate::app::start_agents_subscription(app);
+    #[cfg(not(unix))]
+    let _ = app;
+}
+
 /// 从弹窗导航栏打开独立历史窗口（同进程内创建，默认当前项目）。
 #[tauri::command]
 pub fn open_history(app: AppHandle) -> Result<(), String> {

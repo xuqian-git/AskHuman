@@ -79,6 +79,9 @@ export const historyInit = () => invoke<HistoryInit>("history_init");
 
 export const agentsInit = () => invoke<AgentsInit>("agents_init");
 
+export const agentsStartSubscription = () =>
+  invoke<void>("agents_start_subscription");
+
 export const getHistory = (project: string | null, all: boolean) =>
   invoke<HistoryEntry[]>("get_history", { project, all });
 

@@ -638,6 +638,7 @@ fn launch(state: AppState, view: View, popup_ipc: Option<PopupIpc>) -> tauri::Re
             crate::commands::open_history,
             crate::commands::history_init,
             crate::commands::agents_init,
+            crate::commands::agents_start_subscription,
             crate::commands::get_history,
             crate::commands::get_history_projects,
             crate::commands::history_count,
@@ -841,7 +842,10 @@ fn launch(state: AppState, view: View, popup_ipc: Option<PopupIpc>) -> tauri::Re
                 View::Agents => {
                     let config = AppConfig::load_without_secrets();
                     create_agents_window(app, &config)?;
-                    spawn_agents_subscription(app.handle().clone());
+                    // 订阅不在此处启动：daemon 一连上就推一帧立即快照，若现在就连，emit 会早于
+                    // 前端注册 `agents-updated` 监听（Tauri 事件不缓存）而丢首帧，窗口空等到下一次
+                    // 周期推送（15s 内随机）。改由前端挂载、监听就绪后经 `agents_start_subscription`
+                    // 命令触发，保证首帧必被收到。
                 }
             }
             Ok(())
@@ -1264,6 +1268,17 @@ where
         apply_liquid_glass(&win);
     }
     Ok(())
+}
+
+/// 启动一次 agent 快照订阅（幂等）：由前端在 `agents-updated` 监听就绪后经命令触发，
+/// 确保 daemon 一连上推来的首帧立即快照不会早于监听注册而丢失。重复调用（如窗口重载）只起一次。
+#[cfg(unix)]
+pub(crate) fn start_agents_subscription(app: tauri::AppHandle) {
+    static STARTED: AtomicBool = AtomicBool::new(false);
+    if STARTED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    spawn_agents_subscription(app);
 }
 
 /// 订阅 daemon 的 agent 快照推送，转成前端 `agents-updated` 事件（实验性功能 spec D20）。

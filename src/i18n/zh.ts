@@ -281,6 +281,7 @@ export default {
   },
   agents: {
     title: "Agent 状态",
+    loading: "加载中…",
     empty: "暂无被追踪的 Agent",
     emptyHint: "启动一个被追踪的 Agent（Claude Code / Codex / Cursor）后会显示在这里。",
     untitled: "（未命名）",

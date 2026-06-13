@@ -293,6 +293,7 @@ export default {
   },
   agents: {
     title: "Agents",
+    loading: "Loading…",
     empty: "No agents tracked yet",
     emptyHint:
       "Start a tracked agent (Claude Code / Codex / Cursor) and it will appear here.",

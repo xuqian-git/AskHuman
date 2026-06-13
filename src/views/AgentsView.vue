@@ -4,12 +4,14 @@ import { useI18n } from "vue-i18n";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { applyTheme } from "../lib/theme";
 import { applyLanguage } from "../i18n";
-import { agentsInit } from "../lib/ipc";
+import { agentsInit, agentsStartSubscription } from "../lib/ipc";
 import type { AgentKind, AgentRecord, AgentRunState } from "../lib/types";
 
 const { t } = useI18n();
 
 const agents = ref<AgentRecord[]>([]);
+// 是否已收到首帧快照（在此之前显示 Loading，而非"暂无 Agent"，避免误导）。
+const loaded = ref(false);
 // 每秒重算一次相对时间（与数据推送解耦）。
 const nowMs = ref(Date.now());
 
@@ -55,6 +57,7 @@ const groups = computed<Group[]>(() => {
 });
 
 const isEmpty = computed(() => agents.value.length === 0);
+const isLoading = computed(() => !loaded.value);
 
 function kindLabel(kind: AgentKind): string {
   return t(`agents.kind.${kind}`);
@@ -93,6 +96,11 @@ let unlisten: UnlistenFn | null = null;
 let ticker: number | undefined;
 
 onMounted(async () => {
+  // 先注册监听，再触发后端订阅：daemon 一连上就推首帧立即快照，监听必须先就绪才不丢帧。
+  unlisten = await listen<AgentRecord[]>("agents-updated", (e) => {
+    agents.value = Array.isArray(e.payload) ? e.payload : [];
+    loaded.value = true;
+  });
   try {
     const init = await agentsInit();
     applyTheme(init.theme);
@@ -100,9 +108,12 @@ onMounted(async () => {
   } catch {
     /* 读取失败：保持兜底外观 */
   }
-  unlisten = await listen<AgentRecord[]>("agents-updated", (e) => {
-    agents.value = Array.isArray(e.payload) ? e.payload : [];
-  });
+  // 监听已就绪，启动到 daemon 的快照订阅。
+  try {
+    await agentsStartSubscription();
+  } catch {
+    /* 订阅启动失败：窗口停留在 Loading，由后端重连逻辑兜底 */
+  }
   ticker = window.setInterval(() => {
     nowMs.value = Date.now();
   }, 1000);
@@ -121,7 +132,12 @@ onBeforeUnmount(() => {
     </header>
 
     <div class="ag-body">
-      <div v-if="isEmpty" class="empty">
+      <div v-if="isLoading" class="empty">
+        <span class="spinner" />
+        <p class="empty-hint">{{ t("agents.loading") }}</p>
+      </div>
+
+      <div v-else-if="isEmpty" class="empty">
         <p class="empty-title">{{ t("agents.empty") }}</p>
         <p class="empty-hint">{{ t("agents.emptyHint") }}</p>
       </div>
@@ -228,6 +244,19 @@ onBeforeUnmount(() => {
   color: var(--text-secondary);
   margin: 0;
   max-width: 320px;
+}
+.spinner {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 2px solid color-mix(in srgb, var(--text-primary) 18%, transparent);
+  border-top-color: var(--text-secondary);
+  animation: ag-spin 0.7s linear infinite;
+}
+@keyframes ag-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 .group {
   margin-bottom: 18px;
