@@ -1,5 +1,4 @@
 pub mod args;
-pub mod demo_cards;
 pub mod file_attachment;
 pub mod help;
 pub mod image_writer;
@@ -51,12 +50,6 @@ pub fn dispatch() {
         }
         "--scripting-help" => {
             print_line(&help::scripting_help_text(lang));
-            exit(0);
-        }
-        // Hidden dev-only: send prototype cards through real channels for visual review
-        // (strict-choice / structured-output feature, plan phase 0). Not user-facing.
-        "__demo-cards" => {
-            demo_cards::run(&argv[2..]);
             exit(0);
         }
         // 设置/历史窗口只需 general(主题)；密钥的「已保存」判定由前端 `get_settings` 单独读取。
