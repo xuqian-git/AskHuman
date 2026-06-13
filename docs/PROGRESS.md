@@ -2,6 +2,26 @@
 
 按具体任务 / 需求记录待办与当前进展。任务 / 需求完成后删除其 section（历史留在 git）。
 
+## 进行中：IM 渠道激活 —— Claude Code 信号 Demo（实测已通过，待定下一步）
+
+需求 `docs/todos/im-channel-activation.md`；Demo 在 `demo/claude-activation/`，调研+实测结论记于
+`demo/claude-activation/FINDINGS.md`。目标：实测验证设计 doc §5/§6 三层信号模型对 Claude Code 的可行性。
+
+**Claude Code 实测全部通过**（2026-06-13，claude 2.1.176 / macOS）：
+- 不用 Hook 读 env 即可拿会话 ID（`CLAUDE_CODE_SESSION_ID`，与 hook `session_id` 一致）。
+- 进程存活轮询是唯一不漏的电平信号：`kill -9` 丢 `SessionEnd`，但 poller 抓到 DEAD；
+  正常 `/exit`(reason=prompt_input_exit) / 关窗(reason=other) 都触发 SessionEnd。
+- turn-start↔turn-end 成对；`/clear` 轮换 session_id 但 pid 不变 → 会话身份应绑进程 pid。
+- 低轮次测试法：生命周期类信号可用 0 个 prompt 验证（启动+斜杠命令+外部 kill/关窗）。
+
+约束：**未经用户许可，绝不实际调用任何 Agent（claude/cursor-agent/codex）做实测**（消耗 token）。
+
+待定下一步（需与用户确认）：
+- 是否把实测结论回写设计 doc `docs/todos/im-channel-activation.md`（§6/§10）。
+- Cursor/Codex 仅文档结论（含旁证：cursor-agent CLI 实测有 `CURSOR_CONVERSATION_ID` env、其二进制名为 `agent`；
+  Codex hooks 信任＝路径+内容哈希，待用户给源码核对）；要实测需另行征得许可。
+- 是否开始改生产 daemon（attach_im_channels 门控、进程存活轮询、turn 事件 hook 上报）。
+
 ## 进行中：严格选择模式 + 结构化输出（实测通过 → 仅剩收尾）
 
 需求 `docs/specs/strict-choice-and-structured-output.md` + 计划 `docs/plans/strict-choice-and-structured-output.md`（已评审通过）。
