@@ -2,10 +2,16 @@
 
 按具体任务 / 需求记录待办与当前进展。任务 / 需求完成后删除其 section（历史留在 git）。
 
-## 进行中：严格选择模式 + 结构化输出（代码已完成 → 待真机实测 + 钉钉模板发布）
+## 进行中：严格选择模式 + 结构化输出（实测通过 → 仅剩收尾）
 
 需求 `docs/specs/strict-choice-and-structured-output.md` + 计划 `docs/plans/strict-choice-and-structured-output.md`（已评审通过）。
-阶段 0（卡片样式）全部定稿；阶段 1/2 编码**已完成**，`cargo test` / `npm run build` 全绿。
+阶段 0（卡片样式）全部定稿；阶段 1/2 编码**已完成**，`cargo test`(232) / `npm run build` 全绿；钉钉模板已由用户发布。
+真机实测**已通过**：严格单选在 钉钉/Telegram/飞书/Slack/弹窗 五端提交链路均正确（JSON 返回 `selected_options`+`selected_indices`）；
+多选（多值 indices）、非严格单选（radio+补充输入）亦通过。
+实测中修复：飞书严格单选点提交后 loading 回弹——单选严格态表单内只剩提交按钮，飞书不下发 `form_value`，
+`parse_card_submit` 误判为非提交；改为同时按按钮回调 `value.action=="submit"` 识别提交（`fix(feishu)` 已提交）。
+已知限制（飞书）：非严格单选若「先打字、后点选 radio」会因整卡重渲染丢失已输入文字（表单外勾选器回调不带 form_value，无法回填）；
+按「先点选、后打字」正常。
 
 已落地：
 - 数据/IPC：`models.rs`/`ipc/mod.rs` 新增 `select_only`/`single`/`output_format`（serde 默认，向后兼容）；TS `types.ts` 同步。
@@ -19,10 +25,9 @@
 - 飞书：单选勾选器移出表单 + 各挂 toggle 回调（会话自管互斥重渲染）、严格去 `input`、推荐左侧绿色 lark_md 前缀；文本回退遵守严格/单选。
 - 钉钉：`card.rs` 新契约（`options=[{id,md}]`、`single`/`allow_input` 字符串布尔、h5 字号、绿色含括号推荐前缀、提交回传 id→按下标还原）；`DEFAULT_CARD_TEMPLATE_ID` 升级为 `d5dc7ac5-…schema`；文本回退遵守严格/单选。
 
-待办（依赖用户）：
-- 钉钉模板 `d5dc7ac5-1fca-443a-8230-d33ce63e837f.schema` **由用户最终发布**后真机联调提交链路。
-- `./scripts/install.sh` 后各渠道单选/严格/推荐 + JSON 全链路实测（步骤④）。
-- 收尾：删除隐藏 demo 子命令 `AskHuman __demo-cards`（`src-tauri/src/cli/demo_cards.rs`）。
+收尾（待办）：
+- 删除隐藏 demo 子命令 `AskHuman __demo-cards`（`src-tauri/src/cli/demo_cards.rs` + `cli/mod.rs` 分发）——用户暂选保留，确认无需后再删。
+- 本地提交（`feat(cli,channels)` + `fix(feishu)` + 本 docs）由用户自行 push。
 
 ## 进行中：版本自更新机制（实现阶段）
 
