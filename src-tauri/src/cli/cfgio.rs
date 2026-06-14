@@ -38,6 +38,17 @@ pub fn block_on<F: std::future::Future>(fut: F) -> F::Output {
         .block_on(fut)
 }
 
+/// daemon 运行状态（仅 unix 有 daemon；非 unix 无 `client` 模块，一律 None）。
+/// 供 channel list / doctor 跨平台复用，避免在 Windows 直接引用 unix-only 的 `crate::client`。
+#[cfg(unix)]
+pub fn daemon_status() -> Option<crate::ipc::StatusInfo> {
+    block_on(crate::client::request_status())
+}
+#[cfg(not(unix))]
+pub fn daemon_status() -> Option<crate::ipc::StatusInfo> {
+    None
+}
+
 // ——— 点号路径读写（基于 serde_json::Value，camelCase）———
 
 /// 取点号路径的引用（任一段缺失返回 None）。

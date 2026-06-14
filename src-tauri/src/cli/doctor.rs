@@ -22,7 +22,7 @@ pub fn dispatch(args: &[String], lang: Lang) {
     }
 
     let cfg = AppConfig::load_without_secrets();
-    let status = cfgio::block_on(crate::client::request_status());
+    let status = cfgio::daemon_status();
 
     if json {
         super::print_line(&render_json(&cfg, &status));

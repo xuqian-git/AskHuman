@@ -41,7 +41,7 @@ pub fn dispatch(args: &[String], lang: Lang) {
 fn list(args: &[String], lang: Lang) -> Result<(), String> {
     let json = args.iter().any(|a| a == "--json");
     let cfg = AppConfig::load_without_secrets();
-    let status = cfgio::block_on(crate::client::request_status());
+    let status = cfgio::daemon_status();
     let conns = status.as_ref().map(|s| s.im_connections.clone()).unwrap_or_default();
     let daemon_up = status.is_some();
 
