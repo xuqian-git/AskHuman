@@ -407,8 +407,12 @@ pub fn tr(lang: Lang, key: &'static str) -> &'static str {
         "cmd.ruleUpdated" => pick(lang, "Prompt updated to the latest version", "已更新到最新提示词"),
         "cmd.ruleRemoved" => pick(lang, "Rule removed", "已从规则文件移除"),
         "cmd.unknownAgent" => pick(lang, "Unknown agent", "未知的 Agent"),
+        "cmd.unknownMode" => pick(lang, "Unknown mode", "未知的模式"),
         "cmd.lifecycleInstalled" => pick(lang, "Lifecycle tracking enabled", "已开启生命周期追踪"),
         "cmd.lifecycleRemoved" => pick(lang, "Lifecycle tracking disabled", "已关闭生命周期追踪"),
+        "cmd.mcpConfigInstalled" => pick(lang, "MCP config written", "已写入 MCP 配置"),
+        "cmd.mcpConfigUpdated" => pick(lang, "MCP config updated to the latest version", "已更新 MCP 配置到最新"),
+        "cmd.mcpConfigRemoved" => pick(lang, "MCP config removed", "已移除 MCP 配置"),
 
         // —— Telegram 测试连接（commands.telegram_test / test_connection）——
         "cmd.tgTestRemote" => pick(

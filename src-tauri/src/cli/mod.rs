@@ -108,6 +108,12 @@ pub fn dispatch() {
         "daemon" => {
             crate::daemon::dispatch(&argv[2..]);
         }
+        // MCP server 角色：以 STDIO 暴露 `ask` 工具，供 Codex / Claude Code / Cursor 等 MCP 客户端调用。
+        // 每次工具调用都 spawn 一个 `AskHuman --output json …` 子进程复用既有 ask 流程（见 mcp 模块）。
+        // 极端歧义（问题正好是 "mcp"）可用 `AskHuman -q mcp` 规避。
+        "mcp" => {
+            crate::mcp::run();
+        }
         // 隐藏的生命周期上报器：由三家 Agent 的用户级 hook 调用
         // （`AskHuman __agent-hook <agent> <event>`，spec D20）。即发即走、静默退出。
         "__agent-hook" => {
@@ -204,6 +210,7 @@ pub fn dispatch() {
                         agent_kind,
                         agent_session_id,
                         agent_pid,
+                        from_mcp: from_mcp_env(),
                     };
                     crate::client::run_ask(task);
                 }
@@ -240,6 +247,18 @@ fn detect_caller_agent() -> (Option<String>, Option<String>, Option<u32>) {
         }
         None => (None, None, None),
     }
+}
+
+/// 是否经 MCP 模式发起（`AskHuman mcp` spawn 子进程时设 env `ASKHUMAN_FROM_MCP`）。
+/// 非空且非 `0` 即视为真（沿用本项目 env 开关惯例）。daemon 据此对该次 ask「只刷新、不新建」session。
+#[cfg(unix)]
+fn from_mcp_env() -> bool {
+    std::env::var("ASKHUMAN_FROM_MCP")
+        .map(|v| {
+            let v = v.trim();
+            !v.is_empty() && v != "0"
+        })
+        .unwrap_or(false)
 }
 
 /// 提问解析的入口包装：仅当出现 `--stdin` 时读取标准输入作为 Message，

@@ -26,6 +26,23 @@ pub const MANAGED_FILE_MARK: &str =
 /// Cursor 规则文件的 frontmatter（令规则始终生效）。
 pub const CURSOR_FRONTMATTER: &str = "---\nalwaysApply: true\n---\n";
 
+/// 规则正文变体：对应 CLI 模式（`cli_reference`）或 MCP 模式（`mcp_reference`）的提示词。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Variant {
+    Cli,
+    Mcp,
+}
+
+impl Variant {
+    /// 该变体对应的最新内置提示词正文。
+    pub fn body(self) -> String {
+        match self {
+            Variant::Cli => crate::prompts::cli_reference(),
+            Variant::Mcp => crate::prompts::mcp_reference(),
+        }
+    }
+}
+
 /// 目标 Agent。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum AgentTarget {
@@ -184,18 +201,56 @@ pub fn is_installed(agent: AgentTarget) -> bool {
     has_block(&text) || (agent.is_owned_file() && is_managed_cursor_file(&text))
 }
 
-/// 已安装但磁盘上的提示词正文与最新内置版本不一致 → 需更新。
+/// 已安装但磁盘上的提示词正文与最新内置版本不一致 → 需更新（默认按 CLI 变体，保持现状语义）。
 /// Cursor 旧格式（头标记、无区块）一律视为需更新（点更新即迁移为新格式）。
 pub fn needs_update(agent: AgentTarget) -> bool {
+    needs_update_variant(agent, Variant::Cli)
+}
+
+/// 与指定变体的最新内置正文比对，判断是否需更新。
+/// Cursor 旧格式（头标记、无区块）一律视为需更新。
+pub fn needs_update_variant(agent: AgentTarget, variant: Variant) -> bool {
     let Ok(text) = std::fs::read_to_string(agent.file()) else {
         return false;
     };
     if has_block(&text) {
         return block_body(&text)
-            .map(|b| b != crate::prompts::cli_reference())
+            .map(|b| b != variant.body())
             .unwrap_or(true);
     }
     agent.is_owned_file() && is_managed_cursor_file(&text)
+}
+
+/// 已安装规则的变体：区块正文精确匹配 `mcp_reference()`/`cli_reference()` 即判定对应变体；
+/// 漂移（旧版本提示词）时用结构性信号兜底（见 [`classify_body`]）。未安装返回 None。
+pub fn installed_variant(agent: AgentTarget) -> Option<Variant> {
+    let text = std::fs::read_to_string(agent.file()).ok()?;
+    if let Some(body) = block_body(&text) {
+        return Some(classify_body(&body));
+    }
+    if agent.is_owned_file() && is_managed_cursor_file(&text) {
+        return Some(Variant::Cli);
+    }
+    None
+}
+
+/// 依据托管区块正文判定变体（纯函数，便于单测）。
+///
+/// 精确匹配当前内置正文优先；**漂移**（已装的是旧版本提示词、与当前正文不等）时改用结构性信号：
+/// CLI 版必然指引「经 Shell/Bash 工具调用」，MCP 版只提工具调用、从不出现 `Shell/Bash`。
+/// 这样即便内置提示词改版，已装规则仍能稳定归类，不会在更新后被错分模式。
+pub fn classify_body(body: &str) -> Variant {
+    if body == crate::prompts::mcp_reference() {
+        return Variant::Mcp;
+    }
+    if body == crate::prompts::cli_reference() {
+        return Variant::Cli;
+    }
+    if body.contains("Shell/Bash") {
+        Variant::Cli
+    } else {
+        Variant::Mcp
+    }
 }
 
 /// 当前平台是否支持（三种规则文件读写均跨平台）。
@@ -219,31 +274,40 @@ fn collapse_home(p: &Path) -> String {
 
 // MARK: - 安装 / 卸载
 
-/// 安装：写入最新推荐提示词（托管区块 upsert，保留区块外用户内容）。
+/// 安装：写入最新推荐提示词（默认 CLI 变体，保持现状语义）。
 pub fn install(agent: AgentTarget) -> Result<String> {
-    write_rule(agent)?;
+    install_variant(agent, Variant::Cli)
+}
+
+/// 更新：把已安装的旧提示词覆盖为最新（默认 CLI 变体）。
+pub fn update(agent: AgentTarget) -> Result<String> {
+    update_variant(agent, Variant::Cli)
+}
+
+/// 安装指定变体的提示词（托管区块 upsert，保留区块外用户内容）。
+pub fn install_variant(agent: AgentTarget, variant: Variant) -> Result<String> {
+    write_rule(agent, &variant.body())?;
     Ok(crate::i18n::tr(crate::i18n::Lang::current(), "cmd.ruleInstalled").to_string())
 }
 
-/// 更新：把已安装的旧提示词覆盖为最新（与安装同样的写入逻辑，仅反馈文案不同）。
-pub fn update(agent: AgentTarget) -> Result<String> {
-    write_rule(agent)?;
+/// 更新为指定变体的最新提示词（与安装同样的写入逻辑，仅反馈文案不同）。
+pub fn update_variant(agent: AgentTarget, variant: Variant) -> Result<String> {
+    write_rule(agent, &variant.body())?;
     Ok(crate::i18n::tr(crate::i18n::Lang::current(), "cmd.ruleUpdated").to_string())
 }
 
-/// 把最新提示词写入目标文件（共享文件 upsert 区块 / Cursor 写 frontmatter + 区块、迁移旧格式）。
-fn write_rule(agent: AgentTarget) -> Result<()> {
+/// 把指定提示词正文写入目标文件（共享文件 upsert 区块 / Cursor 写 frontmatter + 区块、迁移旧格式）。
+fn write_rule(agent: AgentTarget, body: &str) -> Result<()> {
     let path = agent.file();
-    let body = crate::prompts::cli_reference();
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)
             .with_context(|| format!("failed to create directory: {}", dir.display()))?;
     }
     let old = std::fs::read_to_string(&path).unwrap_or_default();
     let new_text = if agent.is_owned_file() {
-        build_cursor_rule(&old, &body)
+        build_cursor_rule(&old, body)
     } else {
-        upsert_block(&old, &body)
+        upsert_block(&old, body)
     };
     atomic_write(&path, new_text.as_bytes())
         .with_context(|| format!("failed to write rule file: {}", path.display()))?;
@@ -446,6 +510,28 @@ mod tests {
             remove_block(&build_cursor_rule("", BODY))
         );
         assert!(!cursor_residual_is_empty(&with_user));
+    }
+
+    #[test]
+    fn classify_body_exact_and_drift() {
+        // 精确匹配当前内置正文。
+        assert_eq!(
+            classify_body(&crate::prompts::cli_reference()),
+            Variant::Cli
+        );
+        assert_eq!(
+            classify_body(&crate::prompts::mcp_reference()),
+            Variant::Mcp
+        );
+        // 漂移（旧版本提示词）：CLI 必含 Shell/Bash 指引 → Cli；MCP 从不提 Shell → Mcp。
+        assert_eq!(
+            classify_body("... invoke via the Shell/Bash tool ... (older wording)"),
+            Variant::Cli
+        );
+        assert_eq!(
+            classify_body("... call the AskHuman `ask` tool ... (older wording)"),
+            Variant::Mcp
+        );
     }
 
     #[test]

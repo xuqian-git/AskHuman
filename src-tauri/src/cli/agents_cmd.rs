@@ -6,7 +6,9 @@ use super::cfgio;
 use crate::agents::AgentKind;
 use crate::i18n::{err_prefix, Lang};
 use crate::integrations::agent_rules::AgentTarget;
-use crate::integrations::{agent_lifecycle, agent_rules, claude_hook, cursor_hook};
+use crate::integrations::{
+    agent_lifecycle, agent_mode, agent_rules, claude_hook, cursor_hook, mcp_config,
+};
 use serde_json::Value;
 use std::process::exit;
 
@@ -18,6 +20,7 @@ pub fn dispatch(args: &[String], lang: Lang) {
     let rest = &args[args.len().min(1)..];
     let r = match sub {
         "monitor" => monitor(rest, lang),
+        "mode" => mode_cmd(rest, lang),
         "install" => integrate(rest, Action::Install, lang),
         "uninstall" => integrate(rest, Action::Uninstall, lang),
         "update" => integrate(rest, Action::Update, lang),
@@ -157,6 +160,70 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
+// ——— mode（三态编排：none | cli | mcp，与设置页同源）———
+
+fn mode_cmd(args: &[String], lang: Lang) -> Result<(), String> {
+    let agent = args.first().ok_or_else(|| {
+        cfgio::t(
+            lang,
+            "usage: agents mode <agent> [none|cli|mcp]  (omit mode to query)",
+            "用法: agents mode <agent> [none|cli|mcp]（省略模式则查询）",
+        )
+    })?;
+    let target = AgentTarget::parse(agent).ok_or_else(|| {
+        cfgio::t(
+            lang,
+            &format!("unknown agent: {agent} (expected cursor|claude|codex)"),
+            &format!("未知 agent: {agent}（应为 cursor|claude|codex）"),
+        )
+    })?;
+    let kind = AgentKind::parse(agent).unwrap();
+
+    match args.get(1) {
+        // 仅查询：当前模式 + 是否需更新。
+        None => {
+            let upd = if agent_mode::needs_update(target) {
+                cfgio::t(lang, " (needs update)", "（需更新）")
+            } else {
+                String::new()
+            };
+            print_line(&format!(
+                "[{}] {}{}",
+                kind.label(),
+                mode_label(agent_mode::current(target), lang),
+                upd
+            ));
+            Ok(())
+        }
+        // 切换：先卸非目标产物，再装目标产物（底层幂等）。
+        Some(want) => {
+            let mode = agent_mode::Mode::parse(want).ok_or_else(|| {
+                cfgio::t(
+                    lang,
+                    &format!("unknown mode: {want} (expected none|cli|mcp)"),
+                    &format!("未知模式: {want}（应为 none|cli|mcp）"),
+                )
+            })?;
+            agent_mode::set(target, mode).map_err(|e| e.to_string())?;
+            print_line(&format!(
+                "[{}] {} {}",
+                kind.label(),
+                cfgio::t(lang, "mode set to", "模式已设为"),
+                mode_label(mode, lang)
+            ));
+            Ok(())
+        }
+    }
+}
+
+fn mode_label(m: agent_mode::Mode, lang: Lang) -> String {
+    match m {
+        agent_mode::Mode::None => cfgio::t(lang, "off", "未集成"),
+        agent_mode::Mode::Cli => "CLI".to_string(),
+        agent_mode::Mode::Mcp => "MCP".to_string(),
+    }
+}
+
 // ——— 集成 install / uninstall / update ———
 
 #[derive(Clone, Copy, PartialEq)]
@@ -170,8 +237,8 @@ fn integrate(args: &[String], action: Action, lang: Lang) -> Result<(), String> 
     let agent = args.first().ok_or_else(|| {
         cfgio::t(
             lang,
-            "usage: agents <install|uninstall|update> <agent> [--rules] [--hook] [--lifecycle]",
-            "用法: agents <install|uninstall|update> <agent> [--rules] [--hook] [--lifecycle]",
+            "usage: agents <install|uninstall|update> <agent> [--rules] [--hook] [--mcp] [--lifecycle]",
+            "用法: agents <install|uninstall|update> <agent> [--rules] [--hook] [--mcp] [--lifecycle]",
         )
     })?;
     let target = AgentTarget::parse(agent).ok_or_else(|| {
@@ -185,12 +252,13 @@ fn integrate(args: &[String], action: Action, lang: Lang) -> Result<(), String> 
 
     let want_rules = args.iter().any(|a| a == "--rules");
     let want_hook = args.iter().any(|a| a == "--hook");
+    let want_mcp = args.iter().any(|a| a == "--mcp");
     let want_lifecycle = args.iter().any(|a| a == "--lifecycle");
-    if !want_rules && !want_hook && !want_lifecycle {
+    if !want_rules && !want_hook && !want_mcp && !want_lifecycle {
         return Err(cfgio::t(
             lang,
-            "specify at least one of --rules / --hook / --lifecycle (no default bundle)",
-            "至少指定 --rules / --hook / --lifecycle 之一（无默认捆绑）",
+            "specify at least one of --rules / --hook / --mcp / --lifecycle (no default bundle)",
+            "至少指定 --rules / --hook / --mcp / --lifecycle 之一（无默认捆绑）",
         ));
     }
 
@@ -211,6 +279,14 @@ fn integrate(args: &[String], action: Action, lang: Lang) -> Result<(), String> 
                 &format!("hook: 跳过（{agent} 无超时 hook）"),
             )),
         }
+    }
+    if want_mcp {
+        let r = match action {
+            Action::Install => mcp_config::install(target),
+            Action::Update => mcp_config::update(target),
+            Action::Uninstall => mcp_config::uninstall(target),
+        };
+        report("mcp", r, lang);
     }
     if want_lifecycle {
         let r = match action {
@@ -280,6 +356,13 @@ fn show(args: &[String], lang: Lang) -> Result<(), String> {
         let kind = AgentKind::parse(name).unwrap();
         print_line(&format!("[{}]", kind.label()));
 
+        // 当前模式（三态聚合）
+        print_line(&format!(
+            "  {}: {}",
+            cfgio::t(lang, "mode", "模式"),
+            mode_label(agent_mode::current(target), lang)
+        ));
+
         // Rules
         let rules = if agent_rules::is_installed(target) {
             format!(
@@ -322,6 +405,26 @@ fn show(args: &[String], lang: Lang) -> Result<(), String> {
             "  {}: {}",
             cfgio::t(lang, "timeout hook", "超时 hook"),
             hook
+        ));
+
+        // MCP 配置（用户级全局）
+        let mcp = if mcp_config::is_installed(target) {
+            format!(
+                "{yes}{}",
+                if mcp_config::needs_update(target) {
+                    upd.clone()
+                } else {
+                    String::new()
+                }
+            )
+        } else {
+            no.clone()
+        };
+        print_line(&format!(
+            "  {}: {} — {}",
+            cfgio::t(lang, "mcp config", "MCP 配置"),
+            mcp,
+            mcp_config::display_path(target)
         ));
 
         // Lifecycle（实验性）
@@ -368,24 +471,32 @@ fn help(lang: Lang) -> String {
         "AskHuman agents — agent status + integrations (cursor | claude | codex)\n\
 \n\
   agents monitor [--json|--text]     Live agent status (opens a window when a GUI is available)\n\
+  agents mode <agent> [none|cli|mcp] Switch the integration mode (omit to query); auto-swaps products\n\
   agents show [<agent>]              Manual-integration prompt + paste paths + install status\n\
-  agents install <agent>   --rules --hook --lifecycle    Auto-integrate (pick at least one)\n\
+  agents install <agent>   --rules --hook --mcp --lifecycle    Auto-integrate (pick at least one)\n\
   agents uninstall <agent> [flags]   Remove the selected integrations\n\
-  agents update <agent> [flags]      Refresh managed rules/hooks to the latest\n\
+  agents update <agent> [flags]      Refresh managed products to the latest\n\
+\n\
+  Modes: cli = rules + timeout hook;  mcp = rules + MCP server config;  none = remove both.\n\
 \n\
   --rules      global prompt rules (all three agents)\n\
   --hook       timeout hook (cursor & claude only; codex skipped)\n\
+  --mcp        MCP server config (user-level global; all three)\n\
   --lifecycle  lifecycle hook (experimental; all three)",
         "AskHuman agents —— agent 状态 + 集成（cursor | claude | codex）\n\
 \n\
   agents monitor [--json|--text]     实时 agent 状态（有 GUI 时开窗）\n\
+  agents mode <agent> [none|cli|mcp] 切换集成模式（省略则查询）；自动切换底层产物\n\
   agents show [<agent>]              手动集成提示词 + 粘贴位置 + 安装状态\n\
-  agents install <agent>   --rules --hook --lifecycle    自动集成（至少选一项）\n\
+  agents install <agent>   --rules --hook --mcp --lifecycle    自动集成（至少选一项）\n\
   agents uninstall <agent> [选项]    移除所选集成\n\
-  agents update <agent> [选项]       把托管的规则 / hook 刷新到最新\n\
+  agents update <agent> [选项]       把托管的产物刷新到最新\n\
+\n\
+  模式: cli = 规则 + 超时 hook；mcp = 规则 + MCP server 配置；none = 两者都移除。\n\
 \n\
   --rules      全局提示词规则（三家都支持）\n\
   --hook       超时 hook（仅 cursor 与 claude；codex 跳过）\n\
+  --mcp        MCP server 配置（用户级全局；三家都支持）\n\
   --lifecycle  生命周期 hook（实验性；三家都支持）",
     )
 }

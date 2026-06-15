@@ -460,9 +460,14 @@ fn fallback_secret(provided: &str, pick: impl FnOnce(&AppConfig) -> String) -> S
     pick(&AppConfig::load())
 }
 
+/// 返回参考提示词正文：`variant = "mcp"` → MCP 版；其余（含缺省）→ CLI 版。
+/// 供手动集成卡按 CLI/MCP 切换展示。
 #[tauri::command]
-pub fn get_prompt() -> String {
-    crate::prompts::cli_reference()
+pub fn get_prompt(variant: Option<String>) -> String {
+    match variant.as_deref() {
+        Some("mcp") => crate::prompts::mcp_reference(),
+        _ => crate::prompts::cli_reference(),
+    }
 }
 
 /// 设置页「弹出测试窗口」：以独立子进程跑一个示例提问，
@@ -759,6 +764,97 @@ pub fn agent_rule_reveal(agent: String) -> Result<(), String> {
 pub fn agent_rule_open(agent: String) -> Result<(), String> {
     let a = parse_agent(&agent)?;
     agent_rules::open(a);
+    Ok(())
+}
+
+// ===== Agent 三态模式（CLI | MCP | 未集成） =====
+
+use crate::integrations::{agent_mode, mcp_config};
+
+/// 某家 Agent 的模式聚合状态（驱动设置页三态分段控件 + 产物清单）。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentModeStatus {
+    /// 当前模式："none" | "cli" | "mcp"。
+    mode: String,
+    /// 当前模式下是否有产物过期 / 缺失。
+    needs_update: bool,
+    /// Rule 文件展示路径（home 折叠为 ~）。
+    rule_path: String,
+    rule_installed: bool,
+    /// 该 Agent 是否有「超时 Hook」概念（Codex 没有）。
+    timeout_hook_supported: bool,
+    timeout_hook_installed: bool,
+    /// MCP 配置文件展示路径。
+    mcp_config_path: String,
+    mcp_config_installed: bool,
+}
+
+#[tauri::command]
+pub fn agent_mode_status(agent: String) -> Result<AgentModeStatus, String> {
+    let a = parse_agent(&agent)?;
+    Ok(AgentModeStatus {
+        mode: agent_mode::current(a).as_str().to_string(),
+        needs_update: agent_mode::needs_update(a),
+        rule_path: agent_rules::display_path(a),
+        rule_installed: agent_rules::is_installed(a),
+        timeout_hook_supported: agent_mode::timeout_hook_supported(a),
+        timeout_hook_installed: agent_mode::timeout_hook_is_installed(a),
+        mcp_config_path: mcp_config::display_path(a),
+        mcp_config_installed: mcp_config::is_installed(a),
+    })
+}
+
+/// 一键切换到目标模式（"none"|"cli"|"mcp"）：自动卸旧装新。
+#[tauri::command]
+pub fn agent_mode_set(agent: String, mode: String) -> Result<(), String> {
+    let a = parse_agent(&agent)?;
+    let m = agent_mode::Mode::parse(&mode)
+        .ok_or_else(|| crate::i18n::tr(crate::i18n::Lang::current(), "cmd.unknownMode").to_string())?;
+    agent_mode::set(a, m).map_err(|e| e.to_string())
+}
+
+/// 把当前模式的全部产物刷新到最新（不切换模式）。
+#[tauri::command]
+pub fn agent_mode_update(agent: String) -> Result<(), String> {
+    let a = parse_agent(&agent)?;
+    agent_mode::update(a).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn mcp_config_reveal(agent: String) -> Result<(), String> {
+    let a = parse_agent(&agent)?;
+    mcp_config::reveal(a);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn mcp_config_open(agent: String) -> Result<(), String> {
+    let a = parse_agent(&agent)?;
+    mcp_config::open(a);
+    Ok(())
+}
+
+/// 当前可执行文件绝对路径，供手动集成卡的 MCP 配置示例直接填入 `command`（与自动集成写入一致）。
+#[tauri::command]
+pub fn mcp_command_path() -> Result<String, String> {
+    let lang = crate::i18n::Lang::current();
+    std::env::current_exe()
+        .map(|p| p.to_string_lossy().to_string())
+        .map_err(|e| crate::i18n::tr(lang, "cmd.locateExeFailed").replace("{e}", &e.to_string()))
+}
+
+#[tauri::command]
+pub fn agent_hook_reveal(agent: String) -> Result<(), String> {
+    let a = parse_agent(&agent)?;
+    agent_mode::timeout_hook_reveal(a);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn agent_hook_open(agent: String) -> Result<(), String> {
+    let a = parse_agent(&agent)?;
+    agent_mode::timeout_hook_open(a);
     Ok(())
 }
 

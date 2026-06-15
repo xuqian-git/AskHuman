@@ -142,7 +142,8 @@ export default {
       copy: "复制",
       copied: "已复制",
       rulesLabel: "Rules",
-      hookLabel: "Hook",
+      hookLabel: "超时 Hook",
+      mcpConfigLabel: "MCP 配置",
       reveal: "定位",
       openFile: "打开",
       revealInFinder: "在访达中显示",
@@ -159,6 +160,20 @@ export default {
       update: "更新",
       uninstall: "移除",
       windowsUnsupported: "Windows 暂不支持该 Hook",
+      modeCli: "CLI",
+      modeMcp: "MCP",
+      modeNone: "未集成",
+      recommendedTag: "推荐",
+      codexNoHook:
+        "Codex 无法延长 CLI 工具的超时，长时间等待可能被取消；如需可靠的长等待请改用 MCP 模式。",
+      mcpModeHint:
+        "以 MCP server 方式运行 AskHuman 并设置较长的工具超时，让 Agent 能可靠地等待你的回复。",
+      mcpExampleHint:
+        "将下面的片段加入各 Agent 的 MCP 配置即可手动注册 AskHuman。command 已填入当前可执行文件的绝对路径，直接复制粘贴即可。",
+      mcpExampleJson: "Cursor（~/.cursor/mcp.json）/ Claude Code（~/.claude.json）",
+      mcpTimeoutNote:
+        "其中 timeout（毫秒）仅 Claude Code 需要：覆盖其 60 秒默认，让长时间等待不被取消。Cursor 不识别该字段（其超时硬编码、不可配置），可保留也可删除。",
+      mcpExampleToml: "Codex（~/.codex/config.toml）",
     },
     channels: {
       autoActivationTitle: "IM 会话期自动激活",

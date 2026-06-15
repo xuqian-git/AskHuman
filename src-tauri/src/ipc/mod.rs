@@ -110,6 +110,12 @@ pub struct TaskRequest {
     /// 调用方 Agent 进程 pid（walk 进程树得到，可空）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_pid: Option<u32>,
+    /// 该 ask 是否经 MCP 模式发起（`AskHuman mcp` spawn 的子进程，由 env `ASKHUMAN_FROM_MCP` 置位）。
+    /// MCP server 长驻整个 session，其继承的 `agent_session_id` 可能过期，故 daemon 对带此标记的请求
+    /// 一律「**只刷新已存在的 session、绝不新建**」，避免在「自动激活」开启时按过期 id 造出幽灵会话。
+    /// 旧 CLI 不带 → 默认 false（行为不变）。
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub from_mcp: bool,
 }
 
 /// 自动识别 userId/open_id 请求（设置进程 → Daemon，Q6）：用表单当前凭据，

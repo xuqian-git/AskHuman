@@ -52,7 +52,7 @@ AskHuman/
                              (工作中>空闲>已结束)、相对时间动态刷新；订阅 daemon 推送的 agents-updated
     views/SettingsView.vue   设置：通用（含「回复历史」保留条数 + 超额「立即清理」+ 底部隐蔽开关「实验性功能」）
                              / Agent / 通信渠道（+ 开启实验后出现「实验」Tab）多 Tab
-                             （Agent Tab：顶部原理说明 + 「手动集成」标题下的参考提示词卡 + 「自动集成」标题下按 Cursor/Claude Code/Codex 分组的 Rules 安装卡；Cursor 与 Claude Code 组另含超时 Hook，Codex 无；已安装但内容过期时显示橙色「更新」按钮一键覆盖为最新；Rules 行的「打开」按钮点开下拉菜单：在 Finder 中显示 / 用默认程序打开）
+                             （Agent Tab：顶部原理说明 + 「手动集成」参考提示词卡[CLI | MCP 分段切换，MCP 视图附三家 MCP 配置示例片段，绝对路径占位] + 「自动集成」按 Cursor/Claude Code/Codex 分组、每家一个 **CLI | MCP | 未集成** 三态分段控件[一键切换自动卸旧装新；推荐档位带绿色「推荐」标记：Cursor/Claude=CLI、Codex=MCP（Codex 无法延长 CLI 超时）]，下方按当前模式列出产物：CLI=Rule+超时 Hook[Codex 无 Hook 给提示]、MCP=Rule+MCP 配置；产物过期时显示橙色「更新」按钮；文件行「打开」下拉：在 Finder 中显示 / 用默认程序打开）
     views/HistoryView.vue    独立历史窗口：顶部项目下拉 + 清空菜单；左列表（渠道徽标/相对时间/摘要）右只读详情
     components/HistoryDetail.vue 只读还原一条历史（状态横幅 + 消息/附件 + 每题选项高亮/文本/图片/文件，best-effort）
     lib/ipc.ts               invoke 封装（与后端命令一一对应）
@@ -63,7 +63,8 @@ AskHuman/
 
   src-tauri/                 Rust 后端
     Cargo.toml               依赖（tauri[macos-private-api]、reqwest、tokio、dark-light、libc、
-                             tauri-plugin-drag、macOS: objc2 / objc2-foundation / objc2-app-kit…）
+                             tauri-plugin-drag、rmcp[server,transport-io] + schemars(MCP server)、
+                             macOS: objc2 / objc2-foundation / objc2-app-kit…）
     tauri.conf.json          frontendDist=../dist；app.macOSPrivateApi=true
     capabilities/default.json 窗口权限（含 start-dragging / set-always-on-top / drag:default）
     src/
@@ -72,15 +73,17 @@ AskHuman/
       macos_menu.rs          (macOS) -f 附件原生右键菜单（NSMenu，Finder 风格）
       cli/
         mod.rs               argv 分发（--help/--version/--settings/--history[--all]/--agent-help/--scripting-help/
-                             daemon/agents/channel/config/doctor/无参/提问）
+                             daemon/agents/channel/config/doctor/mcp/无参/提问；提问请求据
+                             `ASKHUMAN_FROM_MCP` 置 `from_mcp`，让 daemon 对 MCP 来源仅刷新活动、不新建会话）
         args.rs              提问参数解析（message / --stdin / -o / -o!(推荐选项) / --no-markdown / -f /
                              --single(单选) / --select-only(严格，须每题有选项) / --output <text|json>）
         cfgio.rs             CLI 配置公共工具：点号路径 get/set（serde_json::Value）+ 类型强制 + 密钥识别 +
                              密钥取值(env/file/stdin/隐藏输入) + 脱敏 + 交互输入 + block_on 助手
         config_cmd.rs        `config show|get|set|unset|path`（通用键值兜底；密钥键自动入钥匙串，值不进 argv）
         channel_cmd.rs       `channel list|set|enable|disable|test|detect`（向导+脚本；复用 commands 的 test/detect）
-        agents_cmd.rs        `agents monitor|show|install|uninstall|update`（状态文本/json + 集成；复用 integrations）
-        doctor.rs            `doctor [--json]` 一屏体检（daemon/渠道/集成）
+        agents_cmd.rs        `agents monitor|mode|show|install|uninstall|update`（状态文本/json + 三态模式编排 +
+                             细粒度集成 --rules/--hook/--mcp/--lifecycle；复用 integrations）
+        doctor.rs            `doctor [--json]` 一屏体检（daemon/渠道/集成，集成含 mode/rules/hook/mcp/lifecycle）
         file_attachment.rs   -f 路径解析/校验（~/相对路径 → 绝对路径 + 元信息）
         output.rs            结果格式化：文本区块字段恒英文常量 MARKER_*（[selected_options]/[user_input]/
                              [files]（图片+文件合并）/[status]）+ render_json（D7：snake_case/省空字段）
@@ -90,10 +93,16 @@ AskHuman/
                              OptionItem(text+recommended，反序列化兼容旧纯字符串) /
                              FileAttachment / ChannelResult(含 files) / ImageAttachment / ChannelAction / source_name()
       config.rs              AppConfig 读写 ~/.askhuman/config.json（原子写、容错解码；旧 ~/.humaninloop 自动回退读取）
-      paths.rs               home/config/temp 路径 + history.jsonl/history.lock
+      paths.rs               home/config/temp 路径 + history.jsonl/history.lock + cursor_mcp_json/claude_json（MCP 配置）
       project.rs             项目识别：从 cwd 向上找首个 .git 根，回退 cwd（回复历史归类）
       history.rs             回复历史存储：~/.askhuman/history.jsonl（每行一条 JSON，追加写 + 文件锁裁剪/清空）
-      prompts.rs             CLI 参考提示词常量
+      prompts.rs             参考提示词：`cli_reference()`（CLI 版，含 24h 超时/`--agent-help` 等 shell 指引）+
+                             `mcp_reference()`（MCP 版，去 shell 指引、改引用 `ask` MCP 工具）
+      mcp/                   `AskHuman mcp` STDIO MCP server（rmcp）：mod.rs(tokio runtime + serve) /
+                             ask.rs(单工具 `ask`：JsonSchema 入/出参 → build_argv → spawn 现有
+                             `AskHuman … --output json`[带 `ASKHUMAN_FROM_MCP=1`] → 解析为 `AskResult`
+                             [剔除脚本专用 `selected_indices`] → structuredContent + content[JSON 文本 +
+                             图片转 ImageContent]）。薄壳：每次调用新 spawn 子进程，天然跨 daemon 重启重连
       hooks.rs               用户级 hooks：~/.askhuman/hooks/<event> 可执行脚本（首个事件 ask-received）
       sound.rs               内置弹窗提示音（macOS afplay / Linux canberra·paplay / 其它不支持）
       commands.rs            #[tauri::command] 集合（前端调用入口，见下）
@@ -155,7 +164,20 @@ AskHuman/
                              alwaysApply frontmatter，卸载时区块外仅剩 frontmatter/空白才删整文件；旧版
                              独占文件含 MANAGED_FILE_MARK 仍识别为已安装、安装/更新时迁移为区块格式）；
                              Claude ~/.claude/CLAUDE.md、Codex ~/.codex/AGENTS.md。needs_update：区块内
-                             正文 ≠ 最新提示词（或旧版无区块）→ 需更新（幂等纯函数 + 单测）
+                             正文 ≠ 最新提示词（或旧版无区块）→ 需更新（幂等纯函数 + 单测）。
+                             `Variant`(Cli|Mcp) 区分写入 cli_reference/mcp_reference；`installed_variant`
+                             探测已装变体、`needs_update_variant`/`install_variant` 变体感知
+        mcp_config.rs        MCP server 配置写入（用户级全局，server 名 `askhuman`、args `["mcp"]`）：
+                             Cursor ~/.cursor/mcp.json、Claude ~/.claude.json 走 jsonc-parser CST（mcpServers.askhuman）；
+                             Codex ~/.codex/config.toml 走 toml_edit（[mcp_servers.askhuman] + startup_timeout_sec
+                             /tool_timeout_sec）。最小编辑保留用户其它内容/注释/格式；install/update/uninstall/
+                             is_installed/needs_update/display_path/reveal/open（幂等纯函数 + 单测）
+        agent_mode.rs        三态模式编排（None|Cli|Mcp 互斥）：Cli=Rule(CLI)+超时 Hook，Mcp=Rule(MCP)+MCP 配置；
+                             `current`(**以产物 MCP配置/超时Hook 为首要信号**，互斥且由 set 维护、稳定；产物不
+                             明确时才回退 Rule 变体——避免内置提示词改版后已装旧正文失配被错判模式) /
+                             `needs_update` / `set`(卸非目标产物→装目标，幂等) / `update`(刷当前模式) /
+                             uninstall_all。lifecycle hook 与三态正交。`agent_rules::classify_body` 对漂移正文
+                             用结构信号（是否含 `Shell/Bash`）判 CLI/MCP，提示词改版仍稳定归类
       ipc/                   IPC 协议：mod.rs(消息类型，含 ServerMsg::UpdateState) / codec.rs(NDJSON) / transport.rs(Unix socket)
       client/                (Unix) CLI 作为 Daemon 客户端：连接/握手/自启/submit/detect/status/stop
       daemon/                (Unix) 常驻 Daemon：mod.rs(分发/serve + 自更新后台检查/广播/指纹感知) /
@@ -194,11 +216,14 @@ AskHuman/
 - 弹窗：`popup_init`（取请求+主题+是否置顶+来源名）、`submit_popup`、`cancel_popup`
 - 附件：`open_path`、`preview_attachments` / `close_preview`(QLPreviewPanel)、`read_image_data_url`(缩略图)、
   `file_icon_data_url`(系统图标，拖出预览)、`show_attachment_menu`(原生右键菜单)
-- 设置：`get_settings`、`save_settings`、`get_prompt`、`set_theme`、`update_theme`(持久化+应用)、`open_settings`(同进程建设置窗)、`popup_sound_support`(平台支持 named/toggle/none + 音名列表)、`play_popup_sound`(试听)
+- 设置：`get_settings`、`save_settings`、`get_prompt`(可选 `variant`=cli|mcp)、`set_theme`、`update_theme`(持久化+应用)、`open_settings`(同进程建设置窗)、`popup_sound_support`(平台支持 named/toggle/none + 音名列表)、`play_popup_sound`(试听)
 - 历史：`open_history`(弹窗→建历史窗)、`history_init`(主题+当前项目)、`get_history`(按项目/全部，倒序)、`get_history_projects`(项目下拉)、`history_count`、`trim_history`(立即裁剪)、`clear_history`(按项目/全部清空)
 - Cursor Hook：`cursor_hook_status`（含 outdated）/ `install` / `update` / `uninstall` / `reveal`
 - Claude Code Hook：`claude_hook_status`（含 outdated）/ `install` / `update` / `uninstall` / `reveal`
 - Agent 全局 Rules：`agent_rule_status`（含 outdated）/ `install` / `update` / `uninstall` / `reveal` / `open`（入参 `agent`：cursor/claude/codex）
+- Agent 三态模式：`agent_mode_status`（返回 mode + 各产物装没装/需更新 + 路径）/ `agent_mode_set`(none|cli|mcp) / `agent_mode_update`（刷当前模式产物）/ `mcp_config_reveal`·`mcp_config_open`·`agent_hook_reveal`·`agent_hook_open`（定位/打开配置）/ `mcp_command_path`（当前 exe 绝对路径，供手动卡示例填充）
+- MCP 配置：`mcp_config_reveal` / `mcp_config_open`（入参 `agent`：cursor/claude/codex）
+- 超时 Hook 文件：`agent_hook_reveal` / `agent_hook_open`（入参 `agent`；Codex 无 Hook 为 no-op）
 - Telegram：`telegram_test`
 - 钉钉：`dingtalk_test` / `dingtalk_detect_prepare` / `dingtalk_detect_wait`
 - 飞书：`feishu_test` / `feishu_detect_prepare` / `feishu_detect_wait`
@@ -260,12 +285,27 @@ AskHuman/
 
 > 需求 `docs/specs/cli-config.md` + 计划 `docs/plans/cli-config.md`。让 Linux 服务器 / 容器 / SSH 等无 GUI 环境**纯命令行**完成全部渠道配置与 agent 集成，且**可脚本化一次性执行**。四个顶层子命令组（`channel`/`agents`/`config` + `doctor`），每组及子命令都有 `help`，所有输出经 `cli/cfgio.rs::t` 中英双语本地化。
 
-- **复用而非重写**：渠道连通性 `test` / userId·openId 自动识别 `detect` 直接调 `commands.rs` 既有 `*_test`/`*_detect_prepare`/`*_detect_wait`（参数结构体字段已 `pub`，密钥经 `fallback_secret` 回退已存值）；配置读写走 `config.rs::{load,load_without_secrets,save}`（save 自动把密钥写钥匙串、文件 0600）；集成走 `integrations::{agent_rules,cursor_hook,claude_hook,agent_lifecycle}`；agent 状态走 daemon `AgentsSubscribe`/`AgentsState`。落盘后 daemon `config_watch` 自动热重载。
+- **复用而非重写**：渠道连通性 `test` / userId·openId 自动识别 `detect` 直接调 `commands.rs` 既有 `*_test`/`*_detect_prepare`/`*_detect_wait`（参数结构体字段已 `pub`，密钥经 `fallback_secret` 回退已存值）；配置读写走 `config.rs::{load,load_without_secrets,save}`（save 自动把密钥写钥匙串、文件 0600）；集成走 `integrations::{agent_rules,cursor_hook,claude_hook,agent_lifecycle,mcp_config,agent_mode}`；agent 状态走 daemon `AgentsSubscribe`/`AgentsState`。落盘后 daemon `config_watch` 自动热重载。
 - **`channel`**（`channel_cmd.rs`，name ∈ telegram|dingding|feishu|slack）：`list [--json]`（启用/配置齐全/已连接；daemon 未运行时连接态文本显 `—`、JSON 为 `null`）；`set <name>` 二合一——**终端且无 flag → 交互向导**（逐项提示、密钥隐藏输入、留空保留）、**带 flag → 非交互脚本**（`--enable/--disable` + 各非密钥字段 kebab flag）；`enable|disable`；`test`；`detect [--save]`（prepare 取识别码 → 提示发给 bot → wait 经 daemon 单连接捕获 → 可保存；telegram 无 detect）。
 - **密钥输入（D4，脚本安全）**：仅 `--<field>-env <VAR>` / `--<field>-file <path>` / `--<field>-stdin`（或值 `-`）；交互时隐藏输入（Unix termios 关 echo）；**密钥明文不进 argv**（避免泄漏 shell 历史 / `ps`）。
-- **`agents`**（`agents_cmd.rs`，agent ∈ cursor|claude|codex）：`monitor [--json|--text]`（见上节）；`show [<agent>]`（打印 `prompts::cli_reference()` 手动集成提示词 + 各 agent 粘贴位置 + 三类安装状态）；`install/uninstall/update <agent>` **必须显式** `--rules`/`--hook`/`--lifecycle`（无默认捆绑，D6；`--hook` 仅 cursor/claude，codex 跳过；`--lifecycle` 实验性；lifecycle 无独立 update→重装即刷新）。
+- **`agents`**（`agents_cmd.rs`，agent ∈ cursor|claude|codex）：`monitor [--json|--text]`（见上节）；`mode <agent> [none|cli|mcp]`（省略模式则查询当前模式 + 是否需更新，带模式则一键切换、复用 `agent_mode::set` 自动卸旧装新）；`show [<agent>]`（打印 `prompts::cli_reference()` 手动集成提示词 + 各 agent 粘贴位置 + 当前模式/rules/hook/mcp/lifecycle 安装状态）；`install/uninstall/update <agent>` **必须显式** `--rules`/`--hook`/`--mcp`/`--lifecycle`（无默认捆绑，D6；`--hook` 仅 cursor/claude，codex 跳过；`--mcp` 写 MCP server 配置；`--lifecycle` 实验性；lifecycle 无独立 update→重装即刷新）。
 - **`config`**（`config_cmd.rs`，兜底）：`show [--json]`（密钥脱敏 `●●●`）/`get`/`set`/`unset`/`path`，点号 camelCase 键。`set` 非密钥键按目标 JSON 类型强制（bool/数字/字符串/枚举）→ 反序列化校验 → save；**密钥键**（5 个，`cfgio::SECRET_KEYS`，与 `secrets::ACCOUNT_*` 一致）自动路由进钥匙串，值仍只从 env/file/stdin 取。`unset` 重置默认（密钥 → `secrets::delete`）。
-- **`doctor [--json]`**（`doctor.rs`）：一屏体检 daemon（运行/版本/在途/IM 连接）+ 各渠道（启用·齐全·连接）+ 各 agent 集成（rules·hook·lifecycle 装没装/需更新）。
+- **`doctor [--json]`**（`doctor.rs`）：一屏体检 daemon（运行/版本/在途/IM 连接）+ 各渠道（启用·齐全·连接）+ 各 agent 集成（当前 mode + rules·hook·mcp·lifecycle 装没装/需更新）。
+
+## MCP 支持（CLI 模式之外的第二种集成形态）
+
+> 需求 `docs/specs/mcp.md` + 计划 `docs/plans/mcp.md`。动机：Codex 等 agent 无法为 CLI 工具调用延长超时（命中即可能被取消），而 MCP 协议允许配置较长的 `tool_timeout_sec`，让长等待可靠。
+
+- **形态**：`AskHuman mcp` 以 **STDIO** 跑一个 MCP server（rmcp SDK），对外暴露**单一工具 `ask`**（配置中 server 名 `askhuman`）。
+- **薄壳复用**：MCP server 不自己实现 ask 逻辑——每次 `ask` 调用就 `spawn` 一个现有 `AskHuman … --output json` 子进程，**复用全部既有 ask 流程**（弹窗 / IM / 抢答 / 历史 / 落盘 / 排空与自动重连）。子进程带 `ASKHUMAN_FROM_MCP=1`，CLI 据此在 `TaskRequest.from_mcp` 标记来源；daemon 对 MCP 来源的会话活动**仅刷新（touch_activity）而非新建工作会话**，避免长寿 MCP server 携带过期 session_id 造成「幽灵工作会话」。全平台同一套；daemon 换新/重启后下次调用自然重连。
+- **入参（精简）**：`ask` 仅暴露 `message`（**恒按 Markdown 渲染**）/`questions[{question, options[{text, recommended}]}]`/`files[]`；不暴露 `markdown`（恒 on）、`single`、`selectOnly`（属脚本/纯文本场景）。
+- **输出**：`ask` 声明 input/output schema；子进程 JSON 解析为 `AskResult`（**剔除脚本专用的 `selected_indices`**）→ 返回 `structuredContent`（结构化 JSON）+ `content`（序列化 JSON 文本 + 人类回复中的图片读回转 `ImageContent`）。**取消时顶层带 `status` 引导文案**（要求模型重新确认直到用户明确答复，不得当作放行）；该字段由 CLI `--output json` 顶层产出（取消路径才有），薄壳原样透传，脚本侧亦受益。
+- **三态集成**：每家 agent 的「自动集成」改为 **None / Cli / Mcp 互斥三态**（`integrations/agent_mode.rs`）。Cli 绑定 Rule(CLI 版)+超时 Hook；Mcp 绑定 Rule(MCP 版)+MCP 配置（`integrations/mcp_config.rs` 写用户级全局：Cursor `~/.cursor/mcp.json`、Claude `~/.claude.json`、Codex `~/.codex/config.toml`，最小编辑保留用户内容）。提示词分 `prompts::{cli_reference,mcp_reference}` 两版。lifecycle hook（turn 追踪）与三态正交，独立开关。
+- **MCP 工具超时**（长等待不被取消，各家机制不同）：
+  - **Codex**：写 `tool_timeout_sec=86400`(秒) + `startup_timeout_sec=30`。✓
+  - **Claude Code（CLI）**：默认 60s（MCP TS SDK `DEFAULT_REQUEST_TIMEOUT_MSEC`），故在 `mcpServers.askhuman` 写 `timeout=86400000`(**毫秒**，24h) 覆盖默认（`CLAUDE_TOOL_TIMEOUT_MS`）；否则等待人类超 60s 会被 `-32001` 取消。`needs_update` 一并校验该值（旧条目无 timeout → 提示更新）。
+  - **Cursor**：MCP 工具/elicitation 超时 ~60s **硬编码、不可配置**，无法支撑长等待——故不写 `timeout`，且 Cursor 推荐用 CLI(+Hook) 模式。
+- **入口**：设置页 Agent Tab 三态分段控件 + 手动集成卡的 CLI/MCP 切换；headless 走 `agents mode` / `agents install --mcp` / `doctor`（见「CLI 配置与 Agent 集成」节）。手动集成卡的 MCP 配置示例（JSON/TOML）**直接填入当前可执行文件绝对路径**（`mcp_command_path` 命令读 `current_exe()`，取不到时退回占位符）并各带**拷贝按钮**，免用户手改路径。JSON 示例含 `timeout: 86400000` 并注明「仅 Claude 需要」（Cursor 忽略该字段）。
 
 ## 用户级 hooks + 内置弹窗提示音
 

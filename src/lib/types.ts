@@ -290,6 +290,21 @@ export interface RuleStatus {
   supported: boolean;
 }
 
+/** Agent 集成模式（三态互斥）。 */
+export type AgentMode = "none" | "cli" | "mcp";
+
+/** 某家 Agent 的模式聚合状态（驱动设置页三态分段控件 + 产物清单）。 */
+export interface AgentModeStatus {
+  mode: AgentMode;
+  needsUpdate: boolean;
+  rulePath: string;
+  ruleInstalled: boolean;
+  timeoutHookSupported: boolean;
+  timeoutHookInstalled: boolean;
+  mcpConfigPath: string;
+  mcpConfigInstalled: boolean;
+}
+
 export interface TelegramTestArgs {
   botToken: string;
   chatId: string;

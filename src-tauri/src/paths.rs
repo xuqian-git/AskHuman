@@ -93,6 +93,11 @@ pub fn cursor_rule_file() -> PathBuf {
     cursor_rules_dir().join("askhuman.mdc")
 }
 
+/// Cursor 用户级 MCP 配置文件 `~/.cursor/mcp.json`（与 hooks.json 不同文件）。
+pub fn cursor_mcp_json() -> PathBuf {
+    cursor_dir().join("mcp.json")
+}
+
 /// Claude Code 配置目录 `~/.claude`。
 pub fn claude_dir() -> PathBuf {
     home().join(".claude")
@@ -106,6 +111,12 @@ pub fn claude_md() -> PathBuf {
 /// Claude Code 用户级设置文件 `~/.claude/settings.json`（hooks / env 等都写在此）。
 pub fn claude_settings_json() -> PathBuf {
     claude_dir().join("settings.json")
+}
+
+/// Claude Code 用户级主配置文件 `~/.claude.json`（top-level `mcpServers` 写于此；
+/// 文件通常很大、含大量项目历史，必须最小化编辑、绝不整写）。
+pub fn claude_json() -> PathBuf {
+    home().join(".claude.json")
 }
 
 /// Claude Code hook 脚本 `~/.claude/hooks/askhuman-timeout.sh`。

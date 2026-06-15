@@ -636,6 +636,14 @@ fn launch(state: AppState, view: View, popup_ipc: Option<PopupIpc>) -> tauri::Re
             crate::commands::agent_rule_uninstall,
             crate::commands::agent_rule_reveal,
             crate::commands::agent_rule_open,
+            crate::commands::agent_mode_status,
+            crate::commands::agent_mode_set,
+            crate::commands::agent_mode_update,
+            crate::commands::mcp_config_reveal,
+            crate::commands::mcp_config_open,
+            crate::commands::mcp_command_path,
+            crate::commands::agent_hook_reveal,
+            crate::commands::agent_hook_open,
             crate::commands::agent_lifecycle_status,
             crate::commands::agent_lifecycle_install,
             crate::commands::agent_lifecycle_uninstall,
@@ -929,7 +937,7 @@ pub(crate) fn render_result(
         ChannelAction::Cancel => (
             RenderOutcome {
                 stdout: if json {
-                    output::render_json(request, result, &[])
+                    output::render_json(request, result, &[], lang)
                 } else {
                     output::cancel_output(lang)
                 },
@@ -958,7 +966,7 @@ pub(crate) fn render_result(
             }
 
             let stdout = if json {
-                output::render_json(request, result, &image_paths_per_q)
+                output::render_json(request, result, &image_paths_per_q, lang)
             } else {
                 let rendered: Vec<output::RenderedAnswer> = result
                     .answers

@@ -4,26 +4,20 @@ import { useI18n } from "vue-i18n";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { applyLanguage } from "../i18n";
 import {
-  agentRuleInstall,
-  agentRuleOpen,
+  agentModeStatus,
+  agentModeSet,
+  agentModeUpdate,
   agentRuleReveal,
-  agentRuleStatus,
-  agentRuleUninstall,
-  agentRuleUpdate,
+  agentRuleOpen,
+  mcpConfigReveal,
+  mcpConfigOpen,
+  mcpCommandPath,
+  agentHookReveal,
+  agentHookOpen,
   agentLifecycleStatus,
   agentLifecycleInstall,
   agentLifecycleUninstall,
   applyWindowEffect,
-  claudeHookInstall,
-  claudeHookReveal,
-  claudeHookStatus,
-  claudeHookUninstall,
-  claudeHookUpdate,
-  cursorHookInstall,
-  cursorHookReveal,
-  cursorHookStatus,
-  cursorHookUninstall,
-  cursorHookUpdate,
   dingtalkDetectPrepare,
   dingtalkDetectWait,
   dingtalkTest,
@@ -65,13 +59,12 @@ import { isGlassSupported } from "tauri-plugin-liquid-glass-api";
 import type {
   AgentId,
   AgentKind,
+  AgentMode,
+  AgentModeStatus,
   AppConfig,
-  ClaudeHookStatus,
-  HookStatus,
   LifecycleStatus,
   PopupAnimation,
   PopupSoundSupport,
-  RuleStatus,
   SecretAction,
   SecretActions,
   SecretsPresent,
@@ -131,121 +124,157 @@ function onTabClick(tab: Tab, e: MouseEvent) {
 }
 const prompt = ref("");
 const promptCopied = ref(false);
+// 手动集成卡的提示词变体：CLI 版 / MCP 版（切换即重载正文）。
+const promptVariant = ref<"cli" | "mcp">("cli");
 
-const hook = ref<HookStatus>({
-  installed: false,
-  outdated: false,
-  hooksJsonExists: false,
-  supported: true,
-});
-const hookMessage = ref<string | null>(null);
-const hookError = ref(false);
-
-// Claude Code Hook（与 Cursor Hook 对称）。
-const claudeHook = ref<ClaudeHookStatus>({
-  installed: false,
-  outdated: false,
-  settingsExists: false,
-  supported: true,
-});
-const claudeHookMessage = ref<string | null>(null);
-const claudeHookError = ref(false);
-
-// 各 Agent 的 Rules / Hook 安装状态 + 操作反馈。Codex 暂无可行的超时 Hook（hasHook=false）。
-const AGENTS: { id: AgentId; title: string; hasHook: boolean }[] = [
-  { id: "cursor", title: "Cursor", hasHook: true },
-  { id: "claude", title: "Claude Code", hasHook: true },
-  { id: "codex", title: "Codex", hasHook: false },
+// 各 Agent 的展示信息。Codex 没有「超时 Hook」概念（hasTimeoutHook=false），
+// 且无法延长 CLI 超时，故推荐 MCP；Cursor / Claude Code 有可靠超时 Hook，推荐 CLI。
+const AGENTS: {
+  id: AgentId;
+  title: string;
+  hasTimeoutHook: boolean;
+  recommended: AgentMode;
+}[] = [
+  { id: "cursor", title: "Cursor", hasTimeoutHook: true, recommended: "cli" },
+  { id: "claude", title: "Claude Code", hasTimeoutHook: true, recommended: "cli" },
+  { id: "codex", title: "Codex", hasTimeoutHook: false, recommended: "mcp" },
 ];
-const emptyRule = (): RuleStatus => ({
-  installed: false,
-  outdated: false,
-  path: "",
-  supported: true,
+
+const emptyMode = (): AgentModeStatus => ({
+  mode: "none",
+  needsUpdate: false,
+  rulePath: "",
+  ruleInstalled: false,
+  timeoutHookSupported: false,
+  timeoutHookInstalled: false,
+  mcpConfigPath: "",
+  mcpConfigInstalled: false,
 });
-const rules = ref<Record<AgentId, RuleStatus>>({
-  cursor: emptyRule(),
-  claude: emptyRule(),
-  codex: emptyRule(),
+const modes = ref<Record<AgentId, AgentModeStatus>>({
+  cursor: emptyMode(),
+  claude: emptyMode(),
+  codex: emptyMode(),
 });
-const ruleBusy = ref<Record<AgentId, boolean>>({
+const modeBusy = ref<Record<AgentId, boolean>>({
   cursor: false,
   claude: false,
   codex: false,
 });
-const ruleMessage = ref<Record<AgentId, string | null>>({
+const modeMessage = ref<Record<AgentId, string | null>>({
   cursor: null,
   claude: null,
   codex: null,
 });
-const ruleError = ref<Record<AgentId, boolean>>({
+const modeError = ref<Record<AgentId, boolean>>({
   cursor: false,
   claude: false,
   codex: false,
 });
 
-// 「打开」按钮的下拉菜单：当前展开菜单所属的 Agent（null = 全部收起）。
-const openMenuAgent = ref<AgentId | null>(null);
-function toggleOpenMenu(agent: AgentId) {
-  openMenuAgent.value = openMenuAgent.value === agent ? null : agent;
+async function refreshMode(agent: AgentId) {
+  modes.value[agent] = await agentModeStatus(agent);
+}
+
+// 一键切换到目标模式（含「未集成」）：自动卸旧装新。
+async function setMode(agent: AgentId, mode: AgentMode) {
+  if (modeBusy.value[agent] || modes.value[agent].mode === mode) return;
+  modeBusy.value[agent] = true;
+  modeMessage.value[agent] = null;
+  try {
+    await agentModeSet(agent, mode);
+    modeError.value[agent] = false;
+  } catch (e) {
+    modeMessage.value[agent] = String(e);
+    modeError.value[agent] = true;
+  } finally {
+    modeBusy.value[agent] = false;
+    await refreshMode(agent);
+  }
+}
+
+// 把当前模式的全部产物刷新到最新（不切换模式）。
+async function updateMode(agent: AgentId) {
+  modeBusy.value[agent] = true;
+  modeMessage.value[agent] = null;
+  try {
+    await agentModeUpdate(agent);
+    modeError.value[agent] = false;
+  } catch (e) {
+    modeMessage.value[agent] = String(e);
+    modeError.value[agent] = true;
+  } finally {
+    modeBusy.value[agent] = false;
+    await refreshMode(agent);
+  }
+}
+
+// 「打开」下拉菜单：当前展开菜单的 key（`${agent}:${kind}`，null = 全部收起）。
+type FileKind = "rule" | "hook" | "mcp";
+const openMenuKey = ref<string | null>(null);
+function toggleOpenMenu(key: string) {
+  openMenuKey.value = openMenuKey.value === key ? null : key;
 }
 function closeOpenMenu() {
-  openMenuAgent.value = null;
+  openMenuKey.value = null;
 }
-function chooseReveal(agent: AgentId) {
-  agentRuleReveal(agent);
+function revealFile(agent: AgentId, kind: FileKind) {
+  if (kind === "mcp") mcpConfigReveal(agent);
+  else if (kind === "hook") agentHookReveal(agent);
+  else agentRuleReveal(agent);
   closeOpenMenu();
 }
-function chooseOpen(agent: AgentId) {
-  agentRuleOpen(agent);
+function openFile(agent: AgentId, kind: FileKind) {
+  if (kind === "mcp") mcpConfigOpen(agent);
+  else if (kind === "hook") agentHookOpen(agent);
+  else agentRuleOpen(agent);
   closeOpenMenu();
 }
 
-async function refreshRule(agent: AgentId) {
-  rules.value[agent] = await agentRuleStatus(agent);
+async function loadPrompt() {
+  prompt.value = await getPrompt(promptVariant.value);
 }
 
-async function installRule(agent: AgentId) {
-  ruleBusy.value[agent] = true;
-  try {
-    ruleMessage.value[agent] = await agentRuleInstall(agent);
-    ruleError.value[agent] = false;
-  } catch (e) {
-    ruleMessage.value[agent] = String(e);
-    ruleError.value[agent] = true;
-  } finally {
-    ruleBusy.value[agent] = false;
-    await refreshRule(agent);
-  }
+function setPromptVariant(v: "cli" | "mcp") {
+  if (promptVariant.value === v) return;
+  promptVariant.value = v;
+  void loadPrompt();
 }
 
-// 更新：把已安装的旧提示词覆盖为最新版本。
-async function updateRule(agent: AgentId) {
-  ruleBusy.value[agent] = true;
-  try {
-    ruleMessage.value[agent] = await agentRuleUpdate(agent);
-    ruleError.value[agent] = false;
-  } catch (e) {
-    ruleMessage.value[agent] = String(e);
-    ruleError.value[agent] = true;
-  } finally {
-    ruleBusy.value[agent] = false;
-    await refreshRule(agent);
+// MCP 手动配置示例。直接填入当前可执行文件绝对路径（与自动集成写入一致），免用户手改；
+// 取不到时退回占位符。
+const MCP_EXE_PLACEHOLDER = "<absolute path to AskHuman>";
+const mcpExePath = ref(MCP_EXE_PLACEHOLDER);
+const mcpExampleJson = computed(
+  () => `{
+  "mcpServers": {
+    "askhuman": {
+      "command": "${mcpExePath.value}",
+      "args": ["mcp"],
+      "timeout": 86400000
+    }
   }
-}
+}`,
+);
+const mcpExampleToml = computed(
+  () => `[mcp_servers.askhuman]
+command = "${mcpExePath.value}"
+args = ["mcp"]
+startup_timeout_sec = 30
+tool_timeout_sec = 86400`,
+);
+const mcpJsonCopied = ref(false);
+const mcpTomlCopied = ref(false);
 
-async function uninstallRule(agent: AgentId) {
-  ruleBusy.value[agent] = true;
+async function copyMcpExample(kind: "json" | "toml") {
+  const text = kind === "json" ? mcpExampleJson.value : mcpExampleToml.value;
   try {
-    ruleMessage.value[agent] = await agentRuleUninstall(agent);
-    ruleError.value[agent] = false;
-  } catch (e) {
-    ruleMessage.value[agent] = String(e);
-    ruleError.value[agent] = true;
-  } finally {
-    ruleBusy.value[agent] = false;
-    await refreshRule(agent);
+    await navigator.clipboard.writeText(text);
+  } catch {
+    /* 忽略：剪贴板不可用时静默 */
   }
+  const flag = kind === "json" ? mcpJsonCopied : mcpTomlCopied;
+  flag.value = true;
+  setTimeout(() => (flag.value = false), 1500);
 }
 
 const telegramTesting = ref(false);
@@ -530,127 +559,6 @@ function stepHeight(delta: number) {
   persist();
 }
 
-async function refreshHook() {
-  hook.value = await cursorHookStatus();
-}
-
-async function installHook() {
-  try {
-    hookMessage.value = await cursorHookInstall();
-    hookError.value = false;
-  } catch (e) {
-    hookMessage.value = String(e);
-    hookError.value = true;
-  }
-  await refreshHook();
-}
-
-async function updateHook() {
-  try {
-    hookMessage.value = await cursorHookUpdate();
-    hookError.value = false;
-  } catch (e) {
-    hookMessage.value = String(e);
-    hookError.value = true;
-  }
-  await refreshHook();
-}
-
-async function uninstallHook() {
-  try {
-    hookMessage.value = await cursorHookUninstall();
-    hookError.value = false;
-  } catch (e) {
-    hookMessage.value = String(e);
-    hookError.value = true;
-  }
-  await refreshHook();
-}
-
-async function refreshClaudeHook() {
-  claudeHook.value = await claudeHookStatus();
-}
-
-async function installClaudeHook() {
-  try {
-    claudeHookMessage.value = await claudeHookInstall();
-    claudeHookError.value = false;
-  } catch (e) {
-    claudeHookMessage.value = String(e);
-    claudeHookError.value = true;
-  }
-  await refreshClaudeHook();
-}
-
-async function updateClaudeHook() {
-  try {
-    claudeHookMessage.value = await claudeHookUpdate();
-    claudeHookError.value = false;
-  } catch (e) {
-    claudeHookMessage.value = String(e);
-    claudeHookError.value = true;
-  }
-  await refreshClaudeHook();
-}
-
-async function uninstallClaudeHook() {
-  try {
-    claudeHookMessage.value = await claudeHookUninstall();
-    claudeHookError.value = false;
-  } catch (e) {
-    claudeHookMessage.value = String(e);
-    claudeHookError.value = true;
-  }
-  await refreshClaudeHook();
-}
-
-// 把两种 Hook 归一成同一视图模型，模板按 agent 复用同一段标记。
-interface HookView {
-  installed: boolean;
-  outdated: boolean;
-  configExists: boolean;
-  supported: boolean;
-  message: string | null;
-  error: boolean;
-}
-
-function hookView(agent: AgentId): HookView {
-  if (agent === "claude") {
-    return {
-      installed: claudeHook.value.installed,
-      outdated: claudeHook.value.outdated,
-      configExists: claudeHook.value.settingsExists,
-      supported: claudeHook.value.supported,
-      message: claudeHookMessage.value,
-      error: claudeHookError.value,
-    };
-  }
-  return {
-    installed: hook.value.installed,
-    outdated: hook.value.outdated,
-    configExists: hook.value.hooksJsonExists,
-    supported: hook.value.supported,
-    message: hookMessage.value,
-    error: hookError.value,
-  };
-}
-
-function installAgentHook(agent: AgentId) {
-  return agent === "claude" ? installClaudeHook() : installHook();
-}
-
-function updateAgentHook(agent: AgentId) {
-  return agent === "claude" ? updateClaudeHook() : updateHook();
-}
-
-function uninstallAgentHook(agent: AgentId) {
-  return agent === "claude" ? uninstallClaudeHook() : uninstallHook();
-}
-
-function revealAgentHook(agent: AgentId) {
-  return agent === "claude" ? claudeHookReveal() : cursorHookReveal();
-}
-
 // ===== 实验区：Agent 生命周期追踪开关 =====
 const LIFECYCLE_KINDS: AgentKind[] = ["claude", "codex", "cursor"];
 
@@ -914,16 +822,19 @@ onMounted(async () => {
       if (e.payload.language) applyLanguage(e.payload.language);
     }
   );
-  prompt.value = await getPrompt();
+  await loadPrompt();
+  try {
+    mcpExePath.value = await mcpCommandPath();
+  } catch {
+    /* 取不到路径时保留占位符 */
+  }
   historyTotal.value = await historyCount();
   try {
     soundSupport.value = await popupSoundSupport();
   } catch {
     soundSupport.value = { kind: "none", names: [] };
   }
-  await refreshHook();
-  await refreshClaudeHook();
-  await Promise.all(AGENTS.map((a) => refreshRule(a.id)));
+  await Promise.all(AGENTS.map((a) => refreshMode(a.id)));
   if (!isWindows && config.value.experimental.enabled) await refreshLifecycle();
   if (isMac) {
     try {
@@ -1562,17 +1473,36 @@ onBeforeUnmount(() => unlistenProgress?.());
       <!-- Agent -->
       <template v-else-if="activeTab === 'integration'">
         <div
-          v-if="openMenuAgent"
+          v-if="openMenuKey"
           class="menu-backdrop"
           @click="closeOpenMenu"
         ></div>
         <p class="section-intro">{{ t("settings.integration.overviewDesc") }}</p>
 
+        <!-- 手动集成：参考提示词（CLI / MCP 双版本 + MCP 配置示例） -->
         <p class="section-title">{{ t("settings.integration.manualTitle") }}</p>
         <div class="card">
           <div class="row">
             <p class="card-title">{{ t("settings.integration.promptTitle") }}</p>
             <span class="spacer"></span>
+            <div class="segmented">
+              <button
+                type="button"
+                class="seg"
+                :class="{ active: promptVariant === 'cli' }"
+                @click="setPromptVariant('cli')"
+              >
+                {{ t("settings.integration.modeCli") }}
+              </button>
+              <button
+                type="button"
+                class="seg"
+                :class="{ active: promptVariant === 'mcp' }"
+                @click="setPromptVariant('mcp')"
+              >
+                {{ t("settings.integration.modeMcp") }}
+              </button>
+            </div>
             <button class="btn" type="button" @click="copyPrompt">
               {{
                 promptCopied
@@ -1582,161 +1512,282 @@ onBeforeUnmount(() => unlistenProgress?.());
             </button>
           </div>
           <pre class="code-area">{{ prompt }}</pre>
-        </div>
 
-        <p class="section-title">{{ t("settings.integration.autoTitle") }}</p>
-        <div v-for="a in AGENTS" :key="a.id" class="card agent-card">
-          <p class="card-title">{{ a.title }}</p>
-
-          <!-- Rules -->
-          <div class="row agent-row">
-            <span class="label">{{ t("settings.integration.rulesLabel") }}</span>
-            <span class="badge">
-              <span
-                class="dot"
-                :class="rules[a.id].installed ? 'on' : 'off'"
-              ></span>
-              {{
-                rules[a.id].installed
-                  ? t("settings.integration.installed")
-                  : t("settings.integration.notInstalled")
-              }}
-            </span>
-            <span class="spacer"></span>
-            <template v-if="rules[a.id].installed">
-              <button
-                v-if="rules[a.id].outdated"
-                class="btn btn-update"
-                type="button"
-                :disabled="ruleBusy[a.id]"
-                @click="updateRule(a.id)"
-              >
-                <span class="dot-update"></span>{{ t("settings.integration.update") }}
-              </button>
+          <template v-if="promptVariant === 'mcp'">
+            <hr class="divider" />
+            <p class="card-desc agent-hint">
+              {{ t("settings.integration.mcpExampleHint") }}
+            </p>
+            <div class="row mcp-example-head">
+              <p class="label mcp-example-label">
+                {{ t("settings.integration.mcpExampleJson") }}
+              </p>
               <button
                 class="btn"
                 type="button"
-                :disabled="ruleBusy[a.id]"
-                @click="uninstallRule(a.id)"
+                @click="copyMcpExample('json')"
               >
-                {{ t("settings.integration.uninstall") }}
+                {{
+                  mcpJsonCopied
+                    ? t("settings.integration.copied")
+                    : t("settings.integration.copy")
+                }}
               </button>
-              <div class="menu-wrap">
+            </div>
+            <pre class="code-area">{{ mcpExampleJson }}</pre>
+            <p class="card-desc agent-hint">
+              {{ t("settings.integration.mcpTimeoutNote") }}
+            </p>
+            <div class="row mcp-example-head">
+              <p class="label mcp-example-label">
+                {{ t("settings.integration.mcpExampleToml") }}
+              </p>
+              <button
+                class="btn"
+                type="button"
+                @click="copyMcpExample('toml')"
+              >
+                {{
+                  mcpTomlCopied
+                    ? t("settings.integration.copied")
+                    : t("settings.integration.copy")
+                }}
+              </button>
+            </div>
+            <pre class="code-area">{{ mcpExampleToml }}</pre>
+          </template>
+        </div>
+
+        <!-- 自动集成：每个 Agent 一张卡，CLI | MCP | 未集成 三态切换 -->
+        <p class="section-title">{{ t("settings.integration.autoTitle") }}</p>
+        <div v-for="a in AGENTS" :key="a.id" class="card agent-card">
+          <div class="row agent-row">
+            <p class="card-title">{{ a.title }}</p>
+            <span class="spacer"></span>
+            <div class="segmented">
+              <button
+                type="button"
+                class="seg"
+                :class="{ active: modes[a.id].mode === 'cli' }"
+                :disabled="modeBusy[a.id]"
+                @click="setMode(a.id, 'cli')"
+              >
+                {{ t("settings.integration.modeCli")
+                }}<span v-if="a.recommended === 'cli'" class="seg-rec">{{
+                  t("settings.integration.recommendedTag")
+                }}</span>
+              </button>
+              <button
+                type="button"
+                class="seg"
+                :class="{ active: modes[a.id].mode === 'mcp' }"
+                :disabled="modeBusy[a.id]"
+                @click="setMode(a.id, 'mcp')"
+              >
+                {{ t("settings.integration.modeMcp")
+                }}<span v-if="a.recommended === 'mcp'" class="seg-rec">{{
+                  t("settings.integration.recommendedTag")
+                }}</span>
+              </button>
+              <button
+                type="button"
+                class="seg"
+                :class="{ active: modes[a.id].mode === 'none' }"
+                :disabled="modeBusy[a.id]"
+                @click="setMode(a.id, 'none')"
+              >
+                {{ t("settings.integration.modeNone") }}
+              </button>
+            </div>
+          </div>
+
+          <template v-if="modes[a.id].mode !== 'none'">
+            <hr class="divider" />
+
+            <!-- Rules（CLI / MCP 共有） -->
+            <div class="row agent-row">
+              <span class="label">{{ t("settings.integration.rulesLabel") }}</span>
+              <span class="badge">
+                <span
+                  class="dot"
+                  :class="modes[a.id].ruleInstalled ? 'on' : 'off'"
+                ></span>
+                {{
+                  modes[a.id].ruleInstalled
+                    ? t("settings.integration.installed")
+                    : t("settings.integration.notInstalled")
+                }}
+              </span>
+              <span class="spacer"></span>
+              <div v-if="modes[a.id].ruleInstalled" class="menu-wrap">
                 <button
                   class="btn"
                   type="button"
-                  @click.stop="toggleOpenMenu(a.id)"
+                  @click.stop="toggleOpenMenu(a.id + ':rule')"
                 >
                   {{ t("settings.integration.openFile") }}
                 </button>
-                <div v-if="openMenuAgent === a.id" class="menu-pop">
+                <div v-if="openMenuKey === a.id + ':rule'" class="menu-pop">
                   <button
                     class="menu-item"
                     type="button"
-                    @click="chooseReveal(a.id)"
+                    @click="revealFile(a.id, 'rule')"
                   >
                     {{ revealLabel }}
                   </button>
                   <button
                     class="menu-item"
                     type="button"
-                    @click="chooseOpen(a.id)"
+                    @click="openFile(a.id, 'rule')"
                   >
                     {{ t("settings.integration.openFileAction") }}
                   </button>
                 </div>
               </div>
+            </div>
+            <p v-if="modes[a.id].rulePath" class="agent-path">
+              {{ modes[a.id].rulePath }}
+            </p>
+            <p v-if="a.id === 'cursor'" class="card-desc agent-hint">
+              {{ t("settings.integration.cursorRulesHint") }}
+            </p>
+
+            <!-- CLI 模式：超时 Hook（Codex 无 Hook 给提示） -->
+            <template v-if="modes[a.id].mode === 'cli'">
+              <hr class="divider" />
+              <template v-if="a.hasTimeoutHook">
+                <div class="row agent-row">
+                  <span class="label">{{
+                    t("settings.integration.hookLabel")
+                  }}</span>
+                  <span class="badge">
+                    <span
+                      class="dot"
+                      :class="modes[a.id].timeoutHookInstalled ? 'on' : 'off'"
+                    ></span>
+                    {{
+                      modes[a.id].timeoutHookInstalled
+                        ? t("settings.integration.installed")
+                        : t("settings.integration.notInstalled")
+                    }}
+                  </span>
+                  <span class="spacer"></span>
+                  <div v-if="modes[a.id].timeoutHookInstalled" class="menu-wrap">
+                    <button
+                      class="btn"
+                      type="button"
+                      @click.stop="toggleOpenMenu(a.id + ':hook')"
+                    >
+                      {{ t("settings.integration.openFile") }}
+                    </button>
+                    <div v-if="openMenuKey === a.id + ':hook'" class="menu-pop">
+                      <button
+                        class="menu-item"
+                        type="button"
+                        @click="revealFile(a.id, 'hook')"
+                      >
+                        {{ revealLabel }}
+                      </button>
+                      <button
+                        class="menu-item"
+                        type="button"
+                        @click="openFile(a.id, 'hook')"
+                      >
+                        {{ t("settings.integration.openFileAction") }}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                <p class="card-desc agent-hint">
+                  {{ t("settings.integration.hookShort") }}
+                </p>
+                <p
+                  v-if="!modes[a.id].timeoutHookSupported"
+                  class="result err"
+                >
+                  {{ t("settings.integration.windowsUnsupported") }}
+                </p>
+              </template>
+              <p v-else class="card-desc agent-hint">
+                {{ t("settings.integration.codexNoHook") }}
+              </p>
             </template>
-            <button
-              v-else
-              class="btn"
-              type="button"
-              :disabled="ruleBusy[a.id]"
-              @click="installRule(a.id)"
-            >
-              {{ t("settings.integration.installRule") }}
-            </button>
-          </div>
-          <p v-if="rules[a.id].path" class="agent-path">{{ rules[a.id].path }}</p>
-          <p v-if="a.id === 'cursor'" class="card-desc agent-hint">
-            {{ t("settings.integration.cursorRulesHint") }}
-          </p>
-          <p
-            v-if="ruleMessage[a.id]"
-            class="result"
-            :class="ruleError[a.id] ? 'err' : 'ok'"
-          >
-            {{ ruleMessage[a.id] }}
-          </p>
 
-          <template v-if="a.hasHook">
-            <hr class="divider" />
+            <!-- MCP 模式：MCP 配置 -->
+            <template v-if="modes[a.id].mode === 'mcp'">
+              <hr class="divider" />
+              <div class="row agent-row">
+                <span class="label">{{
+                  t("settings.integration.mcpConfigLabel")
+                }}</span>
+                <span class="badge">
+                  <span
+                    class="dot"
+                    :class="modes[a.id].mcpConfigInstalled ? 'on' : 'off'"
+                  ></span>
+                  {{
+                    modes[a.id].mcpConfigInstalled
+                      ? t("settings.integration.installed")
+                      : t("settings.integration.notInstalled")
+                  }}
+                </span>
+                <span class="spacer"></span>
+                <div v-if="modes[a.id].mcpConfigInstalled" class="menu-wrap">
+                  <button
+                    class="btn"
+                    type="button"
+                    @click.stop="toggleOpenMenu(a.id + ':mcp')"
+                  >
+                    {{ t("settings.integration.openFile") }}
+                  </button>
+                  <div v-if="openMenuKey === a.id + ':mcp'" class="menu-pop">
+                    <button
+                      class="menu-item"
+                      type="button"
+                      @click="revealFile(a.id, 'mcp')"
+                    >
+                      {{ revealLabel }}
+                    </button>
+                    <button
+                      class="menu-item"
+                      type="button"
+                      @click="openFile(a.id, 'mcp')"
+                    >
+                      {{ t("settings.integration.openFileAction") }}
+                    </button>
+                  </div>
+                </div>
+              </div>
+              <p v-if="modes[a.id].mcpConfigPath" class="agent-path">
+                {{ modes[a.id].mcpConfigPath }}
+              </p>
+              <p class="card-desc agent-hint">
+                {{ t("settings.integration.mcpModeHint") }}
+              </p>
+            </template>
 
-            <!-- Hook -->
-            <div class="row agent-row">
-              <span class="label">{{ t("settings.integration.hookLabel") }}</span>
-              <span class="badge">
-                <span
-                  class="dot"
-                  :class="hookView(a.id).installed ? 'on' : 'off'"
-                ></span>
-                {{
-                  hookView(a.id).installed
-                    ? t("settings.integration.installed")
-                    : t("settings.integration.notInstalled")
-                }}
-              </span>
+            <!-- 更新（产物落后于最新版本时） -->
+            <div v-if="modes[a.id].needsUpdate" class="row agent-row">
               <span class="spacer"></span>
               <button
-                v-if="hookView(a.id).installed && hookView(a.id).outdated"
                 class="btn btn-update"
                 type="button"
-                :disabled="!hookView(a.id).supported"
-                @click="updateAgentHook(a.id)"
+                :disabled="modeBusy[a.id]"
+                @click="updateMode(a.id)"
               >
-                <span class="dot-update"></span>{{ t("settings.integration.update") }}
-              </button>
-              <button
-                v-if="hookView(a.id).installed"
-                class="btn"
-                type="button"
-                :disabled="!hookView(a.id).supported"
-                @click="uninstallAgentHook(a.id)"
-              >
-                {{ t("settings.integration.uninstall") }}
-              </button>
-              <button
-                v-else
-                class="btn"
-                type="button"
-                :disabled="!hookView(a.id).supported"
-                @click="installAgentHook(a.id)"
-              >
-                {{ t("settings.integration.install") }}
-              </button>
-              <button
-                class="btn"
-                type="button"
-                :disabled="!hookView(a.id).configExists"
-                @click="revealAgentHook(a.id)"
-              >
-                {{ t("settings.integration.reveal") }}
+                <span class="dot-update"></span
+                >{{ t("settings.integration.update") }}
               </button>
             </div>
-            <p class="card-desc agent-hint">
-              {{ t("settings.integration.hookShort") }}
-            </p>
-            <p v-if="!hookView(a.id).supported" class="result err">
-              {{ t("settings.integration.windowsUnsupported") }}
-            </p>
-            <p
-              v-else-if="hookView(a.id).message"
-              class="result"
-              :class="hookView(a.id).error ? 'err' : 'ok'"
-            >
-              {{ hookView(a.id).message }}
-            </p>
           </template>
+
+          <p
+            v-if="modeMessage[a.id]"
+            class="result"
+            :class="modeError[a.id] ? 'err' : 'ok'"
+          >
+            {{ modeMessage[a.id] }}
+          </p>
         </div>
       </template>
 
@@ -2404,6 +2455,63 @@ onBeforeUnmount(() => unlistenProgress?.());
 }
 .badge.muted {
   opacity: 0.55;
+}
+
+/* 三态切换：CLI | MCP | 未集成（也用于参考提示词的 CLI/MCP 切换） */
+.segmented {
+  display: inline-flex;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-subtle, rgba(127, 127, 127, 0.08));
+}
+.segmented .seg {
+  padding: 3px 12px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary, #888);
+  font-size: 12px;
+  line-height: 18px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.segmented .seg:hover:not(.active):not(:disabled) {
+  color: var(--text-primary);
+}
+.segmented .seg.active {
+  background: var(--accent);
+  color: #fff;
+}
+.segmented .seg:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+/* 推荐档位标记：小号绿色胶囊；激活态（蓝底）切白色胶囊保证对比度 */
+.segmented .seg .seg-rec {
+  margin-left: 5px;
+  padding: 0 5px;
+  border-radius: 999px;
+  font-size: 10px;
+  line-height: 15px;
+  color: var(--accent-green);
+  background: color-mix(in srgb, var(--accent-green) 16%, transparent);
+}
+.segmented .seg.active .seg-rec {
+  color: #fff;
+  background: color-mix(in srgb, #fff 28%, transparent);
+}
+.mcp-example-label {
+  margin: var(--space-2) 0 4px;
+}
+.mcp-example-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.mcp-example-head .mcp-example-label {
+  margin: var(--space-2) 0 4px;
 }
 
 /* 「更新」按钮：边框/背景同普通按钮，仅文字与前置圆点用橙色提示有更新 */

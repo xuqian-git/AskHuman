@@ -662,7 +662,9 @@ mod unix_impl {
             task.agent_session_id.clone(),
         ) {
             let cwd = Some(task.project.clone()).filter(|s| !s.trim().is_empty());
-            let changed = if auto {
+            // MCP 模式（`from_mcp`）下 `agent_session_id` 取自长驻 MCP server 的启动 env，可能过期；
+            // 故即便「自动激活」开启也**只刷新已存在的 session、绝不新建**，避免造出幽灵会话。
+            let changed = if auto && !task.from_mcp {
                 state.agents.upsert_working(kind, &sid, task.agent_pid, cwd)
             } else {
                 state.agents.touch_activity(kind, &sid, task.agent_pid)

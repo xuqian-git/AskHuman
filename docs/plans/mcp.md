@@ -44,24 +44,27 @@
 
 ```rust
 struct AskParams {
-    message: Option<String>,
+    message: Option<String>,               // 恒按 Markdown 渲染
     questions: Option<Vec<AskQuestion>>,   // 省略/空 → message 作为单问题
     files: Option<Vec<String>>,
-    #[serde(default = "default_true")] markdown: bool,
-    #[serde(default)] single: bool,
-    #[serde(default, rename = "selectOnly")] select_only: bool,
+    // 不暴露 markdown/single/selectOnly：markdown 恒 on，single/selectOnly 属脚本/纯文本场景
 }
 struct AskQuestion { question: String, options: Option<Vec<AskOption>> }
 struct AskOption { text: String, #[serde(default)] recommended: bool }
 ```
-每字段加 `#[schemars(description = "...")]`，供 `tools/list` 暴露给模型。
+每字段加 `#[schemars(description = "...")]`，供 `tools/list` 暴露给模型；`message` 描述需标注「按 Markdown 渲染」。
 
 ### 3.1.2 输出 Schema（`schemars` 派生，声明 outputSchema）
 
 基于 `cli::output::render_json` 的形态（但**去掉 `selectedIndices`**——那是脚本专用，MCP 不需要），定义可序列化/可生成 schema 的结果类型，并在 `ask` 工具上声明为 **output schema**（rmcp 经 `#[tool]` 的输出类型 / 显式 outputSchema 暴露；确切 API 实现期对照 rmcp 文档）：
 
 ```rust
-struct AskResult { action: String, channel: String, answers: Vec<AskAnswer> }
+struct AskResult {
+    action: String,
+    channel: String,
+    status: Option<String>,   // 仅 action=="cancel" 时出现：取消引导，要求重新确认
+    answers: Vec<AskAnswer>,
+}
 struct AskAnswer {
     question_index: usize,
     selected_options: Vec<String>,
@@ -71,7 +74,7 @@ struct AskAnswer {
 }
 ```
 
-> 实现：把子进程 `--output json` 的输出**反序列化进 `AskResult`**（serde 自动忽略多余的 `selectedIndices`），再以 `AskResult` 重新序列化为 `structuredContent`——既剔除了脚本字段，又保证输出与声明的 output schema 严格同构。
+> 实现：把子进程 `--output json` 的输出**反序列化进 `AskResult`**（serde 自动忽略多余的 `selectedIndices`），再以 `AskResult` 重新序列化为 `structuredContent`——既剔除了脚本字段，又保证输出与声明的 output schema 严格同构。`status` 由 CLI `--output json` 顶层产出（取消路径才有），薄壳原样透传。
 
 ### 3.2 Schema → argv
 
@@ -79,8 +82,7 @@ struct AskAnswer {
 - `message`：作为首个位置参数（仅当无 `questions` 或与 CLI 一致地共享描述）；
 - 每个 question → `-q <text>`；其 option → `-o <text>`（`recommended` 用 `-o!`）；
 - 每个 file → `-f <path>`；
-- `markdown=false` → `--no-markdown`；`single` → `--single`；`select_only` → `--select-only`；
-- 恒附 `--output json`（结构化结果，便于解析与结构化回传，见 3.4）。
+- 恒附 `--output json`（结构化结果，便于解析与结构化回传，见 3.4）。不传 `--no-markdown`/`--single`/`--select-only`（已不在 MCP 暴露）。
 
 > 与 CLI 归一化对齐：无 `questions` 时把 `message` 当单问题；有 `questions` 且也有 `message` 时 `message` 为共享描述。具体拼装复用对 `cli/args.rs` 语义的理解，必要时抽 `argv` 构造小函数 + 单测。
 
@@ -121,8 +123,8 @@ struct AskAnswer {
 
 ### 5.2 写入规范（server 名恒 `askhuman`，command = `current_exe()` 绝对路径，args = `["mcp"]`）
 - **Codex（`toml_edit`）**：在 `config.toml` upsert `[mcp_servers.askhuman]`：`command`/`args`/`startup_timeout_sec=30`/`tool_timeout_sec=86400`。保留用户其它表与注释（toml_edit 已在 lifecycle codex 集成用过）。
-- **Cursor（`jsonc-parser` CST）**：在 `mcp.json` 的 `mcpServers` 对象 upsert `askhuman`：`{ command, args }`。最小化编辑、保留注释/格式（同 `cursor_hook.rs` 手法）。
-- **Claude（`jsonc-parser` CST）**：在 `~/.claude.json` top-level `mcpServers` upsert `askhuman`（文件大、含大量项目历史 → 必须最小化编辑，绝不整写）。⚠️ 记录已知用户级加载 bug（spec §7），实现期实测；必要时加项目级 `.mcp.json` 回退（留 TODO，不在首版强求）。
+- **Cursor（`jsonc-parser` CST）**：在 `mcp.json` 的 `mcpServers` 对象 upsert `askhuman`：`{ command, args }`。最小化编辑、保留注释/格式（同 `cursor_hook.rs` 手法）。**不写 `timeout`**（Cursor 超时 ~60s 硬编码不可配）。
+- **Claude（`jsonc-parser` CST）**：在 `~/.claude.json` top-level `mcpServers` upsert `askhuman`（文件大、含大量项目历史 → 必须最小化编辑，绝不整写）：`{ command, args, timeout: 86400000 }`。**`timeout`(毫秒) 覆盖 Claude Code CLI 的 60s 默认**（MCP TS SDK `DEFAULT_REQUEST_TIMEOUT_MSEC`），否则长等待被 `-32001` 取消（`CLAUDE_TOOL_TIMEOUT_MS`，`needs_update` 一并校验）。⚠️ 已知用户级加载 bug（spec §7），实现期实测；必要时加项目级 `.mcp.json` 回退（留 TODO，不在首版强求）。
 
 ### 5.3 API（与 cursor_hook 对称）
 ```rust
@@ -221,6 +223,7 @@ pub fn set(target, mode) -> Result<()>;  // 一键切换：先卸其余模式全
 - **配置 command 路径**：写 `current_exe()` 绝对路径（客户端不继承 shell PATH）；多处安装/换新后路径可能变 → `needs_update` 以「路径 != 当前 exe」判定并提供「更新」。
 - **结构化输出 API**：rmcp 声明 output schema + 返回 `structuredContent` 同时携带 `ImageContent` 的确切写法实现期对照 rmcp 文档；`AskResult` 必须与 `render_json` 形态严格同构（单测兜底）。
 - **Codex 超时**：务必写大 `tool_timeout_sec`，否则默认 60s 仍会断；`startup_timeout_sec` 给足（server 启动很快，但留余量）。
+- **Claude 超时**：Claude Code CLI 工具调用默认 60s，必须写 `mcpServers.askhuman.timeout`(毫秒) 覆盖；优先级 per-server `timeout` > `MCP_TOOL_TIMEOUT` 环境变量 > 60s 默认。（注意：Claude **Desktop** 忽略该字段、硬编码 60s，但我们面向的是 Claude Code **CLI** agent。）
 - **互斥一致性**：`agent_mode::set` 必须先卸后装、幂等；异常中途失败要尽量保证不残留两套产物（实现期注意顺序与错误处理）。
 - **图片体积**：base64 内联大图会涨 token/上下文（Codex 已按视觉 tile 估算缓解）；保持与 CLI 一致即可，不额外压缩。
 - **平台**：`mcp` 子命令全平台可用；Windows 子进程走单进程弹窗（无 daemon、无排空概念，直接返回）。

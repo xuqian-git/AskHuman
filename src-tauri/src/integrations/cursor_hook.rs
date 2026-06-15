@@ -171,6 +171,26 @@ pub fn reveal() {
     }
 }
 
+/// 用系统默认程序打开 hooks.json。
+pub fn open() {
+    let path = paths::cursor_hooks_json();
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("open").arg(&path).spawn();
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let _ = std::process::Command::new("cmd")
+            .args(["/C", "start", ""])
+            .arg(&path)
+            .spawn();
+    }
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    {
+        let _ = std::process::Command::new("xdg-open").arg(&path).spawn();
+    }
+}
+
 // MARK: - 标记判定（serde 值，供状态查询与测试）
 
 fn entry_has_marker(entry: &Value) -> bool {

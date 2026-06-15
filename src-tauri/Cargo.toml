@@ -66,6 +66,10 @@ zip = { version = "4.2.0", default-features = false, features = ["deflate-flate2
 # 钉钉图片仅支持 jpg/png/gif/bmp(≤1MB)：把 webp 等不支持格式转码、并对超限图做缩放保护。
 # 仅启 png/jpeg/webp 解编码以控体积（heic/tiff 等无法解码时回退原图，best-effort）。
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+# 官方 Rust MCP SDK：`AskHuman mcp` 以 STDIO 暴露 `ask` 工具（server + 宏 + stdio transport）。
+# server feature 已含 macros 与 transport-io；显式列出 transport-io 以防特性裁剪。
+rmcp = { version = "1", features = ["server", "transport-io"] }
+schemars = "1"
 
 [dev-dependencies]
 tempfile = "3"

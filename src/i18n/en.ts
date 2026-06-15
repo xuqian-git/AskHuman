@@ -146,7 +146,8 @@ export default {
       copy: "Copy",
       copied: "Copied",
       rulesLabel: "Rules",
-      hookLabel: "Hook",
+      hookLabel: "Timeout hook",
+      mcpConfigLabel: "MCP config",
       reveal: "Locate",
       openFile: "Open",
       revealInFinder: "Show in Finder",
@@ -164,6 +165,20 @@ export default {
       update: "Update",
       uninstall: "Remove",
       windowsUnsupported: "This hook is not supported on Windows",
+      modeCli: "CLI",
+      modeMcp: "MCP",
+      modeNone: "Off",
+      recommendedTag: "Rec",
+      codexNoHook:
+        "Codex can't extend a CLI tool's timeout, so long waits may be cancelled. Use MCP mode for reliable long waits.",
+      mcpModeHint:
+        "Runs AskHuman as an MCP server with a long tool timeout, so the agent reliably waits for your reply.",
+      mcpExampleHint:
+        "Add the snippets below to each agent's MCP config to register AskHuman manually. The command is already filled with the current executable's absolute path — just copy and paste.",
+      mcpExampleJson: "Cursor (~/.cursor/mcp.json) / Claude Code (~/.claude.json)",
+      mcpTimeoutNote:
+        "The timeout (milliseconds) is only needed by Claude Code: it overrides Claude's 60s default so long waits aren't cancelled. Cursor ignores this field (its timeout is hardcoded and not configurable) — you can keep or remove it.",
+      mcpExampleToml: "Codex (~/.codex/config.toml)",
     },
     channels: {
       autoActivationTitle: "Session-scoped IM activation",

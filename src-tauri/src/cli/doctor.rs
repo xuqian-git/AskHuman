@@ -6,7 +6,9 @@ use super::channel_cmd;
 use crate::config::AppConfig;
 use crate::i18n::Lang;
 use crate::integrations::agent_rules::AgentTarget;
-use crate::integrations::{agent_lifecycle, agent_rules, claude_hook, cursor_hook};
+use crate::integrations::{
+    agent_lifecycle, agent_mode, agent_rules, claude_hook, cursor_hook, mcp_config,
+};
 
 const AGENTS: [&str; 3] = ["cursor", "claude", "codex"];
 
@@ -114,6 +116,11 @@ fn render_text(cfg: &AppConfig, status: &Option<crate::ipc::StatusInfo>, lang: L
             ),
             AgentTarget::Codex => cfgio::t(lang, "n/a", "—"),
         };
+        let mcp = state_label(
+            mcp_config::is_installed(target),
+            mcp_config::needs_update(target),
+            lang,
+        );
         let lc = agent_lifecycle::status(kind);
         let lifecycle = if !lc.supported {
             cfgio::t(lang, "n/a", "—")
@@ -121,12 +128,16 @@ fn render_text(cfg: &AppConfig, status: &Option<crate::ipc::StatusInfo>, lang: L
             state_label(lc.installed, lc.outdated, lang)
         };
         out.push_str(&format!(
-            "  {:<8} {}={} {}={} {}={}\n",
+            "  {:<8} {}={} {}={} {}={} {}={} {}={}\n",
             name,
+            cfgio::t(lang, "mode", "模式"),
+            mode_label(agent_mode::current(target), lang),
             cfgio::t(lang, "rules", "规则"),
             rules,
             cfgio::t(lang, "hook", "hook"),
             hook,
+            cfgio::t(lang, "mcp", "mcp"),
+            mcp,
             cfgio::t(lang, "lifecycle", "生命周期"),
             lifecycle,
         ));
@@ -142,6 +153,14 @@ fn state_label(installed: bool, needs_update: bool, lang: Lang) -> String {
         cfgio::t(lang, "stale", "需更新")
     } else {
         cfgio::t(lang, "ok", "正常")
+    }
+}
+
+fn mode_label(m: agent_mode::Mode, lang: Lang) -> String {
+    match m {
+        agent_mode::Mode::None => cfgio::t(lang, "off", "未集成"),
+        agent_mode::Mode::Cli => "cli".to_string(),
+        agent_mode::Mode::Mcp => "mcp".to_string(),
     }
 }
 
@@ -180,8 +199,10 @@ fn render_json(cfg: &AppConfig, status: &Option<crate::ipc::StatusInfo>) -> Stri
             let lc = agent_lifecycle::status(kind);
             serde_json::json!({
                 "name": name,
+                "mode": agent_mode::current(target).as_str(),
                 "rules": { "installed": agent_rules::is_installed(target), "needsUpdate": agent_rules::needs_update(target) },
                 "hook": hook.map(|(i, u)| serde_json::json!({ "installed": i, "needsUpdate": u })),
+                "mcp": { "installed": mcp_config::is_installed(target), "needsUpdate": mcp_config::needs_update(target) },
                 "lifecycle": { "installed": lc.installed, "needsUpdate": lc.outdated, "supported": lc.supported },
             })
         })

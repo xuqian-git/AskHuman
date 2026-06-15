@@ -136,11 +136,16 @@ pub fn render_json(
     request: &AskRequest,
     result: &ChannelResult,
     image_paths_per_q: &[Vec<String>],
+    lang: Lang,
 ) -> String {
     #[derive(Serialize)]
     struct JsonOutput {
         action: &'static str,
         channel: String,
+        /// 取消时的引导文案（与文本侧 `[status]` 一致）：要求模型必须重新确认，直到用户给出明确答复。
+        /// 仅在取消路径出现；正常作答时省略。
+        #[serde(skip_serializing_if = "Option::is_none")]
+        status: Option<String>,
         #[serde(skip_serializing_if = "Vec::is_empty")]
         answers: Vec<JsonAnswer>,
     }
@@ -201,9 +206,16 @@ pub fn render_json(
         }
     }
 
+    // 取消路径补上引导文案（D：MCP / 脚本据此重新确认，不把取消当默认放行）。
+    let status = match result.action {
+        ChannelAction::Cancel => Some(tr(lang, "status.cancel").to_string()),
+        ChannelAction::Send => None,
+    };
+
     let out = JsonOutput {
         action,
         channel: result.source_channel_id.clone(),
+        status,
         answers,
     };
     serde_json::to_string_pretty(&out).unwrap_or_default()
@@ -373,7 +385,7 @@ mod tests {
             answers: vec![answered(&["production"], None, &[])],
             source_channel_id: "popup".into(),
         };
-        let json = render_json(&request, &result, &[vec![]]);
+        let json = render_json(&request, &result, &[vec![]], Lang::En);
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(v["action"], "answer");
         assert_eq!(v["channel"], "popup");
@@ -383,6 +395,8 @@ mod tests {
         // 未填字段应省略。
         assert!(v["answers"][0].get("user_input").is_none());
         assert!(v["answers"][0].get("files").is_none());
+        // 正常作答不应出现 status。
+        assert!(v.get("status").is_none());
     }
 
     #[test]
@@ -397,9 +411,13 @@ mod tests {
             ],
             source_channel_id: "slack".into(),
         };
-        let v: serde_json::Value =
-            serde_json::from_str(&render_json(&request, &result, &[vec![], vec![], vec![]]))
-                .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&render_json(
+            &request,
+            &result,
+            &[vec![], vec![], vec![]],
+            Lang::En,
+        ))
+        .unwrap();
         assert_eq!(v["answers"].as_array().unwrap().len(), 1);
         assert_eq!(v["answers"][0]["question_index"], 1);
     }
@@ -416,6 +434,7 @@ mod tests {
             &request,
             &result,
             &[vec!["/tmp/a.png".into()]],
+            Lang::En,
         ))
         .unwrap();
         let files = v["answers"][0]["files"].as_array().unwrap();
@@ -429,9 +448,11 @@ mod tests {
         let request = req(vec![q(&["A"])]);
         let result = ChannelResult::cancel("popup");
         let v: serde_json::Value =
-            serde_json::from_str(&render_json(&request, &result, &[])).unwrap();
+            serde_json::from_str(&render_json(&request, &result, &[], Lang::En)).unwrap();
         assert_eq!(v["action"], "cancel");
         assert_eq!(v["channel"], "popup");
         assert!(v.get("answers").is_none());
+        // 取消时必须带引导文案，要求模型重新确认。
+        assert!(v["status"].as_str().unwrap().contains("must ask again"));
     }
 }

@@ -10,6 +10,8 @@ import type {
   FeishuWaitArgs,
   AgentId,
   AgentKind,
+  AgentMode,
+  AgentModeStatus,
   ClaudeHookStatus,
   HistoryEntry,
   HistoryInit,
@@ -62,7 +64,8 @@ export const getSettings = () => invoke<SettingsPayload>("get_settings");
 export const saveSettings = (config: AppConfig, secretActions: SecretActions) =>
   invoke<void>("save_settings", { config, secretActions });
 
-export const getPrompt = () => invoke<string>("get_prompt");
+export const getPrompt = (variant?: "cli" | "mcp") =>
+  invoke<string>("get_prompt", { variant });
 
 export const openTestPopup = () => invoke<void>("open_test_popup");
 
@@ -154,6 +157,29 @@ export const agentRuleReveal = (agent: AgentId) =>
 
 export const agentRuleOpen = (agent: AgentId) =>
   invoke<void>("agent_rule_open", { agent });
+
+export const agentModeStatus = (agent: AgentId) =>
+  invoke<AgentModeStatus>("agent_mode_status", { agent });
+
+export const agentModeSet = (agent: AgentId, mode: AgentMode) =>
+  invoke<void>("agent_mode_set", { agent, mode });
+
+export const agentModeUpdate = (agent: AgentId) =>
+  invoke<void>("agent_mode_update", { agent });
+
+export const mcpConfigReveal = (agent: AgentId) =>
+  invoke<void>("mcp_config_reveal", { agent });
+
+export const mcpConfigOpen = (agent: AgentId) =>
+  invoke<void>("mcp_config_open", { agent });
+
+export const mcpCommandPath = () => invoke<string>("mcp_command_path");
+
+export const agentHookReveal = (agent: AgentId) =>
+  invoke<void>("agent_hook_reveal", { agent });
+
+export const agentHookOpen = (agent: AgentId) =>
+  invoke<void>("agent_hook_open", { agent });
 
 export const agentLifecycleStatus = (agent: AgentKind) =>
   invoke<LifecycleStatus>("agent_lifecycle_status", { agent });

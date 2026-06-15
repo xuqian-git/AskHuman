@@ -32,6 +32,7 @@ mod macos_menu;
 mod macos_quicklook;
 #[cfg(target_os = "macos")]
 mod macos_window_anim;
+mod mcp;
 mod models;
 mod paths;
 mod project;
