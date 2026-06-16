@@ -299,6 +299,16 @@ impl AgentRegistry {
             .count()
     }
 
+    /// 空闲 agent 数（菜单栏状态展示用；不参与空闲退出判定）。
+    pub fn idle_count(&self) -> usize {
+        let inner = self.inner.lock().unwrap();
+        inner
+            .active
+            .iter()
+            .filter(|r| r.state == AgentState::Idle)
+            .count()
+    }
+
     /// 构造全量快照（解析缺失标题并缓存）。返回 agents 列表 Value（前端按类型分组、按状态排序）。
     pub fn snapshot(&self) -> Value {
         let mut inner = self.inner.lock().unwrap();

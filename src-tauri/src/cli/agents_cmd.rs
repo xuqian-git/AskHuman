@@ -50,7 +50,11 @@ fn monitor(args: &[String], lang: Lang) -> Result<(), String> {
     #[cfg(unix)]
     {
         if !json && !text && gui_available() {
-            // run_agents 进入事件循环并不会返回（-> !）。
+            // 彻底路由到统一 GUI 宿主（全局单窗，spec D3）：宿主在则聚焦/新建 Agent 窗口、不在则拉起。
+            if crate::gui_host::host_open(crate::gui_host::WindowKind::Agents, false, None).is_ok() {
+                exit(0);
+            }
+            // 兜底（宿主起不来）：本进程直接建窗。run_agents 进入事件循环并不会返回（-> !）。
             crate::app::run_agents(crate::config::AppConfig::load_without_secrets());
         }
         match cfgio::block_on(crate::client::request_agents_snapshot()) {

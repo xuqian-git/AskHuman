@@ -155,7 +155,12 @@ export interface GeneralConfig {
   historyLimit: number;
   /** Built-in popup sound. Empty disables it; macOS stores a name, Linux uses a toggle. */
   popupSound: string;
+  /** Menu bar / tray status icon mode (off/active/always). Desktop only (macOS/Linux). */
+  menuBarIcon: MenuBarIconMode;
 }
+
+/** Menu bar / tray status icon mode (mirrors Rust `MenuBarIconMode`). */
+export type MenuBarIconMode = "off" | "active" | "always";
 
 /** Popup sound support: kind="named" with names, "toggle", or "none". */
 export interface PopupSoundSupport {

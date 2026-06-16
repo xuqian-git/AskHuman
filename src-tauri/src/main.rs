@@ -19,6 +19,7 @@ mod config;
 mod daemon;
 mod dingtalk;
 mod feishu;
+mod gui_host;
 mod history;
 mod hooks;
 mod i18n;

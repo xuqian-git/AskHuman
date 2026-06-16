@@ -278,12 +278,57 @@ pub fn agents_start_subscription(app: AppHandle) {
     let _ = app;
 }
 
-/// 从弹窗导航栏打开独立历史窗口（同进程内创建，默认当前项目）。
+/// 把「打开窗口」请求路由到统一 GUI 宿主（spec D3）：宿主在则聚焦/新建（全局单窗），不在则拉起。
+/// 失败兜底：在当前（弹窗）进程内直接建窗，保证按钮始终能开窗。整个过程在后台线程进行，
+/// 避免阻塞调用方（弹窗 UI 线程）——`host_open` 在宿主冷启动时可能耗时上百毫秒到数秒。
+#[cfg(unix)]
+fn route_open_window(
+    app: AppHandle,
+    kind: crate::gui_host::WindowKind,
+    all: bool,
+    project: Option<String>,
+) {
+    use crate::gui_host::WindowKind;
+    std::thread::spawn(move || {
+        if crate::gui_host::host_open(kind, all, project.clone()).is_ok() {
+            return;
+        }
+        let fallback = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            let cfg = AppConfig::load_without_secrets();
+            // 兜底在弹窗进程内建窗：沿用进程内置顶判定（有弹窗且置顶 → 浮于其上）。
+            let pin = crate::app::popup_pin(&fallback, &cfg);
+            let _ = match kind {
+                WindowKind::Settings => crate::app::create_settings_window(&fallback, &cfg, pin),
+                WindowKind::History => {
+                    crate::app::create_history_window(&fallback, &cfg, all, project.as_deref(), pin)
+                }
+                WindowKind::Agents => crate::app::create_agents_window(&fallback, &cfg),
+            };
+        });
+    });
+}
+
+/// 从弹窗导航栏打开独立历史窗口：路由到统一宿主（全局单窗），默认过滤到弹窗所属项目。
 #[tauri::command]
-pub fn open_history(app: AppHandle) -> Result<(), String> {
-    // History window only needs general (theme); skip keychain via load_without_secrets().
-    crate::app::create_history_window(&app, &AppConfig::load_without_secrets(), false)
-        .map_err(|e| e.to_string())
+pub fn open_history(app: AppHandle, state: State<AppState>) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        route_open_window(
+            app,
+            crate::gui_host::WindowKind::History,
+            false,
+            Some(state.project.clone()),
+        );
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = &state;
+        let cfg = AppConfig::load_without_secrets();
+        let pin = crate::app::popup_pin(&app, &cfg);
+        crate::app::create_history_window(&app, &cfg, false, None, pin).map_err(|e| e.to_string())
+    }
 }
 
 /// 读取历史记录：`all` 为 true 时返回全部项目，否则按 `project`（缺省空串）过滤；按时间倒序。
@@ -560,10 +605,20 @@ pub(crate) fn apply_theme_to_windows(app: &AppHandle, theme: &str) {
 /// 从弹窗导航栏打开设置窗口（同进程内创建，不影响弹窗等待）。
 #[tauri::command]
 pub fn open_settings(app: AppHandle) -> Result<(), String> {
-    // Settings window only needs general (theme) to build; the page fetches secret presence via
-    // get_settings() separately. Skip keychain here.
-    crate::app::create_settings_window(&app, &AppConfig::load_without_secrets())
-        .map_err(|e| e.to_string())
+    #[cfg(unix)]
+    {
+        // 路由到统一宿主（全局单窗）；宿主不可用时回退到本进程内建窗。
+        route_open_window(app, crate::gui_host::WindowKind::Settings, false, None);
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        // Settings window only needs general (theme) to build; the page fetches secret presence via
+        // get_settings() separately. Skip keychain here.
+        let cfg = AppConfig::load_without_secrets();
+        let pin = crate::app::popup_pin(&app, &cfg);
+        crate::app::create_settings_window(&app, &cfg, pin).map_err(|e| e.to_string())
+    }
 }
 
 /// 实时切换弹窗背景效果（玻璃/模糊）到所有已打开窗口（仅 macOS 26+ 真正切换）。

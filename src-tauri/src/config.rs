@@ -70,6 +70,19 @@ impl PopupAnimation {
     }
 }
 
+/// 菜单栏 / 托盘状态图标的三态开关（spec D4）。仅 macOS/Linux 桌面有意义；Windows 隐藏。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum MenuBarIconMode {
+    /// 不显示图标（GUI 宿主仍按需承载窗口以保证全局单窗）。默认。
+    #[default]
+    Off,
+    /// 活动时显示：daemon 运行时显示图标；daemon 空闲退出且无窗口后图标消失、宿主退出。
+    Active,
+    /// 一直显示：图标常驻（宿主开机自启 + 常驻）；daemon 退出后图标转「停止」态。
+    Always,
+}
+
 /// 弹窗背景效果。仅 macOS 26+ 可在二者间切换；旧系统无论选哪个都呈现模糊。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -100,6 +113,8 @@ pub struct GeneralConfig {
     /// macOS stores a sound name, such as "Glass"; Linux treats any non-empty
     /// value as enabled and plays a freedesktop notification sound.
     pub popup_sound: String,
+    /// 菜单栏 / 托盘状态图标模式（off/active/always，spec D4）。默认 off（旧用户零行为变化）。
+    pub menu_bar_icon: MenuBarIconMode,
 }
 
 /// 回复历史默认保留条数。
@@ -119,6 +134,7 @@ impl Default for GeneralConfig {
             speech_shortcut: "cmd+d".to_string(),
             history_limit: default_history_limit(),
             popup_sound: String::new(),
+            menu_bar_icon: MenuBarIconMode::Off,
         }
     }
 }
@@ -469,6 +485,7 @@ mod tests {
         assert_eq!(c.general.speech_language, "auto");
         assert_eq!(c.general.speech_shortcut, "cmd+d");
         assert_eq!(c.general.history_limit, 200);
+        assert_eq!(c.general.menu_bar_icon, MenuBarIconMode::Off);
         assert!(c.channels.popup.enabled);
         assert_eq!(c.channels.popup.width, 560.0);
         assert_eq!(c.channels.popup.height, 620.0);
@@ -539,6 +556,25 @@ mod tests {
         assert_eq!(loaded.general.theme, ThemeMode::Dark);
         assert!(loaded.channels.telegram.enabled);
         assert_eq!(loaded.channels.telegram.chat_id, "12345");
+    }
+
+    #[test]
+    fn menu_bar_icon_parses_lowercase_and_defaults() {
+        // 显式值解析（lowercase serde）。
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(&path, r#"{"general":{"menuBarIcon":"always"}}"#).unwrap();
+        let c = AppConfig::load_from(&path);
+        assert_eq!(c.general.menu_bar_icon, MenuBarIconMode::Always);
+        // 缺字段 → 默认 Off（旧配置零影响）。
+        std::fs::write(&path, r#"{"general":{"theme":"dark"}}"#).unwrap();
+        let c = AppConfig::load_from(&path);
+        assert_eq!(c.general.menu_bar_icon, MenuBarIconMode::Off);
+        // 未知值 → 整个 general 解码失败时走容错默认（这里仅 general 内未知枚举值，
+        // serde 会使该字段报错→因 #[serde(default)] 于 GeneralConfig 级别整体回退默认）。
+        std::fs::write(&path, r#"{"general":{"menuBarIcon":"bogus"}}"#).unwrap();
+        let c = AppConfig::load_from(&path);
+        assert_eq!(c.general.menu_bar_icon, MenuBarIconMode::Off);
     }
 
     #[cfg(unix)]

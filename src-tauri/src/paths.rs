@@ -63,6 +63,17 @@ pub fn auto_channel_file() -> PathBuf {
     state_dir().join("auto-channel.json")
 }
 
+/// GUI 宿主进程的 IPC socket `~/.askhuman/gui-host.sock`（与 daemon socket 解耦，
+/// 使 daemon 未运行时也能打开设置/历史窗口，spec D13）。
+pub fn gui_host_sock() -> PathBuf {
+    config_dir().join("gui-host.sock")
+}
+
+/// GUI 宿主进程的单实例锁 `~/.askhuman/gui-host.lock`（flock，保证全局唯一宿主）。
+pub fn gui_host_lock() -> PathBuf {
+    config_dir().join("gui-host.lock")
+}
+
 /// Cursor 目录 `~/.cursor`。
 pub fn cursor_dir() -> PathBuf {
     home().join(".cursor")

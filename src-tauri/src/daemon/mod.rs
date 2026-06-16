@@ -166,6 +166,9 @@ mod unix_impl {
         agents: Arc<AgentRegistry>,
         /// 状态窗口订阅者的发送端列表（变化 / 心跳时推 `AgentsState`）。
         agent_subs: Mutex<Vec<tokio::sync::mpsc::UnboundedSender<ServerMsg>>>,
+        /// 菜单栏宿主订阅者的发送端列表（变化 / 心跳时推 `TrayState`）。
+        /// **非保活**：该列表不参与空闲退出判定（见 `handle_tray_sub`），图标不得续命 daemon。
+        tray_subs: Mutex<Vec<tokio::sync::mpsc::UnboundedSender<ServerMsg>>>,
         /// 「IM 会话期自动激活」当前活跃槽（持久化、跨重启保留，仅由入站消息改变）。
         active_channel: Mutex<Option<String>>,
         /// 已启动入站监听器的渠道 id 集合（避免重复 spawn；连接断开时移除以便重建）。
@@ -234,6 +237,7 @@ mod unix_impl {
                 };
                 if changed {
                     state.registry.broadcast_to_guis(update_state_msg(state));
+                    broadcast_tray_state(state);
                 }
             }
             Err(e) => log(&format!("update check failed: {}", e)),
@@ -256,6 +260,7 @@ mod unix_impl {
             crate::update::state::set_pending(true);
             log("binary on disk changed; marking update pending");
             state.registry.broadcast_to_guis(update_state_msg(state));
+            broadcast_tray_state(state);
             // 主动换新（与 Hello 分支同一套语义，spec self-update）：盘上二进制已变即触发排空换新，
             // 不再被动等下一次握手。长连接（状态窗口订阅 / 工作中 agent）只保活、自身不再发 Hello，
             // 若无人握手旧 daemon 会一直停在旧二进制——这里主动 begin_drain 补上：有在途 ASK 则排空到
@@ -316,6 +321,7 @@ mod unix_impl {
             update: Mutex::new(init_update_snapshot()),
             agents: Arc::new(AgentRegistry::load()),
             agent_subs: Mutex::new(Vec::new()),
+            tray_subs: Mutex::new(Vec::new()),
             active_channel: Mutex::new(crate::autochannel::load_active()),
             inbound_listeners: Mutex::new(HashSet::new()),
         });
@@ -406,9 +412,16 @@ mod unix_impl {
                     if changed || has_agent_subs(&state) {
                         broadcast_agents_state(&state);
                     }
+                    // 菜单栏宿主在线时周期刷新（uptime / IM 连接等随时间变化的字段）。
+                    if has_tray_subs(&state) {
+                        broadcast_tray_state(&state);
+                    }
                 }
             });
         }
+
+        // 菜单栏图标已开启则兜底拉起 GUI 宿主（单实例去重；always 主要靠登录项）。
+        maybe_spawn_gui_host(&state.config.lock().unwrap().clone());
 
         loop {
             tokio::select! {
@@ -450,6 +463,8 @@ mod unix_impl {
         Gui(String),
         /// 状态窗口订阅：接管连接，持续推送 agent 快照。
         AgentsSub,
+        /// 菜单栏宿主订阅：接管连接，持续推送 `TrayState`（非保活）。
+        TraySub,
         Closed,
     }
 
@@ -463,6 +478,7 @@ mod unix_impl {
             Control::Submit(task) => handle_submit(task, reader, w, &state).await,
             Control::Gui(token) => handle_gui(token, reader, w, &state).await,
             Control::AgentsSub => handle_agents_sub(reader, w, &state).await,
+            Control::TraySub => handle_tray_sub(reader, w, &state).await,
             Control::Closed => {}
         }
 
@@ -596,6 +612,8 @@ mod unix_impl {
                 }
                 // 状态窗口订阅：接管连接持续推送。
                 ClientMsg::AgentsSubscribe => return Control::AgentsSub,
+                // 菜单栏宿主订阅：接管连接持续推送 TrayState（非保活）。
+                ClientMsg::TraySubscribe => return Control::TraySub,
                 // 自动识别（Q6）：就地处理（可能阻塞至多 120s 等用户发码），完成后回结果继续循环。
                 // 排空期拒绝（兜底；正常情况下客户端在 Hello 即被挡住而回退进程内识别）。
                 ClientMsg::Detect(req) => {
@@ -622,6 +640,7 @@ mod unix_impl {
         if state.draining.swap(true, Ordering::SeqCst) {
             return; // 已在排空。
         }
+        broadcast_tray_state(state);
         let state = state.clone();
         tokio::spawn(async move {
             loop {
@@ -701,9 +720,13 @@ mod unix_impl {
             state.registry.remove(&request_id);
             return;
         }
+        // 在途请求数 +1：刷新菜单栏状态（待答数 / 图标圆点）。
+        broadcast_tray_state(state);
 
         // 挂接可用的 IM 渠道（钉钉/…）到本请求的协调器，与弹窗并行抢答。
         let im_attached = attach_im_channels(&entry, state, &mut w, lang).await;
+        // IM 长连接可能在此刚建立，刷新菜单栏「已连 IM」。
+        broadcast_tray_state(state);
 
         // spawn GUI Helper（独立短命进程，带一次性 token）。
         let popup_ok = match spawn_gui_helper(&entry.token) {
@@ -795,6 +818,8 @@ mod unix_impl {
         }
         entry.cancel.notify_waiters();
         state.registry.remove(&request_id);
+        // 在途请求数 -1：刷新菜单栏状态。
+        broadcast_tray_state(state);
         log(&format!("request {} done", request_id));
     }
 
@@ -887,6 +912,7 @@ mod unix_impl {
     }
 
     /// 向所有状态窗口推送一次 agent 全量快照（顺带剔除已断开的发送端）。
+    /// agent 忙闲变化也影响菜单栏状态，故顺带刷新 TrayState。
     fn broadcast_agents_state(state: &Arc<ServerState>) {
         let msg = ServerMsg::AgentsState {
             agents: state.agents.snapshot(),
@@ -894,6 +920,7 @@ mod unix_impl {
         if let Ok(mut subs) = state.agent_subs.lock() {
             subs.retain(|tx| tx.send(msg.clone()).is_ok());
         }
+        broadcast_tray_state(state);
     }
 
     /// 状态窗口订阅连接：注册发送端、立即推一次快照，随后专用写任务持续推送；读端用于探测断开。
@@ -925,6 +952,112 @@ mod unix_impl {
         }
         drop(tx);
         let _ = writer.await;
+    }
+
+    /// 是否有菜单栏宿主在订阅 TrayState。
+    fn has_tray_subs(state: &Arc<ServerState>) -> bool {
+        state
+            .tray_subs
+            .lock()
+            .map(|s| !s.is_empty())
+            .unwrap_or(false)
+    }
+
+    /// 构造一帧整合的 `TrayState`（含 IM 连接、agent 忙闲、更新态）。需 await（读 tokio Mutex）。
+    async fn build_tray_state(state: &Arc<ServerState>) -> ServerMsg {
+        let u = { state.update.lock().unwrap().clone() };
+        ServerMsg::TrayState {
+            running: true,
+            version: version(),
+            uptime_secs: now_secs().saturating_sub(state.started_at),
+            active_requests: state.registry.active_count(),
+            im_connections: active_im_connections(state).await,
+            draining: state.draining.load(Ordering::SeqCst),
+            agents_working: state.agents.working_count(),
+            agents_idle: state.agents.idle_count(),
+            update_available: u.available,
+            update_latest: u.latest_version,
+            pending: u.pending,
+        }
+    }
+
+    /// 向所有菜单栏宿主推送一帧 `TrayState`（顺带剔除已断开的发送端）。
+    /// 因 `build_tray_state` 需 await 而本函数被大量同步调用点引用，故 spawn 一个任务异步构造并发送；
+    /// 无订阅者时早退（廉价）。
+    fn broadcast_tray_state(state: &Arc<ServerState>) {
+        if !has_tray_subs(state) {
+            return;
+        }
+        let state = state.clone();
+        tokio::spawn(async move {
+            let msg = build_tray_state(&state).await;
+            if let Ok(mut subs) = state.tray_subs.lock() {
+                subs.retain(|tx| tx.send(msg.clone()).is_ok());
+            }
+        });
+    }
+
+    /// 菜单栏宿主订阅连接（spec D10/D13）：注册发送端、立即推一帧，随后持续推送；读端探测断开。
+    ///
+    /// **关键：非保活。** `handle_conn` 在连接建立时对 `active` 自增了 1；这里立即 `fetch_sub(1)`
+    /// 抵消，连接存续期间净占用为 0，再于退出前 `fetch_add(1)` 让 `handle_conn` 末尾的 `fetch_sub(1)`
+    /// 归零。配合空闲判定不引用 `tray_subs`，从而图标订阅**不会**把 daemon 续命（spec D5 核心）。
+    async fn handle_tray_sub(mut reader: Reader, w: OwnedWriteHalf, state: &Arc<ServerState>) {
+        state.active.fetch_sub(1, Ordering::SeqCst);
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<ServerMsg>();
+        let mut w = w;
+        let writer = tokio::spawn(async move {
+            while let Some(msg) = rx.recv().await {
+                if ipc::write_msg(&mut w, &msg).await.is_err() {
+                    break;
+                }
+            }
+        });
+        // 注册订阅端并立即推一帧当前状态。
+        if let Ok(mut subs) = state.tray_subs.lock() {
+            subs.push(tx.clone());
+        }
+        let _ = tx.send(build_tray_state(state).await);
+
+        // 读端仅用于探测断开；宿主正常不发消息。
+        wait_cli_eof(&mut reader).await;
+
+        // 收尾：从订阅表移除本端，结束写任务，恢复 active 计数。
+        if let Ok(mut subs) = state.tray_subs.lock() {
+            subs.retain(|s| !s.same_channel(&tx));
+        }
+        drop(tx);
+        let _ = writer.await;
+        state.active.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// 菜单栏图标是否在当前平台被支持（用于 daemon 决定是否兜底拉起宿主）。
+    /// macOS 恒真；Linux 仅在存在图形会话时（保守门控，headless 不拉宿主）。
+    fn tray_supported() -> bool {
+        #[cfg(target_os = "macos")]
+        {
+            true
+        }
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            std::env::var_os("DISPLAY").is_some() || std::env::var_os("WAYLAND_DISPLAY").is_some()
+        }
+    }
+
+    /// 按配置兜底拉起 GUI 宿主（spec D14）：`menu_bar_icon != off` 且托盘可用时尝试 spawn。
+    /// 单实例由宿主自身 flock 去重；always 主要靠登录项，此处为兜底。失败静默。
+    fn maybe_spawn_gui_host(config: &AppConfig) {
+        use crate::config::MenuBarIconMode;
+        if config.general.menu_bar_icon == MenuBarIconMode::Off {
+            return;
+        }
+        if !tray_supported() {
+            return;
+        }
+        if let Err(e) = crate::gui_host::spawn_detached() {
+            log(&format!("failed to spawn gui-host: {}", e));
+        }
     }
 
     /// 等待 CLI 提交连接断开（提交后 CLI 不再发消息；任何 EOF/错误即视为断开）。
@@ -1867,6 +2000,8 @@ mod unix_impl {
         state
             .registry
             .broadcast_to_guis(ServerMsg::ConfigChanged { general });
+        // 配置变更可能刚开启菜单栏图标 → 兜底拉起宿主（宿主自身也监听配置，二者均幂等）。
+        maybe_spawn_gui_host(&new);
         log("config reloaded");
     }
 

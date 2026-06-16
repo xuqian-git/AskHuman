@@ -336,6 +336,11 @@
   margin: 0 0 var(--space-3);
   line-height: 1.5;
 }
+/* Breathing room when a description sits right under a control row
+   (e.g. the menu-bar icon segmented control and its hint). */
+.row + .card-desc {
+  margin-top: var(--space-2);
+}
 .row {
   display: flex;
   align-items: center;

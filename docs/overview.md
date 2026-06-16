@@ -29,7 +29,7 @@
 - **AskHuman CLI**（多、短命）：解析 argv（`-f` 在此解析为绝对路径、缺失即退 1）→ 提交 `AskRequest` 给 Daemon → 流式取回结果打到 stdout → 按终态映射退出码 0/1/3。
 - **AskHuman Daemon**（每用户 1 个、常驻、**无 GUI**，`askhuman daemon run`）：独占持有所有 IM 长连接（钉钉/飞书/Telegram/Slack，各仅一条、常热）+ Router（按 `out_track_id`/`user_id` 分发）+ 每请求一套 Coordinator/Preemption；跑 `emit_result` 集中落盘；监听 `config.json` 实时重载/重连；管理生命周期（flock 单实例 / 二进制指纹换新 / 空闲退出 / drain）。
 - **GUI Helper**（每弹窗 1 个、短命，`askhuman --popup`）：由 Daemon spawn（带一次性 token），自己主线程跑 Tauri 弹窗，收题目发答案、答完即退。把 GUI 留在独立进程，正是为让 Daemon 不必跑 AppKit/主线程。
-- 设置窗口 `askhuman --settings` 仍是独立 GUI 进程，不经 Daemon；改设置后 Daemon 经 config watch 感知生效。
+- **统一 GUI 宿主**（每用户至多 1 个、长命，`askhuman --gui-host`，**Unix only**）：单实例（`gui-host.lock` flock）承载**菜单栏/托盘状态图标** + **设置/历史/Agent 三类窗口**（全局每类唯一）。所有打开窗口的入口（CLI `--settings`/`--history`/`agents monitor`、弹窗导航「设置/历史」按钮、托盘菜单）都**彻底路由**到宿主（自有 `gui-host.sock`），宿主在则聚焦/新建、不在则被拉起。详见下文「菜单栏图标 + 统一 GUI 宿主」节。
 
 **关键约定**：单一可执行文件（busybox 风格多角色，`daemon run/start/stop/restart/status/logs` + 隐藏 `--popup`）；IPC 用 NDJSON over Unix socket / Windows named pipe（用户私有）；CLI↔Daemon 与 Daemon↔GUI 复用同一套任务契约；落盘 `~/.askhuman/`：`daemon.sock`/`daemon.lock`/`daemon.json`/`daemon.log`。既有契约全部不变（stdout 洁净、结果区块、退出码、配置容错、向后兼容）。
 
@@ -72,8 +72,9 @@ AskHuman/
       macos_quicklook.rs     (macOS) 原生 QLPreviewPanel 预览 + 文件系统图标(file_icon_png_base64)
       macos_menu.rs          (macOS) -f 附件原生右键菜单（NSMenu，Finder 风格）
       cli/
-        mod.rs               argv 分发（--help/--version/--settings/--history[--all]/--agent-help/--scripting-help/
-                             daemon/agents/channel/config/doctor/mcp/无参/提问；提问请求据
+        mod.rs               argv 分发（--help/--version/--settings/--history[--all]/--gui-host/--agent-help/
+                             --scripting-help/daemon/agents/channel/config/doctor/mcp/无参/提问；Unix 下
+                             --settings/--history 彻底路由到 GUI 宿主[host_open]、失败兜底本进程建窗；提问请求据
                              `ASKHUMAN_FROM_MCP` 置 `from_mcp`，让 daemon 对 MCP 来源仅刷新活动、不新建会话）
         args.rs              提问参数解析（message / --stdin / -o / -o!(推荐选项) / --no-markdown / -f /
                              --single(单选) / --select-only(严格，须每题有选项) / --output <text|json>）
@@ -94,6 +95,7 @@ AskHuman/
                              FileAttachment / ChannelResult(含 files) / ImageAttachment / ChannelAction / source_name()
       config.rs              AppConfig 读写 ~/.askhuman/config.json（原子写、容错解码；旧 ~/.humaninloop 自动回退读取）
       paths.rs               home/config/temp 路径 + history.jsonl/history.lock + cursor_mcp_json/claude_json（MCP 配置）
+                             + gui_host_sock/gui_host_lock（统一 GUI 宿主自有 socket / 单实例锁）
       project.rs             项目识别：从 cwd 向上找首个 .git 根，回退 cwd（回复历史归类）
       history.rs             回复历史存储：~/.askhuman/history.jsonl（每行一条 JSON，追加写 + 文件锁裁剪/清空）
       prompts.rs             参考提示词：`cli_reference()`（CLI 版，含 24h 超时/`--agent-help` 等 shell 指引）+
@@ -109,7 +111,12 @@ AskHuman/
       app/
         mod.rs               Tauri 运行时：窗口创建 + 毛玻璃(apply_surface) + 主题 +
                              stderr 静默 + emit_result(输出并退出) + create_settings_window /
-                             create_history_window / run_history
+                             create_history_window(可带项目过滤) / create_agents_window / run_history /
+                             run_gui_host(View::GuiHost) + on_menu_event/exit 钩子路由到 gui_host
+        gui_host.rs          (Unix) 统一 GUI 宿主运行时：托盘三态图标 + 菜单(状态/操作) + 自有 IPC 监听
+                             (OpenWindow→主线程建/聚焦窗口) + daemon 状态订阅(非保活，驱动图标/菜单) +
+                             窗口期续命连接(spec D5) + 配置热更新(模式/语言→建移图标·装卸登录项·切活动策略) +
+                             二进制换新(无窗口时切新版) + 单实例锁 + macOS accessory 活动策略
         coordinator.rs       抢答协调器：首个终态结果生效，cancel 其余，输出后退出；
                              在唯一汇聚点旁路写入回复历史（发送 + 用户主动取消）
       channels/
@@ -178,9 +185,13 @@ AskHuman/
                              `needs_update` / `set`(卸非目标产物→装目标，幂等) / `update`(刷当前模式) /
                              uninstall_all。lifecycle hook 与三态正交。`agent_rules::classify_body` 对漂移正文
                              用结构信号（是否含 `Shell/Bash`）判 CLI/MCP，提示词改版仍稳定归类
-      ipc/                   IPC 协议：mod.rs(消息类型，含 ServerMsg::UpdateState) / codec.rs(NDJSON) / transport.rs(Unix socket)
+      ipc/                   IPC 协议：mod.rs(消息类型，含 ServerMsg::UpdateState/TrayState、ClientMsg::TraySubscribe) /
+                             codec.rs(NDJSON) / transport.rs(Unix socket)
+      gui_host/              (Unix) 宿主自有 IPC（与 daemon 解耦）：mod.rs(HostMsg{OpenWindow{kind,all,project}/Ping/
+                             Shutdown} + gui-host.sock bind/connect + host_open 客户端[连不上则 spawn 宿主再轮询] + 单实例)
       client/                (Unix) CLI 作为 Daemon 客户端：连接/握手/自启/submit/detect/status/stop
-      daemon/                (Unix) 常驻 Daemon：mod.rs(分发/serve + 自更新后台检查/广播/指纹感知) /
+      daemon/                (Unix) 常驻 Daemon：mod.rs(分发/serve + 自更新后台检查/广播/指纹感知 +
+                             handle_tray_sub[非保活]/broadcast_tray_state/maybe_spawn_gui_host) /
                              lifecycle.rs(单实例·指纹·空闲) / spawn.rs(脱离启动) /
                              request.rs(请求登记表·Coordinator·GUI token·broadcast_to_guis) /
                              config_watch.rs(notify 监听 config.json + 去抖)
@@ -195,6 +206,8 @@ AskHuman/
                              poll_liveness、ttl_sweep[1h 兜底]、ended 最多留 10 条、persist/load
                              ~/.askhuman/agents.json、snapshot 推送) /
                              report.rs(隐藏子命令 `__agent-hook <agent> <event>` 上报器：去重+解析+发 daemon)
+      integrations/login_item.rs (Unix) 开机自启登录项（仅「一直显示」模式）：macOS LaunchAgent plist /
+                             Linux autostart .desktop 的 install/uninstall/is_installed/needs_update/ensure_installed
 
   cliff.toml                 git-cliff 配置：Conventional Commits → 面向用户的 release notes
   docs/release-notes/        每版本可选覆盖文件 v<版本>.md（存在即用其内容，否则 git-cliff 生成）
@@ -205,7 +218,7 @@ AskHuman/
 1. `main.rs` → `cli::dispatch()`：**在创建任何窗口前**按 argv 分发。
    - 无参 → stderr 报错 + 通用 `help_text`（直接 `AskHuman` 即见全部用法），exit 1；参数解析失败 / 未知选项 → stderr 报错 + 提问导向 `agent_help_text`，exit 1；`--help`/`--version` → 输出，exit 0。
    - 上述命令的 stdout 文本统一经 `cli::print_line` 输出：对 BrokenPipe（读端提前关闭，如 `AskHuman --agent-help | head`）静默忽略、不 panic。否则 Rust 默认忽略 SIGPIPE → `println!` 写失败 panic → release `panic=abort` 会以退出码 134 退出。
-   - `--settings` → `app::run_settings(config)`；`--history [--all]` → `app::run_history(project, all, config)`（默认当前项目）；其余 → 解析为 `AskRequest` → `app::run_ask(request, config)`。
+   - `--settings`/`--history [--all]`（Unix）→ 经 `gui_host::host_open` 路由到统一 GUI 宿主（全局单窗，失败兜底 `run_settings`/`run_history`）；非 Unix → 直接 `app::run_settings`/`run_history`。`--gui-host` → `app::run_gui_host`（宿主角色）。其余 → 解析为 `AskRequest` → `app::run_ask`。
 2. `app::launch`（提问模式）：启动 Tauri（`generate_context!` 每二进制仅一次），在 setup 中：
    - 建 `Coordinator`；按配置创建弹窗（注册 `PopupChannel`）并/或启动会话型渠道（`TelegramChannel` / `DingTalkChannel` / `FeishuChannel` / `SlackChannel`，各为 tokio 任务）。
    - 弹窗禁用且无可用会话型渠道时兜底开弹窗；GUI 不可用但有会话型渠道时走 headless 并行。
@@ -216,8 +229,8 @@ AskHuman/
 - 弹窗：`popup_init`（取请求+主题+是否置顶+来源名）、`submit_popup`、`cancel_popup`
 - 附件：`open_path`、`preview_attachments` / `close_preview`(QLPreviewPanel)、`read_image_data_url`(缩略图)、
   `file_icon_data_url`(系统图标，拖出预览)、`show_attachment_menu`(原生右键菜单)
-- 设置：`get_settings`、`save_settings`、`get_prompt`(可选 `variant`=cli|mcp)、`set_theme`、`update_theme`(持久化+应用)、`open_settings`(同进程建设置窗)、`popup_sound_support`(平台支持 named/toggle/none + 音名列表)、`play_popup_sound`(试听)
-- 历史：`open_history`(弹窗→建历史窗)、`history_init`(主题+当前项目)、`get_history`(按项目/全部，倒序)、`get_history_projects`(项目下拉)、`history_count`、`trim_history`(立即裁剪)、`clear_history`(按项目/全部清空)
+- 设置：`get_settings`、`save_settings`、`get_prompt`(可选 `variant`=cli|mcp)、`set_theme`、`update_theme`(持久化+应用)、`open_settings`(Unix 路由到 GUI 宿主、否则同进程建设置窗)、`popup_sound_support`(平台支持 named/toggle/none + 音名列表)、`play_popup_sound`(试听)
+- 历史：`open_history`(Unix 路由到 GUI 宿主、带弹窗项目过滤；否则同进程建历史窗)、`history_init`(主题+当前项目)、`get_history`(按项目/全部，倒序)、`get_history_projects`(项目下拉)、`history_count`、`trim_history`(立即裁剪)、`clear_history`(按项目/全部清空)
 - Cursor Hook：`cursor_hook_status`（含 outdated）/ `install` / `update` / `uninstall` / `reveal`
 - Claude Code Hook：`claude_hook_status`（含 outdated）/ `install` / `update` / `uninstall` / `reveal`
 - Agent 全局 Rules：`agent_rule_status`（含 outdated）/ `install` / `update` / `uninstall` / `reveal` / `open`（入参 `agent`：cursor/claude/codex）
@@ -245,7 +258,7 @@ AskHuman/
 
 ## 配置
 
-`~/.askhuman/config.json`（新位置缺失时自动回退旧 `~/.humaninloop/config.json`）：`general`(theme, language, alwaysOnTop, appearAnimation, windowEffect, speechLanguage, speechShortcut, historyLimit, popupSound) + `channels.popup`(enabled,width,height,rememberSize) + `channels.telegram`(enabled,botToken,chatId,apiBaseUrl) + `channels.dingding`(enabled,clientId,clientSecret,userId,cardTemplateId,…) + `channels.feishu`(enabled,appId,appSecret,openId,baseUrl) + `channels.slack`(enabled,botToken,appToken,userId) + `channels.autoActivation`(「IM 会话期自动激活」开关，默认 false) + `experimental`(enabled，实验性功能开关，默认 false)。缺字段走默认、未知字段忽略。用户向配置说明见 `docs/wiki/`。
+`~/.askhuman/config.json`（新位置缺失时自动回退旧 `~/.humaninloop/config.json`）：`general`(theme, language, alwaysOnTop, appearAnimation, windowEffect, speechLanguage, speechShortcut, historyLimit, popupSound, menuBarIcon[off|active|always，默认 off，仅 macOS/Linux 桌面，见「菜单栏图标」节]) + `channels.popup`(enabled,width,height,rememberSize) + `channels.telegram`(enabled,botToken,chatId,apiBaseUrl) + `channels.dingding`(enabled,clientId,clientSecret,userId,cardTemplateId,…) + `channels.feishu`(enabled,appId,appSecret,openId,baseUrl) + `channels.slack`(enabled,botToken,appToken,userId) + `channels.autoActivation`(「IM 会话期自动激活」开关，默认 false) + `experimental`(enabled，实验性功能开关，默认 false)。缺字段走默认、未知字段忽略。用户向配置说明见 `docs/wiki/`。
 
 > IM 会话期自动激活（`channels.autoActivation`，默认关；设计 `docs/plans/im-channel-activation.md`）：开关关＝旧「每次提问全发所有启用 IM」。开关开（UI 入口在「实验」Tab，随 `experimental.enabled` 显露；旁注「建议同时开启生命周期追踪以提高状态识别准确性」）后：daemon 在 agent **工作中**才连各启用 IM、默认只监听入站；同一时刻只有「活跃槽」对应的 IM 收提问卡片；在某 IM 发 `/here`（或 `/这里`）把该渠道设为活跃槽，发 `/status`（或 `/状态`）回工作中/空闲 agent 文本，普通消息＝切到此渠道（文本不当答案）。**凡把活跃槽切到某 IM 都会把所有在途未答补推过去**（补推＝渠道激活的固有行为，统一在 `set_active_channel`、与触发方式无关：`/here`/普通消息/`/status` 切槽/作答切槽均同）。活跃槽**持久化**于 `~/.askhuman/state/auto-channel.json`、跨重启保留、仅由入站消息改变。忙/闲/结束判定复用 Agent 生命周期追踪（`agents/registry.rs`）；无 turn hook 时「首次提问起算工作中」（仅开关开时兜底登记）。代码：`autochannel.rs` + `daemon/mod.rs`（`ensure_inbound_listeners`/`spawn_listener` 通用循环 + `handle_inbound`/`backfill_inflight`/`attach_im_channels` 门控）。命令处理一份实现，各渠道只提供传输原语（连 Router + 原始消息观察者 + 抽取 `(发送者,文本)` + 期望发送者 + `build_im_channel`/`reply_channel_text` 分支）。**四家（飞书/钉钉/Slack/Telegram）均已接入并真机端到端验证 OK**。**入站消费随「工作中」起、随守护进程退出而止**：复用 lifecycle turn hook，turn-start/提问即 `ensure_inbound_listeners`（按 `working_count>0` 自门控、与开关无关），使 `/here`、`/status` 在工作期间随时可用；不做主动断连，连接随守护进程空闲退出而释放（D18）。**`/status` 与总开关独立**（开关只管切槽/发卡）；`/here` 在关态静默忽略。Telegram 自由文字既是答案又被观察者收到，斜线前缀文字仅当命令、不路由到在途卡片。**活跃槽统一含 "popup"**：在哪个渠道说话/作答就更新为哪个（弹窗作答 → "popup"，后续只弹窗），切槽时给旧 IM 发反激活提示（点明切到了哪个渠道）、把在途未答补推给新 IM、由调用方给新渠道发激活回执——逻辑统一在 `set_active_channel` 一处（返回 `(是否切换, 补推数)`；`winner_channel_id` 提供作答渠道）。
 
@@ -278,8 +291,25 @@ AskHuman/
 - **事件采集**：hook 命令统一为 `AskHuman __agent-hook <agent> <event>`（`agents/report.rs`）；四类事件 session-start/turn-start/turn-end/session-end（Codex 无 session-end）。reporter 按 env 判真实运行家族做**去重**（Cursor 兼容加载 `~/.claude` 致每事件双触发，env 有 `CURSOR_*`→只认 cursor、跳过 claude 那次），并 walk 进程树定位真实 agent pid、解析 session_id（env 专用变量优先，回退 stdin JSON）。
 - **状态推导**：daemon 内 `AgentRegistry`（`agents/registry.rs`）以 **session_id 为身份**、pid 仅判存活。turn-start/turn-end 切「工作中/空闲」；**进程存活轮询（1s）是权威的「已结束」判据**（关窗/`kill -9` 时事件全丢，靠它）；1h TTL 兜底（任何 hook 事件或 `AskHuman` 提问会刷新**对应 session** 的活动时间）。ended 最多留 10 条。状态持久化 `~/.askhuman/agents.json`，daemon 换新/重启后重载并 kill-0 复核。
 - **闲退守卫**：仅「工作中」agent 或有状态窗口连接才阻止 daemon 闲时退出（空闲 agent 不算）；**graceful drain（版本换新）不受存活 agent 影响**。
-- **状态窗口**：`AskHuman agents monitor`（原 `agents status` 改名，spec `cli-config.md` D8）→ 有 GUI 时 daemon 拉起 GUI（`app::run_agents` + `create_agents_window`），订阅 `ServerMsg::AgentsState` 推送、前端 `AgentsView.vue` 跨项目按类型分组、状态优先排序、相对时间动态刷新；headless 或 `--json`/`--text` → 取一次 `AgentsState` 快照（`client::request_agents_snapshot`）渲染文本/JSON（`agents_cmd.rs`）。
+- **状态窗口**：`AskHuman agents monitor`（原 `agents status` 改名，spec `cli-config.md` D8）→ 有 GUI 时**路由到统一 GUI 宿主**（`gui_host::host_open(Agents)`，全局单窗；兜底 `app::run_agents` + `create_agents_window`），订阅 `ServerMsg::AgentsState` 推送、前端 `AgentsView.vue` 跨项目按类型分组、状态优先排序、相对时间动态刷新；headless 或 `--json`/`--text` → 取一次 `AgentsState` 快照（`client::request_agents_snapshot`）渲染文本/JSON（`agents_cmd.rs`）。
 - **IPC 增量**：`TaskRequest` 加 `agent_kind/agent_session_id/agent_pid`（提问顺带刷新活动）；`ClientMsg::AgentEvent`/`AgentsSubscribe`；`ServerMsg::AgentsState`。
+
+## 菜单栏图标 + 统一 GUI 宿主（Unix；macOS/Linux 桌面）
+
+> 需求 `docs/specs/menu-bar-tray.md` + 计划 `docs/plans/menu-bar-tray.md`。在菜单栏/托盘显示守护进程状态图标并快速打开设置/历史/Agent；同时把所有 GUI 窗口收拢进**单实例宿主进程**保证全局每类窗口唯一。Windows 不支持（设置项隐藏、`--gui-host` 报错退出）。
+
+- **统一 GUI 宿主进程 `AskHuman --gui-host`**（`app/gui_host.rs`，`cli/mod.rs` 隐藏角色）：单实例（`gui-host.lock` flock，重复 spawn 的多余进程抢锁失败即退）。承载托盘图标 + 设置/历史/Agent 三类窗口（每类全局唯一，复用既有 `create_*_window` 的「聚焦或新建」）。macOS 有图标时设 `NSApplicationActivationPolicyAccessory`（不占 Dock/Cmd-Tab）、off 模式设 Regular（窗口正常入坞）。
+- **彻底路由（spec D3）**：CLI `--settings`/`--history`/`agents monitor`、弹窗导航「设置/历史」按钮（`commands::open_settings`/`open_history`）一律经宿主自有 IPC（`gui_host::host_open` → `gui-host.sock`）打开窗口；宿主不在则先 `spawn_detached` 再轮询重连，全程失败才回退「本进程直接建窗」兜底。历史窗口的项目过滤经 `OpenWindow{project}` 字段传给宿主（宿主自身 cwd 无意义），URL 携带 `project`/`projectName`，`HistoryView.vue` 优先用之。
+- **设置/历史浮于置顶弹窗之上**：`create_settings_window`/`create_history_window` 接受显式 `pin_above_popup`（与置顶弹窗同级，新建获焦后压在其上）。弹窗与设置/历史**同进程**时由 `app::popup_pin`（本进程有 popup 且弹窗置顶）判定；统一 GUI 宿主里弹窗在**另一进程**（daemon 拉起的助手），宿主无 popup 窗口可探测，改据 daemon 在途请求数判定（`always_on_top && TrayState.active_requests>0`），并对新建窗口显式 `set_focus`（宿主是 accessory app，不会自动激活）。
+- **三态开关 `general.menuBarIcon`**（`config.rs::MenuBarIconMode`，默认 `off`）：
+  - `off`：不显示图标（宿主仍按需被拉起以承载窗口，末窗关闭后退出）。
+  - `active`：daemon 运行时显示图标；daemon 空闲退出且无窗口后图标消失、宿主退出。
+  - `always`：图标常驻（**装登录项开机自启**，`integrations/login_item.rs`）；daemon 停止时图标转「停止」态、宿主不退。
+- **图标三态资源**（`src-tauri/icons/tray/tray-{idle,active,stopped}.png`，48×36 即 @2x）：机器人头造型，idle（睁眼）/ active（机器人+「?」角标，有待答）/ stopped（睡眼+月牙，always 模式 daemon 停）。纯黑 ink + alpha（「?」与月牙缺口为透明洞）；统一单色——macOS 当作模板图（随明暗菜单栏自动反色），Linux 原样显示。三态画布等大、头部同位，托盘按 18pt 高缩放（保宽高比）故三态头大小一致、切换不跳动。这三张**最终图标由设计稿手工合成**；`scripts/gen_tray_icons.py` 仅负责从 `icons/tray/source.png` 抠出透明素材（`icons/tray/cutouts/`）供手工合成，**不会覆盖**最终图标。
+- **生命周期解耦（spec D5）**：托盘状态订阅（`ClientMsg::TraySubscribe` → daemon `handle_tray_sub`）是**非保活**的——daemon `handle_tray_sub` 进入时 `active.fetch_sub(1)`、退出时 `fetch_add(1)` 抵消连接计数，且空闲判定不引用 `tray_subs`，故图标本身**不**给 daemon 续命。而宿主里**任一窗口打开期间**会另开一条普通连接（`keepalive_task`）计入 daemon `active` 给其续命，末窗关闭即断、daemon 重新计时空闲退出。宿主退出判定：有窗口绝不退；off=末窗关即退；active=daemon 断连且无窗口即退；always=常驻。
+- **daemon ↔ 宿主**：daemon 启动 / 配置变更时按 `menu_bar_icon != off` 且托盘可用兜底 `maybe_spawn_gui_host`（单实例去重）；`ServerMsg::TrayState`（running/version/uptime/active_requests/im_connections/draining/agents_working/agents_idle/update_available/update_latest/pending）连上即推一帧、状态变化即推（提问受理、agent 忙闲、IM 连接、更新态、drain 等触发 `broadcast_tray_state`）。
+- **托盘菜单（spec D7）**：状态区（运行/停止、版本、运行时长、待答数、agent 忙闲、IM 连接、更新可用/待生效，均 disabled）+ 操作区（设置/历史/Agent、检查更新、应用更新[复用 self-update，drain 生效不打断]、启动/重启/停止 daemon）。语言/状态变化即重建菜单（宿主监听 `config.json` 实时切换）。
+- **宿主二进制换新（spec D11）**：宿主长命，故周期（15s）比对自身盘上二进制指纹，变化且无窗口时释放锁后自我 `spawn_detached` re-exec（macOS always 模式交 launchd KeepAlive 重启）；新实例捕获新指纹，不会循环。
 
 ## CLI 配置与 Agent 集成（headless / 无 GUI）
 

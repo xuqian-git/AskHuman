@@ -142,13 +142,22 @@ let unlistenUpdated: UnlistenFn | null = null;
 onMounted(async () => {
   const init = await historyInit();
   applyTheme(init.theme);
-  currentProject.value = init.project;
-  currentProjectName.value = init.projectName;
   projects.value = await getHistoryProjects();
 
   const params = new URLSearchParams(window.location.search);
-  // Default to current project; `--history --all` opens with everything.
-  selected.value = params.get("all") === "1" ? ALL : init.project;
+  // When opened via the unified GUI host, the caller's project is carried in the URL
+  // (the host process's own project is meaningless). Prefer it over historyInit()'s.
+  const urlProject = params.get("project");
+  if (urlProject !== null) {
+    currentProject.value = urlProject;
+    currentProjectName.value = params.get("projectName") ?? urlProject;
+  } else {
+    currentProject.value = init.project;
+    currentProjectName.value = init.projectName;
+  }
+
+  // Default to the current project; `--history --all` opens with everything.
+  selected.value = params.get("all") === "1" ? ALL : currentProject.value;
   await reload();
 
   // Live update: the backend watches history.jsonl and emits this when a new

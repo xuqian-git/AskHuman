@@ -1,0 +1,206 @@
+//! 开机自启「登录项」集成（spec D12，仅 `menuBarIcon = always`）。
+//!
+//! 切到 always 时安装登录项，使「重启系统后 / daemon 没起时」菜单栏图标也一直在；切走时移除。
+//! - macOS：`~/Library/LaunchAgents/<id>.guihost.plist`（`RunAtLoad` + `KeepAlive`）。
+//!   `KeepAlive` 兼作宿主二进制换新的守护——宿主退出后由 launchd 用**新二进制**重启。
+//! - Linux：`~/.config/autostart/askhuman-guihost.desktop`（`X-GNOME-Autostart-enabled=true`）。
+//!
+//! 全部 best-effort：写文件 + 尽力 load/unload；失败不阻塞模式切换（图标仍可由 daemon 兜底拉起）。
+
+#![cfg(unix)]
+
+use std::path::PathBuf;
+
+/// LaunchAgent / autostart 的标识（基于 bundle id 派生）。
+const LABEL: &str = "com.naituw.humaninloop.guihost";
+
+/// 当前可执行文件路径（解析失败回退到字面名，仅用于内容生成）。
+fn current_exe() -> String {
+    std::env::current_exe()
+        .ok()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "AskHuman".to_string())
+}
+
+// ===== macOS：LaunchAgent plist =====
+
+#[cfg(target_os = "macos")]
+fn item_path() -> PathBuf {
+    crate::paths::home()
+        .join("Library")
+        .join("LaunchAgents")
+        .join(format!("{LABEL}.plist"))
+}
+
+/// 生成 LaunchAgent plist 内容（纯函数，便于单测）。
+#[cfg(target_os = "macos")]
+fn plist_contents(exe: &str) -> String {
+    // 简单 XML 转义（路径理论上可能含 & < >）。
+    let exe = exe
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;");
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{LABEL}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{exe}</string>
+        <string>--gui-host</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ProcessType</key>
+    <string>Interactive</string>
+</dict>
+</plist>
+"#
+    )
+}
+
+#[cfg(target_os = "macos")]
+pub fn install() -> std::io::Result<()> {
+    let path = item_path();
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(&path, plist_contents(&current_exe()))?;
+    // 先 bootout 旧实例（忽略错误），再 bootstrap 新的；失败回退 load -w。best-effort。
+    let domain = format!("gui/{}", unsafe { libc::getuid() });
+    let _ = run("launchctl", &["bootout", &domain, &path.display().to_string()]);
+    if run("launchctl", &["bootstrap", &domain, &path.display().to_string()]).is_err() {
+        let _ = run("launchctl", &["load", "-w", &path.display().to_string()]);
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+pub fn uninstall() -> std::io::Result<()> {
+    let path = item_path();
+    let domain = format!("gui/{}", unsafe { libc::getuid() });
+    let _ = run("launchctl", &["bootout", &domain, &path.display().to_string()]);
+    let _ = run("launchctl", &["unload", &path.display().to_string()]);
+    if path.exists() {
+        std::fs::remove_file(&path)?;
+    }
+    Ok(())
+}
+
+// ===== Linux：autostart .desktop =====
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn item_path() -> PathBuf {
+    crate::paths::home()
+        .join(".config")
+        .join("autostart")
+        .join("askhuman-guihost.desktop")
+}
+
+/// 生成 autostart .desktop 内容（纯函数，便于单测）。
+#[cfg(all(unix, not(target_os = "macos")))]
+fn desktop_contents(exe: &str) -> String {
+    format!(
+        "[Desktop Entry]\n\
+Type=Application\n\
+Name=AskHuman Menu Bar\n\
+Exec=\"{exe}\" --gui-host\n\
+X-GNOME-Autostart-enabled=true\n\
+NoDisplay=true\n\
+Terminal=false\n"
+    )
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+pub fn install() -> std::io::Result<()> {
+    let path = item_path();
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(&path, desktop_contents(&current_exe()))
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+pub fn uninstall() -> std::io::Result<()> {
+    let path = item_path();
+    if path.exists() {
+        std::fs::remove_file(&path)?;
+    }
+    Ok(())
+}
+
+// ===== 共用 =====
+
+/// 登录项是否已安装。
+pub fn is_installed() -> bool {
+    item_path().exists()
+}
+
+/// 已安装但记录的 exe 路径与当前不一致（移动安装位置后需刷新）。
+pub fn needs_update() -> bool {
+    if !is_installed() {
+        return false;
+    }
+    let exe = current_exe();
+    match std::fs::read_to_string(item_path()) {
+        Ok(text) => !text.contains(&exe),
+        Err(_) => true,
+    }
+}
+
+/// 确保登录项与当前 exe 一致：缺失或需更新则（重）安装。幂等。
+pub fn ensure_installed() -> std::io::Result<()> {
+    if !is_installed() || needs_update() {
+        install()
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn run(cmd: &str, args: &[&str]) -> std::io::Result<()> {
+    use std::process::{Command, Stdio};
+    let status = Command::new(cmd)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!("{cmd} exited with {status}"),
+        ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn plist_has_args_and_keepalive() {
+        let p = plist_contents("/usr/local/bin/AskHuman");
+        assert!(p.contains("<string>/usr/local/bin/AskHuman</string>"));
+        assert!(p.contains("<string>--gui-host</string>"));
+        assert!(p.contains("<key>KeepAlive</key>"));
+        assert!(p.contains("<key>RunAtLoad</key>"));
+        assert!(p.contains(LABEL));
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn desktop_has_exec_and_autostart() {
+        let d = desktop_contents("/home/u/.local/bin/AskHuman");
+        assert!(d.contains("Exec=\"/home/u/.local/bin/AskHuman\" --gui-host"));
+        assert!(d.contains("X-GNOME-Autostart-enabled=true"));
+    }
+}

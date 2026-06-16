@@ -183,15 +183,22 @@ pub struct LockGuard {
 /// - `Err`：其它 IO 错误。
 #[cfg(unix)]
 pub fn acquire_lock() -> std::io::Result<Option<LockGuard>> {
+    acquire_lock_at(&lock_path())
+}
+
+/// 在指定路径上尝试获取 flock 单实例锁（非阻塞）。供 daemon（`daemon.lock`）与
+/// GUI 宿主（`gui-host.lock`）共用。返回值语义同 `acquire_lock`。
+#[cfg(unix)]
+pub fn acquire_lock_at(path: &Path) -> std::io::Result<Option<LockGuard>> {
     use std::os::unix::io::AsRawFd;
-    if let Some(dir) = lock_path().parent() {
+    if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
     let file = std::fs::OpenOptions::new()
         .create(true)
         .write(true)
         .truncate(false)
-        .open(lock_path())?;
+        .open(path)?;
     let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
     if rc != 0 {
         let err = std::io::Error::last_os_error();

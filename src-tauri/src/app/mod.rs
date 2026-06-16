@@ -1,6 +1,8 @@
 //! Tauri 运行时：创建窗口、并行启动 Channel、汇集结果并退出。
 
 pub mod coordinator;
+#[cfg(unix)]
+pub mod gui_host;
 
 use crate::channels::dingding::DingTalkChannel;
 use crate::channels::feishu::FeishuChannel;
@@ -46,6 +48,9 @@ enum View {
     /// Agent 生命周期状态窗口（实验性功能，spec D13）：订阅 daemon 推送，动态更新。
     #[cfg(unix)]
     Agents,
+    /// 统一 GUI 宿主（菜单栏托盘 + 各窗口单实例，spec D2）：无初始窗口，常驻事件循环。
+    #[cfg(unix)]
+    GuiHost,
 }
 
 /// GUI Helper 模式下，弹窗 ↔ Daemon 的 IPC 接线（由 `run_gui_helper` 建好后传入 `launch`）。
@@ -496,6 +501,29 @@ pub fn run_agents(config: AppConfig) -> ! {
     std::process::exit(0);
 }
 
+/// 统一 GUI 宿主入口（`AskHuman --gui-host`，spec D2）：单实例托盘 + 设置/历史/Agent 窗口宿主。
+///
+/// 抢宿主单实例锁失败（已有宿主）即直接退出；成功则进入 Tauri 事件循环常驻，
+/// 经自有 IPC 接收开窗请求、订阅 daemon 状态驱动托盘、监听配置热更新。
+#[cfg(unix)]
+pub fn run_gui_host(config: AppConfig) -> ! {
+    if !gui_host::acquire_singleton() {
+        // 已有宿主在跑（或锁被占）：本进程多余，直接退出。
+        std::process::exit(0);
+    }
+    let state = AppState {
+        request: AskRequest::new(crate::models::MessagePrompt::default(), Vec::new(), false),
+        config,
+        source: crate::models::source_name(),
+        project: crate::project::detect(),
+    };
+    if let Err(e) = launch(state, View::GuiHost, None) {
+        stderr_redirect::eprintln_real(&format!("askhuman gui-host failed: {}", e));
+        std::process::exit(1);
+    }
+    std::process::exit(0);
+}
+
 /// GUI Helper 模式入口（`AskHuman --popup --endpoint <sock> --token <tok>`，由 Daemon 拉起）。
 ///
 /// 流程：连 Daemon → 出示一次性 token → 收 `show` → 本进程主线程跑 Tauri 弹窗；
@@ -589,8 +617,13 @@ fn launch(state: AppState, view: View, popup_ipc: Option<PopupIpc>) -> tauri::Re
     // Helper：恒开弹窗。单进程：弹窗禁用且无可用消息渠道时兜底仍开弹窗，避免进程挂起。
     let show_popup = is_helper || state.config.channels.popup.enabled || !messaging_active;
     // 提问模式下抑制「关窗即退出」：收尾 / 等待 Daemon 收尾时弹窗会先关，需留进程主动退出。
-    // 设置模式不抑制，关窗即正常退出。
-    let prevent_autoexit = matches!(view, View::Popup);
+    // 设置模式不抑制，关窗即正常退出。宿主模式恒抑制（窗口全关后是否退出由宿主自身判定）。
+    let prevent_autoexit = match view {
+        View::Popup => true,
+        #[cfg(unix)]
+        View::GuiHost => true,
+        _ => false,
+    };
 
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_drag::init())
@@ -710,6 +743,25 @@ fn launch(state: AppState, view: View, popup_ipc: Option<PopupIpc>) -> tauri::Re
                 }
                 _ => {}
             }
+            // 宿主模式：托管窗口销毁后重算窗口计数（驱动 daemon 续命与宿主退出判定）。
+            #[cfg(unix)]
+            if matches!(event, WindowEvent::Destroyed)
+                && matches!(window.label(), "settings" | "history" | "agents")
+            {
+                let app = window.app_handle();
+                if app.try_state::<gui_host::HostState>().is_some() {
+                    gui_host::recount_windows(app);
+                }
+            }
+        })
+        .on_menu_event(|app, event| {
+            // 托盘菜单事件仅在宿主进程内有 HostState；其余进程无托盘、忽略。
+            #[cfg(unix)]
+            if app.try_state::<gui_host::HostState>().is_some() {
+                gui_host::on_menu_event(app, event.id().as_ref());
+            }
+            #[cfg(not(unix))]
+            let _ = (app, event);
         })
         .setup(move |app| {
             // 裸二进制运行时 Dock 不会用 bundle 图标；运行时显式覆盖（仅影响本进程）。
@@ -857,12 +909,19 @@ fn launch(state: AppState, view: View, popup_ipc: Option<PopupIpc>) -> tauri::Re
                 View::Settings => {
                     // Window build only needs general (theme); get_settings() reads secrets later.
                     let config = AppConfig::load_without_secrets();
-                    create_settings_window(app, &config)?;
+                    // 独立 --settings 进程内无弹窗 → 不置顶（popup_pin 恒 false）。
+                    create_settings_window(app, &config, popup_pin(app, &config))?;
                 }
                 View::History { all } => {
                     // History window only needs general (theme); skip keychain.
                     let config = AppConfig::load_without_secrets();
-                    create_history_window(app, &config, all)?;
+                    // 进程内默认项目（AppState.project = CLI 探测的当前项目）→ 传 None 沿用。
+                    create_history_window(app, &config, all, None, popup_pin(app, &config))?;
+                }
+                #[cfg(unix)]
+                View::GuiHost => {
+                    let config = AppConfig::load_without_secrets();
+                    gui_host::setup(app, &config)?;
                 }
                 #[cfg(unix)]
                 View::Agents => {
@@ -881,6 +940,20 @@ fn launch(state: AppState, view: View, popup_ipc: Option<PopupIpc>) -> tauri::Re
     // 构建成功后、进入事件循环前静默系统噪音日志（如 macOS 的 TSM CapsLock 日志）。
     stderr_redirect::silence();
     app.run(move |app_handle, event| {
+        // 宿主模式：托管窗口全关也不退出（是否退出由宿主自身 evaluate_exit 经 app.exit() 决定）。
+        // 故拦下一切「关窗触发」的退出（code=None）；宿主主动退出走 app.exit(code) → code=Some 放行。
+        #[cfg(unix)]
+        if app_handle
+            .try_state::<gui_host::HostState>()
+            .is_some()
+        {
+            if let RunEvent::ExitRequested { code, api, .. } = &event {
+                if code.is_none() {
+                    api.prevent_exit();
+                }
+            }
+            return;
+        }
         // 提问模式：拦下关窗触发的退出（code=None），由协调器 / GUI Helper 逻辑决定真正退出时机。
         // 设置模式不拦，关窗即正常退出。
         if prevent_autoexit {
@@ -1128,8 +1201,26 @@ pub(crate) fn set_runtime_window_effect<R: tauri::Runtime>(
 ) {
 }
 
+/// 「设置/历史窗口是否应浮于置顶弹窗之上」的进程内判定：当前进程内存在 popup 窗口且弹窗置顶。
+/// 仅适用于弹窗助手进程（弹窗与设置/历史同进程）；统一 GUI 宿主里弹窗在另一进程，需另行判定。
+pub(crate) fn popup_pin<R, M>(manager: &M, config: &AppConfig) -> bool
+where
+    R: tauri::Runtime,
+    M: Manager<R>,
+{
+    manager.get_webview_window("popup").is_some() && config.general.always_on_top
+}
+
 /// 创建（或聚焦已存在的）设置窗口。供 `--settings` 启动与弹窗导航栏共用。
-pub(crate) fn create_settings_window<R, M>(manager: &M, config: &AppConfig) -> tauri::Result<()>
+///
+/// `pin_above_popup`：是否让窗口与置顶弹窗同级，确保新建获焦后浮于弹窗之上。由调用方判定——
+/// 弹窗进程内建窗时为「本进程有 popup 且弹窗置顶」（见 [`popup_pin`]）；统一 GUI 宿主里
+/// 弹窗在**另一进程**，宿主据 daemon 在途请求数 + 置顶配置自行判定（见 `app::gui_host`）。
+pub(crate) fn create_settings_window<R, M>(
+    manager: &M,
+    config: &AppConfig,
+    pin_above_popup: bool,
+) -> tauri::Result<()>
 where
     R: tauri::Runtime,
     M: Manager<R>,
@@ -1141,10 +1232,6 @@ where
     let theme = window_theme(config);
     let lang = Lang::resolve(&config.general.language);
     let window_bg = background_for(resolved_theme(config));
-    // 弹窗置顶时，设置窗口与其同级，确保新建并获焦后显示在置顶弹窗之上；
-    // 无弹窗（独立 --settings 启动）或弹窗未置顶时保持普通层级，不上浮于其它 App。
-    let pin_above_popup =
-        manager.get_webview_window("popup").is_some() && config.general.always_on_top;
     let builder = WebviewWindowBuilder::new(
         manager,
         "settings",
@@ -1169,10 +1256,15 @@ where
 
 /// 创建（或聚焦已存在的）独立历史窗口。供 `--history` 启动与弹窗导航栏共用。
 /// `all` 为 true 时窗口默认展示全部项目（经 URL 参数传递）。
+/// `project_override` 为 Some 时（宿主路由场景）携带调用方项目 key，让窗口默认过滤到该项目，
+/// 而非宿主进程自身的 `AppState.project`（宿主 cwd 通常无意义）；None 则沿用进程内默认。
+/// `pin_above_popup`：是否浮于置顶弹窗之上（语义同 [`create_settings_window`]，由调用方判定）。
 pub(crate) fn create_history_window<R, M>(
     manager: &M,
     config: &AppConfig,
     all: bool,
+    project_override: Option<&str>,
+    pin_above_popup: bool,
 ) -> tauri::Result<()>
 where
     R: tauri::Runtime,
@@ -1185,14 +1277,18 @@ where
     let theme = window_theme(config);
     let lang = Lang::resolve(&config.general.language);
     let window_bg = background_for(resolved_theme(config));
-    // 弹窗置顶时历史窗口同级，确保显示在置顶弹窗之上（与设置窗口一致）。
-    let pin_above_popup =
-        manager.get_webview_window("popup").is_some() && config.general.always_on_top;
-    let url = if all {
-        "index.html?view=history&all=1"
-    } else {
-        "index.html?view=history"
-    };
+    // 基础 URL；`all` 与 `project` 经 query 传给前端（前端 onMounted 据此设默认过滤）。
+    let mut url = String::from("index.html?view=history");
+    if all {
+        url.push_str("&all=1");
+    }
+    if let Some(key) = project_override {
+        // 携带项目 key + 预算好的展示名（避免前端再算 basename）；空串=未知项目（仍带参数以区分「未传」）。
+        url.push_str("&project=");
+        url.push_str(&urlencode(key));
+        url.push_str("&projectName=");
+        url.push_str(&urlencode(&crate::project::display_name(key)));
+    }
     let builder = WebviewWindowBuilder::new(manager, "history", WebviewUrl::App(url.into()))
         .title(i18n::tr(lang, "title.history"))
         .inner_size(820.0, 600.0)
@@ -1259,6 +1355,21 @@ fn watch_history_file<R: tauri::Runtime>(window: tauri::WebviewWindow<R>) {
             }
         }
     });
+}
+
+/// 最小化的 URL query 值百分号编码：仅保留 RFC 3986 unreserved 字符（A-Za-z0-9-._~），
+/// 其余字节按 UTF-8 逐字节编码为 `%XX`。用于把项目 key / 名称安全地拼进历史窗口 URL。
+fn urlencode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for &b in s.as_bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{:02X}", b)),
+        }
+    }
+    out
 }
 
 /// 创建（或聚焦已存在的）Agent 状态窗口（实验性功能 spec D13）。

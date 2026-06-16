@@ -63,6 +63,7 @@ import type {
   AgentModeStatus,
   AppConfig,
   LifecycleStatus,
+  MenuBarIconMode,
   PopupAnimation,
   PopupSoundSupport,
   SecretAction,
@@ -403,6 +404,14 @@ onBeforeUnmount(() => unlistenSettings?.());
 async function changeAnimation(anim: PopupAnimation) {
   if (!config.value) return;
   config.value.general.appearAnimation = anim;
+  await persist();
+}
+
+// 菜单栏图标三态（off/active/always）。仅持久化；宿主进程监听 config 变化后自行
+// 建/移图标、装/卸登录项（见 src-tauri app::gui_host）。
+async function changeMenuBarIcon(mode: MenuBarIconMode) {
+  if (!config.value) return;
+  config.value.general.menuBarIcon = mode;
   await persist();
 }
 
@@ -1158,6 +1167,36 @@ onBeforeUnmount(() => unlistenProgress?.());
               {{ t("common.test") }}
             </button>
           </div>
+        </div>
+
+        <!-- 菜单栏图标（仅 macOS/Linux 桌面；Windows 不支持） -->
+        <div v-if="!isWindows" class="card">
+          <p class="card-title">{{ t("settings.menuBar.title") }}</p>
+          <div class="row">
+            <span class="label">{{ t("settings.menuBar.icon") }}</span>
+            <span class="spacer"></span>
+            <div class="segmented">
+              <button
+                :class="{ active: config.general.menuBarIcon === 'off' }"
+                @click="changeMenuBarIcon('off')"
+              >
+                {{ t("settings.menuBar.off") }}
+              </button>
+              <button
+                :class="{ active: config.general.menuBarIcon === 'active' }"
+                @click="changeMenuBarIcon('active')"
+              >
+                {{ t("settings.menuBar.active") }}
+              </button>
+              <button
+                :class="{ active: config.general.menuBarIcon === 'always' }"
+                @click="changeMenuBarIcon('always')"
+              >
+                {{ t("settings.menuBar.always") }}
+              </button>
+            </div>
+          </div>
+          <p class="card-desc">{{ t("settings.menuBar.hint") }}</p>
         </div>
 
         <!-- 回复历史 -->

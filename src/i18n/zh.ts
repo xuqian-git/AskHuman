@@ -124,6 +124,14 @@ export default {
       soundPreview: "试听",
       testPopup: "弹出测试窗口",
     },
+    menuBar: {
+      title: "菜单栏图标",
+      icon: "显示图标",
+      off: "关闭",
+      active: "运行时",
+      always: "一直显示",
+      hint: "在菜单栏显示状态图标，快速打开设置、历史、Agent 状态并管理守护进程。「运行时」仅在守护进程运行时显示；「一直显示」则常驻菜单栏（开机自启），守护进程停止时图标转为停止态。",
+    },
     speech: {
       title: "语音输入",
       language: "识别语言",

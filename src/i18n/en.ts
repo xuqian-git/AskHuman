@@ -128,6 +128,14 @@ export default {
       soundPreview: "Preview",
       testPopup: "Open test popup",
     },
+    menuBar: {
+      title: "Menu bar icon",
+      icon: "Show icon",
+      off: "Off",
+      active: "When running",
+      always: "Always",
+      hint: "Show a status icon in the menu bar with quick access to settings, history, agents and the daemon. \"When running\" shows it only while the daemon is active; \"Always\" keeps it resident (launches at login) and dims when the daemon is stopped.",
+    },
     speech: {
       title: "Voice input",
       language: "Recognition language",

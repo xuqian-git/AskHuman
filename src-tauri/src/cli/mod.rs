@@ -63,17 +63,54 @@ pub fn dispatch() {
         }
         // 设置/历史窗口只需 general(主题)；密钥的「已保存」判定由前端 `get_settings` 单独读取。
         // 故用 load_without_secrets()，避免打开这两个窗口时无谓读钥匙串。
+        // unix：彻底路由到统一 GUI 宿主（全局单窗，spec D3）——宿主在则聚焦/新建、不在则拉起；
+        // 失败（极端：宿主起不来）兜底本进程直接建窗，保证窗口至少能打开。
         "--settings" => {
+            #[cfg(unix)]
+            {
+                if crate::gui_host::host_open(crate::gui_host::WindowKind::Settings, false, None)
+                    .is_ok()
+                {
+                    exit(0);
+                }
+            }
             crate::app::run_settings(crate::config::AppConfig::load_without_secrets());
         }
         // 独立历史窗口：默认当前项目（向上找 .git 根、回退 cwd）；`--all` 默认展示全部项目。
         "--history" => {
             let all = argv[2..].iter().any(|a| a == "--all");
+            #[cfg(unix)]
+            {
+                // 项目过滤随请求经宿主 IPC 传递（宿主自身 cwd 无意义）。
+                let project = crate::project::detect();
+                if crate::gui_host::host_open(
+                    crate::gui_host::WindowKind::History,
+                    all,
+                    Some(project),
+                )
+                .is_ok()
+                {
+                    exit(0);
+                }
+            }
             crate::app::run_history(
                 crate::project::detect(),
                 all,
                 crate::config::AppConfig::load_without_secrets(),
             );
+        }
+        // 隐藏的统一 GUI 宿主角色（spec D2）：单实例托盘 + 设置/历史/Agent 窗口宿主。
+        // 由 CLI 路由 / daemon 按需 spawn；抢宿主单实例锁失败即直接退出（已有宿主在跑）。
+        "--gui-host" => {
+            #[cfg(unix)]
+            {
+                crate::app::run_gui_host(crate::config::AppConfig::load_without_secrets());
+            }
+            #[cfg(not(unix))]
+            {
+                eprintln!("--gui-host is not supported on this platform");
+                exit(1);
+            }
         }
         // 隐藏的 GUI Helper 角色：由 Daemon spawn（`--popup --endpoint <sock> --token <tok>`）。
         "--popup" => {

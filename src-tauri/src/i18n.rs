@@ -494,6 +494,40 @@ pub fn tr(lang: Lang, key: &'static str) -> &'static str {
             "请先填写 Bot Token 和 App Token",
         ),
 
+        // —— 菜单栏 / 托盘（GUI 宿主，spec D7）——
+        // 状态区（只读）。
+        "tray.running" => pick(lang, "AskHuman — running", "AskHuman — 运行中"),
+        "tray.stopped" => pick(lang, "AskHuman — not running", "AskHuman — 未运行"),
+        "tray.version" => pick(lang, "Version {v}", "版本 {v}"),
+        "tray.uptime" => pick(lang, "Up {d}", "已运行 {d}"),
+        "tray.draining" => pick(lang, "Finishing in-flight requests…", "正在完成在途请求…"),
+        "tray.pendingQuestions" => pick(lang, "{n} pending question(s)", "{n} 个待答"),
+        "tray.agents" => pick(lang, "Agents: {w} working · {i} idle", "Agent：工作 {w} · 空闲 {i}"),
+        "tray.imConnections" => pick(lang, "Channels: {list}", "渠道：{list}"),
+        "tray.updateAvailable" => pick(lang, "● Update available ({v})", "● 有可用更新（{v}）"),
+        "tray.updatePending" => pick(
+            lang,
+            "Update staged — applies after in-flight requests finish",
+            "更新已就绪 — 在途请求答完后生效",
+        ),
+        // 操作区。
+        "tray.openSettings" => pick(lang, "Settings", "设置"),
+        "tray.openHistory" => pick(lang, "History", "历史记录"),
+        "tray.openAgents" => pick(lang, "Agent Status", "Agent 状态"),
+        "tray.checkUpdate" => pick(lang, "Check for Updates", "检查更新"),
+        "tray.applyUpdate" => pick(
+            lang,
+            "Update to v{v} (applies after answering)",
+            "更新到 v{v}（答完后生效）",
+        ),
+        "tray.startDaemon" => pick(lang, "Start Daemon", "启动 daemon"),
+        "tray.restartDaemon" => pick(lang, "Restart Daemon", "重启 daemon"),
+        "tray.stopDaemon" => pick(lang, "Stop Daemon", "停止 daemon"),
+        "tray.quit" => pick(lang, "Quit Menu Bar Icon", "退出菜单栏图标"),
+        // tooltip 概要。
+        "tray.tooltipRunning" => pick(lang, "AskHuman — running", "AskHuman — 运行中"),
+        "tray.tooltipStopped" => pick(lang, "AskHuman — not running", "AskHuman — 未运行"),
+
         // —— 错误类型校验文案（Telegram/钉钉/飞书 Error::localized）——
         "err.tgEmptyToken" => pick(lang, "Bot Token must not be empty", "Bot Token 不能为空"),
         "err.tgEmptyChatId" => pick(lang, "Chat ID must not be empty", "Chat ID 不能为空"),

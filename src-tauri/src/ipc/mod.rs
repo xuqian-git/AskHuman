@@ -203,6 +203,10 @@ pub enum ClientMsg {
     },
     /// 状态窗口订阅 agent 快照（握手后发；之后 daemon 持续推 `AgentsState`，spec D20）。
     AgentsSubscribe,
+    /// 菜单栏宿主订阅整合状态（**非保活**，spec D10）：连上即收一帧 `TrayState`，之后变化即推。
+    /// 该订阅刻意**不计入 daemon 空闲保活**——图标不得把 daemon 续命（续命只由「有窗口」的
+    /// 普通连接承担）。daemon 收到后在 `handle_tray_sub` 中抵消其对 `active` 的占用。
+    TraySubscribe,
 }
 
 /// Daemon → 客户端（CLI / GUI Helper）的消息。
@@ -258,6 +262,30 @@ pub enum ServerMsg {
     /// `agents` 为记录数组，前端按类型分组、按状态排序渲染。
     AgentsState {
         agents: serde_json::Value,
+    },
+    /// 菜单栏宿主整合状态（D→宿主，spec D10）：连上即一帧 + 变化即推。
+    /// 字段名 snake_case（与既有结构体变体一致；IPC 两端同二进制）。宿主据 `running` 与
+    /// `active_requests` 切图标三态，菜单文字取最近一帧；`pending` 触发宿主二进制换新。
+    TrayState {
+        /// daemon 是否在运行（本帧来自运行中的 daemon → 恒为 true；断连由宿主自行判定为「停止」）。
+        running: bool,
+        version: String,
+        uptime_secs: u64,
+        active_requests: usize,
+        /// 当前常热的 IM 长连接名（"dingtalk"/"feishu"/"telegram"/"slack"）。
+        im_connections: Vec<String>,
+        /// 是否处于排空（graceful drain）。
+        draining: bool,
+        /// 「工作中」agent 数（生命周期追踪未开启时为 0）。
+        agents_working: usize,
+        /// 「空闲」agent 数。
+        agents_idle: usize,
+        /// 有可用更新（远端正式版高于本地且未被忽略）。
+        update_available: bool,
+        /// 最新正式版版本号（available 时有意义）。
+        update_latest: String,
+        /// 新二进制已落盘、待 drain 换新生效（宿主据此换新自身）。
+        pending: bool,
     },
 }
 
@@ -336,5 +364,58 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    /// TraySubscribe 是单元变体：旧端收到带多余字段的负载不报错（兼容性）。
+    #[test]
+    fn tray_subscribe_unit_variant() {
+        let msg: ClientMsg = serde_json::from_str(r#"{"type":"traySubscribe"}"#).unwrap();
+        assert!(matches!(msg, ClientMsg::TraySubscribe));
+    }
+
+    /// TrayState 序列化往返（变体名 camelCase、字段 snake_case）。
+    #[test]
+    fn tray_state_roundtrip() {
+        let msg = ServerMsg::TrayState {
+            running: true,
+            version: "0.7.0".to_string(),
+            uptime_secs: 42,
+            active_requests: 1,
+            im_connections: vec!["feishu".to_string()],
+            draining: false,
+            agents_working: 2,
+            agents_idle: 3,
+            update_available: true,
+            update_latest: "0.8.0".to_string(),
+            pending: false,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains(r#""type":"trayState""#));
+        assert!(json.contains(r#""active_requests":1"#));
+        assert!(json.contains(r#""agents_working":2"#));
+        let back: ServerMsg = serde_json::from_str(&json).unwrap();
+        match back {
+            ServerMsg::TrayState {
+                running,
+                active_requests,
+                agents_idle,
+                update_available,
+                ..
+            } => {
+                assert!(running);
+                assert_eq!(active_requests, 1);
+                assert_eq!(agents_idle, 3);
+                assert!(update_available);
+            }
+            other => panic!("unexpected: {:?}", other),
+        }
+    }
+
+    /// 旧端忽略未知变体：当前二进制收到未来新增的 `{"type":"somethingNew"}` 应报错而非 panic；
+    /// 实际兼容策略为「读取方遇未知变体时跳过该消息」（各订阅循环用 `Ok(Some(_)) => {}` 兜底）。
+    #[test]
+    fn unknown_server_variant_is_error_not_panic() {
+        let r: Result<ServerMsg, _> = serde_json::from_str(r#"{"type":"somethingNew","x":1}"#);
+        assert!(r.is_err());
     }
 }
