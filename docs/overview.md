@@ -292,6 +292,7 @@ AskHuman/
 - **状态推导**：daemon 内 `AgentRegistry`（`agents/registry.rs`）以 **session_id 为身份**、pid 仅判存活。turn-start/turn-end 切「工作中/空闲」；**进程存活轮询（1s）是权威的「已结束」判据**（关窗/`kill -9` 时事件全丢，靠它）；1h TTL 兜底（任何 hook 事件或 `AskHuman` 提问会刷新**对应 session** 的活动时间）。ended 最多留 10 条。状态持久化 `~/.askhuman/agents.json`，daemon 换新/重启后重载并 kill-0 复核。
 - **闲退守卫**：仅「工作中」agent 或有状态窗口连接才阻止 daemon 闲时退出（空闲 agent 不算）；**graceful drain（版本换新）不受存活 agent 影响**。
 - **状态窗口**：`AskHuman agents monitor`（原 `agents status` 改名，spec `cli-config.md` D8）→ 有 GUI 时**路由到统一 GUI 宿主**（`gui_host::host_open(Agents)`，全局单窗；兜底 `app::run_agents` + `create_agents_window`），订阅 `ServerMsg::AgentsState` 推送、前端 `AgentsView.vue` 跨项目按类型分组、状态优先排序、相对时间动态刷新；headless 或 `--json`/`--text` → 取一次 `AgentsState` 快照（`client::request_agents_snapshot`）渲染文本/JSON（`agents_cmd.rs`）。
+  - **订阅生命周期**：仅由前端在 `agents-updated` 监听就绪后经 `agents_start_subscription` 命令触发（不在开窗时启动，否则 daemon 首帧立即快照会早于监听而丢失）。长命的 GUI 宿主里订阅与窗口绑定——`start_agents_subscription` 检测到 `HostState` 即走 `gui_host::restart_agents_subscription`：每次挂载都**重启**订阅（daemon 重推一帧立即快照，避免复用旧订阅导致首屏长 Loading），窗口关闭（`recount_windows` 发现无 `agents` 窗口）即 `stop_agents_subscription` 停掉（释放 daemon 连接，不再借订阅给 daemon 续命）。独立 agents 进程 / 弹窗兜底则一次性启动、随进程退出。
 - **IPC 增量**：`TaskRequest` 加 `agent_kind/agent_session_id/agent_pid`（提问顺带刷新活动）；`ClientMsg::AgentEvent`/`AgentsSubscribe`；`ServerMsg::AgentsState`。
 
 ## 菜单栏图标 + 统一 GUI 宿主（Unix；macOS/Linux 桌面）
