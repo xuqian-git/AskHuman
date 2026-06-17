@@ -423,7 +423,13 @@ fn populate_menu(
     sep(menu)?;
     if up {
         action("restart_daemon", i18n::tr(lang, "tray.restartDaemon").to_string())?;
-        action("stop_daemon", i18n::tr(lang, "tray.stopDaemon").to_string())?;
+        // 有「工作中」agent 时「停止」无意义：daemon 一停，agent 的生命周期 hook（report_agent_event
+        // → ensure_running）或下次 ask 会几秒内把它重新拉起。故隐藏停止项，仅留一行灰色说明。
+        if data.agents_working > 0 {
+            disabled(i18n::tr(lang, "tray.stopDaemonBlocked").to_string())?;
+        } else {
+            action("stop_daemon", i18n::tr(lang, "tray.stopDaemon").to_string())?;
+        }
     } else {
         action("start_daemon", i18n::tr(lang, "tray.startDaemon").to_string())?;
     }

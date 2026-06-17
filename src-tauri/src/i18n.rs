@@ -523,6 +523,12 @@ pub fn tr(lang: Lang, key: &'static str) -> &'static str {
         "tray.startDaemon" => pick(lang, "Start Daemon", "启动 daemon"),
         "tray.restartDaemon" => pick(lang, "Restart Daemon", "重启 daemon"),
         "tray.stopDaemon" => pick(lang, "Stop Daemon", "停止 daemon"),
+        // 有「工作中」agent 时隐藏「停止」项（停了也会被 hook/下次 ask 立即拉起），代以本行灰色说明。
+        "tray.stopDaemonBlocked" => pick(
+            lang,
+            "An agent is working — Daemon stays active",
+            "有 Agent 工作中，Daemon 将保持激活",
+        ),
         "tray.quit" => pick(lang, "Quit Menu Bar Icon", "退出菜单栏图标"),
         // tooltip 概要。
         "tray.tooltipRunning" => pick(lang, "AskHuman — running", "AskHuman — 运行中"),
