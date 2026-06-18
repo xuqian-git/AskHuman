@@ -649,6 +649,7 @@ fn launch(state: AppState, view: View, popup_ipc: Option<PopupIpc>) -> tauri::Re
         .manage(state)
         .invoke_handler(tauri::generate_handler![
             crate::commands::popup_init,
+            crate::commands::popup_agent_terminal,
             crate::commands::submit_popup,
             crate::commands::cancel_popup,
             crate::commands::open_path,

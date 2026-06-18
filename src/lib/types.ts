@@ -61,8 +61,6 @@ export interface PopupInit {
   agentKind?: string | null;
   /** 发起本次提问的 agent 进程 pid；「聚焦终端」用。 */
   agentPid?: number | null;
-  /** 该 agent 所在终端类型；用于判断 agent badge 是否可点击激活。 */
-  agentTerminal?: string | null;
 }
 
 export interface QuestionAnswer {

@@ -26,6 +26,7 @@ import {
   updateApply,
   updateGetNotes,
   focusAgentTerminal,
+  popupAgentTerminal,
 } from "../lib/ipc";
 import { isFocusableTerminal } from "../lib/terminals";
 import { startDrag } from "@crabnebula/tauri-plugin-drag";
@@ -1036,8 +1037,16 @@ onMounted(async () => {
     projectPath.value = init.project;
     agentKind.value = init.agentKind ?? "";
     agentPid.value = init.agentPid ?? null;
-    agentTerminal.value = init.agentTerminal ?? null;
     request.value = init.request;
+    // 终端类型探测要跑进程链 ps（数十毫秒），故移出 popup_init、弹窗渲染后再异步解析——
+    // 拿到后 agent badge 才升级成「可点 + ↗」（先显示纯文字 badge，不阻塞首屏）。
+    if (agentPid.value != null) {
+      popupAgentTerminal()
+        .then((kind) => {
+          agentTerminal.value = kind ?? null;
+        })
+        .catch(() => {});
+    }
     const n = init.request.questions.length;
     chosenByQ.value = Array.from({ length: n }, () => []);
     inputByQ.value = Array.from({ length: n }, () => "");

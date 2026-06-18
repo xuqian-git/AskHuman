@@ -27,17 +27,10 @@ pub struct PopupInit {
     agent_kind: Option<String>,
     /// 发起本次提问的 agent 进程 pid；前端「聚焦终端」用。
     agent_pid: Option<u32>,
-    /// 该 agent 所在终端类型（`apple-terminal`/`iterm2`/…/`other`）；前端据此判断是否可激活 tab。
-    agent_terminal: Option<String>,
 }
 
 #[tauri::command]
 pub fn popup_init(state: State<AppState>) -> PopupInit {
-    // 终端类型在弹窗进程现取：terminal_kind 走的是「给定 pid」的进程链，与弹窗自身进程树无关。
-    let agent_terminal = state
-        .agent_pid
-        .and_then(|pid| crate::agents::detect::terminal_kind(pid))
-        .map(|s| s.to_string());
     PopupInit {
         request: state.request.clone(),
         theme: theme_str(state.config.general.theme),
@@ -48,8 +41,18 @@ pub fn popup_init(state: State<AppState>) -> PopupInit {
         project_name: crate::project::display_name(&state.project),
         agent_kind: state.agent_kind.clone(),
         agent_pid: state.agent_pid,
-        agent_terminal,
     }
+}
+
+/// 解析发起方 agent 所在终端类型（`apple-terminal`/`iterm2`/…）。**刻意独立于 `popup_init`**：
+/// `terminal_kind` 要沿进程链跑多次 `ps`（数十毫秒级），放进 `popup_init` 会拖慢弹窗首屏、露出「加载中」。
+/// 前端在弹窗渲染后再异步调用本命令，拿到后才把 agent badge 升级成「可点 + ↗」。无 pid / 探测不到 → None。
+#[tauri::command]
+pub fn popup_agent_terminal(state: State<AppState>) -> Option<String> {
+    state
+        .agent_pid
+        .and_then(|pid| crate::agents::detect::terminal_kind(pid))
+        .map(|s| s.to_string())
 }
 
 /// 前端提交的作答内容（按问题顺序，每题一项）。

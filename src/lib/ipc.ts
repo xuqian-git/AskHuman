@@ -36,6 +36,10 @@ import type {
 
 export const popupInit = () => invoke<PopupInit>("popup_init");
 
+/** 异步解析发起方 agent 所在终端类型（独立于 popup_init，避免进程链 ps 拖慢弹窗首屏）。 */
+export const popupAgentTerminal = () =>
+  invoke<string | null>("popup_agent_terminal");
+
 export const submitPopup = (submission: PopupSubmission) =>
   invoke<void>("submit_popup", { submission });
 
