@@ -156,6 +156,51 @@ pub fn walk_any_agent_from_self() -> Option<(AgentKind, u32)> {
     walk_any_agent(std::process::id())
 }
 
+/// 识别 `pid` 所在的终端 App：沿进程链向上找首个已知终端祖先，返回稳定标识串
+/// （`apple-terminal` / `iterm2` / `ghostty` / `kitty` / `wezterm` / `alacritty` / `tmux`
+/// / `vscode` / `cursor`）；找不到（或非 unix）返回 `None`。
+///
+/// 供 Agent 状态窗口「聚焦终端」按钮**按支持度显隐**：前端仅对已支持的终端（v1 = `apple-terminal`）
+/// 展示按钮。tmux 在外层终端之前命中（pane 与外层 Tab 不是同一个，单纯聚焦外层 Tab 不准），故视为
+/// 暂不支持。
+pub fn terminal_kind(pid: u32) -> Option<&'static str> {
+    process_chain(pid).iter().find_map(terminal_of_entry)
+}
+
+/// 单个进程节点是否属于某已知终端（按 comm + 完整命令行的小写子串匹配）。
+fn terminal_of_entry(e: &ProcEntry) -> Option<&'static str> {
+    let s = format!("{} {}", e.comm, e.command).to_ascii_lowercase();
+    // 优先匹配具体 `.app/` 路径，再退宽松名；各分支互斥，命中即返回。
+    if s.contains("terminal.app/") {
+        return Some("apple-terminal");
+    }
+    if s.contains("iterm.app/") || s.contains("iterm2") {
+        return Some("iterm2");
+    }
+    if s.contains("ghostty") {
+        return Some("ghostty");
+    }
+    if s.contains("wezterm") {
+        return Some("wezterm");
+    }
+    if s.contains("alacritty") {
+        return Some("alacritty");
+    }
+    if s.contains("kitty") {
+        return Some("kitty");
+    }
+    if s.contains("tmux") {
+        return Some("tmux");
+    }
+    if s.contains("cursor.app/") || s.contains("cursor helper") {
+        return Some("cursor");
+    }
+    if s.contains("visual studio code") || s.contains("code.app/") || s.contains("code helper") {
+        return Some("vscode");
+    }
+    None
+}
+
 /// 进程是否存活（`kill(pid, 0)`：Ok / EPERM 视为存活，ESRCH 为已死）。
 #[cfg(unix)]
 pub fn pid_alive(pid: u32) -> bool {

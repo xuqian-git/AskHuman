@@ -339,6 +339,7 @@ export default {
       "Only agents with lifecycle tracking enabled will appear here once they start.",
     untitled: "(untitled)",
     unknownProject: "Unknown project",
+    focusTerminal: "Focus terminal",
     view: {
       status: "Status",
       type: "Type",

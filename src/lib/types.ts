@@ -140,6 +140,8 @@ export interface AgentRecord {
   lastActivity: number;
   state: AgentRunState;
   endedAt?: number | null;
+  /** 所在终端类型（apple-terminal/iterm2/vscode/…/other）；用于「聚焦终端」按钮显隐。 */
+  terminal?: string | null;
 }
 
 export type UiLanguage = "auto" | "en" | "zh";

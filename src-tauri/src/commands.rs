@@ -952,6 +952,13 @@ pub fn agent_lifecycle_uninstall(app: AppHandle, agent: String) -> Result<String
     Ok(msg)
 }
 
+/// 聚焦某 Agent 所在的终端（实验性，macOS：Terminal.app / iTerm2）。由 Agent 状态窗口逐行调用，
+/// 传入该会话的 agent 进程 pid；失败（无 tty / 不支持的终端 / 未授权 / 找不到）返回 Err。
+#[tauri::command]
+pub fn focus_agent_terminal(pid: u32) -> Result<(), String> {
+    crate::integrations::terminal_focus::focus_agent_terminal(pid)
+}
+
 /// 生命周期 hook 装/卸后刷新托盘菜单，使「Agent 状态」入口随之显隐。仅在统一 GUI 宿主进程内
 /// （持有 `HostState`）实际生效；其它进程自动 no-op。
 fn refresh_host_tray(app: &AppHandle) {

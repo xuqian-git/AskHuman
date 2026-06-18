@@ -6,3 +6,4 @@ pub mod cursor_hook;
 #[cfg(unix)]
 pub mod login_item;
 pub mod mcp_config;
+pub mod terminal_focus;

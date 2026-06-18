@@ -326,6 +326,7 @@ export default {
     emptyHint: "只有开启生命周期追踪的 Agent 启动后才会在此显示。",
     untitled: "（未命名）",
     unknownProject: "未知项目",
+    focusTerminal: "聚焦终端",
     view: {
       status: "状态",
       type: "类型",

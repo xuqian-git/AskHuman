@@ -4,7 +4,12 @@ import { useI18n } from "vue-i18n";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { applyTheme } from "../lib/theme";
 import { applyLanguage } from "../i18n";
-import { agentsInit, agentsStartSubscription } from "../lib/ipc";
+import {
+  agentsInit,
+  agentsStartSubscription,
+  focusAgentTerminal,
+} from "../lib/ipc";
+import { isFocusableTerminal } from "../lib/terminals";
 import type { AgentKind, AgentRecord, AgentRunState } from "../lib/types";
 
 const { t } = useI18n();
@@ -174,6 +179,21 @@ function showProject(a: AgentRecord): boolean {
   return !!a.cwd && mode.value !== "project";
 }
 
+// 「聚焦终端」按钮：需有存活 pid、非「已结束」，且所在终端已被支持（不支持的终端不显示按钮）。
+function canFocusTerminal(a: AgentRecord): boolean {
+  return !!a.pid && a.state !== "ended" && isFocusableTerminal(a.terminal);
+}
+
+async function onFocusTerminal(a: AgentRecord): Promise<void> {
+  if (!a.pid) return;
+  try {
+    await focusAgentTerminal(a.pid);
+  } catch (err) {
+    // v1：找不到 / 非 Terminal.app / 未授权自动化等一律静默（仅日志）。
+    console.warn("focus terminal failed", err);
+  }
+}
+
 // 绝对时间（hover 提示用）：保留简洁的相对显示，同时可悬停看到精确时间。
 function absoluteTime(secs?: number | null): string {
   if (!secs) return "";
@@ -287,6 +307,23 @@ onBeforeUnmount(() => {
                 <span v-if="showState()" class="status-badge" :class="a.state">
                   {{ stateLabel(a.state) }}
                 </span>
+                <button
+                  v-if="canFocusTerminal(a)"
+                  type="button"
+                  class="focus-btn"
+                  :title="t('agents.focusTerminal')"
+                  :aria-label="t('agents.focusTerminal')"
+                  @click="onFocusTerminal(a)"
+                >
+                  <svg viewBox="0 0 16 16" aria-hidden="true">
+                    <rect x="1.5" y="2.5" width="13" height="11" rx="2" fill="none"
+                      stroke="currentColor" stroke-width="1.3" />
+                    <path d="M4 6 L6.5 8 L4 10" fill="none" stroke="currentColor"
+                      stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" />
+                    <path d="M8 10.2 H11.5" stroke="currentColor" stroke-width="1.3"
+                      stroke-linecap="round" />
+                  </svg>
+                </button>
               </div>
 
               <div v-if="showProject(a) || a.pid" class="meta">
@@ -565,6 +602,29 @@ onBeforeUnmount(() => {
 .status-badge.ended {
   background: color-mix(in srgb, var(--text-primary) 10%, transparent);
   color: var(--text-secondary);
+}
+.focus-btn {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.focus-btn:hover {
+  background: color-mix(in srgb, var(--text-primary) 10%, transparent);
+  color: var(--text-primary);
+}
+.focus-btn svg {
+  width: 15px;
+  height: 15px;
 }
 .meta {
   display: flex;

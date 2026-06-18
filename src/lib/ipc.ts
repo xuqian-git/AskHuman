@@ -190,6 +190,10 @@ export const agentLifecycleInstall = (agent: AgentKind) =>
 export const agentLifecycleUninstall = (agent: AgentKind) =>
   invoke<string>("agent_lifecycle_uninstall", { agent });
 
+/** 聚焦某 Agent 所在终端（v1 仅 macOS / Terminal.app）。失败抛错由调用方静默处理。 */
+export const focusAgentTerminal = (pid: number) =>
+  invoke<void>("focus_agent_terminal", { pid });
+
 export const telegramTest = (args: TelegramTestArgs) =>
   invoke<string>("telegram_test", { args });
 

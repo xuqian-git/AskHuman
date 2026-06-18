@@ -49,6 +49,10 @@ pub struct AgentRecord {
     pub state: AgentState,
     #[serde(default)]
     pub ended_at: Option<u64>,
+    /// 所在终端类型（`apple-terminal`/`iterm2`/`vscode`/…/`other`）。由 pid 沿进程链惰性识别并缓存，
+    /// 供状态窗口「聚焦终端」按钮按支持度显隐。无 pid / 未解析时为 None。
+    #[serde(default)]
+    pub terminal: Option<String>,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -169,6 +173,7 @@ impl AgentRegistry {
                     last_activity: now,
                     state: AgentState::Idle,
                     ended_at: None,
+                    terminal: None,
                 });
                 inner.active.len() - 1
             }
@@ -274,6 +279,7 @@ impl AgentRegistry {
                 last_activity: now,
                 state: AgentState::Working,
                 ended_at: None,
+                terminal: None,
             });
             true
         }
@@ -338,6 +344,13 @@ impl AgentRegistry {
         for r in inner.active.iter_mut() {
             if r.title.is_none() {
                 r.title = resolve_title(r.kind, &r.session_id);
+            }
+            // 惰性识别终端类型（活动记录、有 pid 时）；找不到记 "other"，避免每次快照重算。
+            if r.terminal.is_none() {
+                if let Some(pid) = r.pid {
+                    r.terminal =
+                        Some(super::detect::terminal_kind(pid).unwrap_or("other").to_string());
+                }
             }
         }
         for r in inner.ended.iter_mut() {
