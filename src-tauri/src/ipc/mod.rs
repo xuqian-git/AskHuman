@@ -116,6 +116,13 @@ pub struct TaskRequest {
     /// 旧 CLI 不带 → 默认 false（行为不变）。
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub from_mcp: bool,
+    /// 性能埋点关联 id（`ASKHUMAN_PERF` 开启时 CLI 生成；空=不埋点）。daemon/helper/前端共用此 id
+    /// 把同一次调用的各阶段时间线串起来。旧 CLI 不带 → 空串（埋点关闭）。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub perf_id: String,
+    /// 性能测试专用：弹窗画完首帧后自动取消（仅 harness 用，避免人工点按）。
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub perf_autodismiss: bool,
 }
 
 /// 自动识别 userId/open_id 请求（设置进程 → Daemon，Q6）：用表单当前凭据，

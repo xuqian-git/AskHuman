@@ -549,6 +549,7 @@ pub fn run_gui_helper(_endpoint: String, token: String) -> ! {
     use crate::ipc::{self, transport, ClientMsg, ServerMsg};
     use tokio::io::BufReader;
 
+    crate::perf::mark_env("gui.start");
     // 连接 + 握手 + 读 show（在 Tauri 全局运行时上完成，确保后续读写任务同一 reactor）。
     let connected = tauri::async_runtime::block_on(async move {
         let stream = transport::connect().await?;
@@ -576,6 +577,7 @@ pub fn run_gui_helper(_endpoint: String, token: String) -> ! {
             std::process::exit(3);
         }
     };
+    crate::perf::mark_env("gui.show_recv");
 
     // 写任务：把 answer / 取消等消息串行写回 Daemon。
     let (gui_tx, mut gui_rx) = tokio::sync::mpsc::unbounded_channel::<ClientMsg>();
@@ -643,12 +645,14 @@ fn launch(state: AppState, view: View, popup_ipc: Option<PopupIpc>) -> tauri::Re
         _ => false,
     };
 
+    crate::perf::mark_env("gui.build_start");
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_drag::init())
         .plugin(tauri_plugin_liquid_glass::init())
         .manage(state)
         .invoke_handler(tauri::generate_handler![
             crate::commands::popup_init,
+            crate::commands::perf_mark,
             crate::commands::popup_agent_terminal,
             crate::commands::submit_popup,
             crate::commands::cancel_popup,
@@ -824,6 +828,7 @@ fn launch(state: AppState, view: View, popup_ipc: Option<PopupIpc>) -> tauri::Re
                             apply_liquid_glass(&win);
                         }
                         let _ = win.show();
+                        crate::perf::mark_env("gui.win_show");
                         // Play the configured popup sound after the window becomes visible.
                         crate::sound::play(&app.state::<AppState>().config.general.popup_sound);
                         // GUI Helper 由 Daemon 拉起，可能不自动获焦 → 尽力前置。
@@ -968,6 +973,7 @@ fn launch(state: AppState, view: View, popup_ipc: Option<PopupIpc>) -> tauri::Re
             Ok(())
         })
         .build(tauri::generate_context!())?;
+    crate::perf::mark_env("gui.build_done");
 
     // 构建成功后、进入事件循环前静默系统噪音日志（如 macOS 的 TSM CapsLock 日志）。
     stderr_redirect::silence();

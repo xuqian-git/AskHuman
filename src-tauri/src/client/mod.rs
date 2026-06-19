@@ -291,6 +291,7 @@ async fn run_ask_async(task: crate::ipc::TaskRequest) -> i32 {
                 _ => continue,
             }
             // 提交任务。
+            crate::perf::mark(&task.perf_id, "cli.submit");
             if ipc::write_msg(&mut writer, &ClientMsg::Submit(task.clone()))
                 .await
                 .is_err()

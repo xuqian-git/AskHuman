@@ -27,6 +27,10 @@ pub struct PopupInit {
     agent_kind: Option<String>,
     /// 发起本次提问的 agent 进程 pid；前端「聚焦终端」用。
     agent_pid: Option<u32>,
+    /// 性能埋点是否开启（helper 进程收到了 `ASKHUMAN_PERF_ID`）；前端据此决定是否上报 perf 标记。
+    perf: bool,
+    /// 性能测试：画完首帧后自动取消弹窗（仅 harness 用）。
+    perf_autodismiss: bool,
 }
 
 #[tauri::command]
@@ -41,6 +45,20 @@ pub fn popup_init(state: State<AppState>) -> PopupInit {
         project_name: crate::project::display_name(&state.project),
         agent_kind: state.agent_kind.clone(),
         agent_pid: state.agent_pid,
+        perf: !crate::perf::env_id().is_empty(),
+        perf_autodismiss: crate::perf::autodismiss(),
+    }
+}
+
+/// 前端性能埋点回传：把某阶段标记写入 `perf.log`（关联 id 取自 helper 进程的 `ASKHUMAN_PERF_ID`）。
+/// `ts` 为前端 `Date.now()`（epoch ms），使时间反映页面而非 IPC 往返；省略则用当前时间。
+/// 埋点关闭（无关联 id）时为 no-op。
+#[tauri::command]
+pub fn perf_mark(stage: String, ts: Option<f64>) {
+    let id = crate::perf::env_id();
+    match ts {
+        Some(t) => crate::perf::mark_at(&id, &stage, t as u128),
+        None => crate::perf::mark(&id, &stage),
     }
 }
 

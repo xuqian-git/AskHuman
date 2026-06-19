@@ -703,6 +703,11 @@ mod unix_impl {
         mut w: OwnedWriteHalf,
         state: &Arc<ServerState>,
     ) {
+        // 性能埋点关联 id（CLI 透传；空=关闭）。daemon 自身启动时无 ASKHUMAN_PERF env，
+        // 故各阶段标记一律以本字段非空为开关（见 perf 模块说明）。
+        let perf_id = task.perf_id.clone();
+        let perf_autodismiss = task.perf_autodismiss;
+        crate::perf::mark(&perf_id, "dmn.submit_recv");
         // 排空闸门（兜底，覆盖「Hello Ok → Submit 间隙开始排空」的竞态）：拒绝并断开，
         // 客户端等本 Daemon 下线后用新二进制重新提交。
         if state.draining.load(Ordering::SeqCst) {
@@ -748,6 +753,7 @@ mod unix_impl {
         let lang = Lang::resolve(&task.lang);
         let (entry, mut final_rx) = state.registry.create(task);
         let request_id = entry.request_id.clone();
+        crate::perf::mark(&perf_id, "dmn.created");
         log(&format!("request {} accepted", request_id));
 
         // Fire `ask-received` once per accepted request, independent of popup state.
@@ -770,17 +776,22 @@ mod unix_impl {
             state.registry.remove(&request_id);
             return;
         }
+        crate::perf::mark(&perf_id, "dmn.accepted");
         // 在途请求数 +1：刷新菜单栏状态（待答数 / 图标圆点）。
         broadcast_tray_state(state);
 
         // 挂接可用的 IM 渠道（钉钉/…）到本请求的协调器，与弹窗并行抢答。
         let im_attached = attach_im_channels(&entry, state, &mut w, lang).await;
+        crate::perf::mark(&perf_id, "dmn.im_done");
         // IM 长连接可能在此刚建立，刷新菜单栏「已连 IM」。
         broadcast_tray_state(state);
 
         // spawn GUI Helper（独立短命进程，带一次性 token）。
-        let popup_ok = match spawn_gui_helper(&entry.token) {
-            Ok(()) => true,
+        let popup_ok = match spawn_gui_helper(&entry.token, &perf_id, perf_autodismiss) {
+            Ok(()) => {
+                crate::perf::mark(&perf_id, "dmn.spawned");
+                true
+            }
             Err(e) => {
                 log(&format!("failed to spawn GUI helper: {}", e));
                 let _ = ipc::write_msg(
@@ -2022,20 +2033,28 @@ mod unix_impl {
     }
 
     /// spawn 一个 GUI Helper 进程（`AskHuman --popup --endpoint <sock> --token <tok>`）。
-    fn spawn_gui_helper(token: &str) -> std::io::Result<()> {
+    /// `perf_id` 非空时把性能埋点开关 + 关联 id（及可选的 autodismiss）经 env 透传给 helper，
+    /// 使其 GUI/前端各阶段标记并入同一条时间线。
+    fn spawn_gui_helper(token: &str, perf_id: &str, perf_autodismiss: bool) -> std::io::Result<()> {
         use std::process::{Command, Stdio};
         let exe = std::env::current_exe()?;
-        Command::new(exe)
-            .arg("--popup")
+        let mut cmd = Command::new(exe);
+        cmd.arg("--popup")
             .arg("--endpoint")
             .arg(transport::socket_path())
             .arg("--token")
             .arg(token)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .map(|_| ())
+            .stderr(Stdio::null());
+        if !perf_id.is_empty() {
+            cmd.env("ASKHUMAN_PERF", "1");
+            cmd.env("ASKHUMAN_PERF_ID", perf_id);
+            if perf_autodismiss {
+                cmd.env("ASKHUMAN_PERF_AUTODISMISS", "1");
+            }
+        }
+        cmd.spawn().map(|_| ())
     }
 
     fn cleanup() {

@@ -34,6 +34,7 @@ import { formatShortcut, matchShortcut } from "../lib/shortcut";
 import { applyLanguage } from "../i18n";
 import { renderMarkdown } from "../lib/markdown";
 import { applyTheme, fileToDataUrl } from "../lib/theme";
+import { mark as perfMarkFe, enable as perfEnableFe } from "../lib/perf";
 import type {
   AskRequest,
   FileAttachment,
@@ -1029,6 +1030,9 @@ onMounted(async () => {
   });
   try {
     const init = await popupInit();
+    // 后端在 helper 进程收到 ASKHUMAN_PERF_ID 时置 perf=true：开启前端埋点并冲刷此前缓存的标记。
+    if (init.perf) perfEnableFe();
+    perfMarkFe("fe.popup_init_done");
     applyTheme(init.theme);
     theme.value = init.theme;
     pinned.value = init.alwaysOnTop;
@@ -1059,6 +1063,15 @@ onMounted(async () => {
     requestAnimationFrame(() => {
       inputRef.value?.focus({ preventScroll: true });
       autoGrow();
+      // 双 rAF：第一帧让正文进入 DOM 并即将绘制，第二帧回调时该帧已真正合成上屏，
+      // 此刻打点更贴近用户真正看到内容的时刻（比单 rAF 晚约 1 帧）。
+      requestAnimationFrame(() => {
+        perfMarkFe("fe.painted");
+        // harness 模式：内容已上屏即自动取消，免人工点按。
+        if (init.perfAutodismiss) {
+          cancelPopup().catch(() => {});
+        }
+      });
     });
   } catch (err) {
     console.error("popup_init 失败", err);

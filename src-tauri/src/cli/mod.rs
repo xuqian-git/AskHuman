@@ -231,9 +231,20 @@ pub fn dispatch() {
                 // unix：瘦客户端经 Daemon + GUI Helper（A11：上送 source name 与解析好的 lang）。
                 #[cfg(unix)]
                 {
+                    // 性能埋点（spec popup-launch-performance §7）：仅 `ASKHUMAN_PERF` 开启时铸 id，
+                    // 经 TaskRequest 透传到 daemon/helper/前端串联整条时间线；关闭则恒空、零开销。
+                    let perf_id = if crate::perf::enabled() {
+                        format!("{}-{}", std::process::id(), crate::perf::now_ms())
+                    } else {
+                        String::new()
+                    };
+                    crate::perf::mark_at(&perf_id, "cli.start", crate::perf::start_ms());
+                    // harness 注入的 spawn 时刻（含进程创建 / 加载，main 之前不可见的开销）。
+                    crate::perf::mark_spawn(&perf_id);
                     // 顺带探测调用方 Agent 身份（生命周期追踪 spec D21）：经 daemon 刷新对应 session 的活动 + TTL。
                     // 仅当追踪已开启时 daemon 才会有该 session；探测失败则字段为 None，零副作用。
                     let (agent_kind, agent_session_id, agent_pid) = detect_caller_agent();
+                    crate::perf::mark(&perf_id, "cli.detect_done");
                     let task = crate::ipc::TaskRequest {
                         message,
                         questions,
@@ -248,6 +259,8 @@ pub fn dispatch() {
                         agent_session_id,
                         agent_pid,
                         from_mcp: from_mcp_env(),
+                        perf_id,
+                        perf_autodismiss: crate::perf::autodismiss(),
                     };
                     crate::client::run_ask(task);
                 }

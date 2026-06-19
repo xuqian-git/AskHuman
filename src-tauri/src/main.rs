@@ -36,6 +36,7 @@ mod macos_window_anim;
 mod mcp;
 mod models;
 mod paths;
+mod perf;
 mod project;
 mod prompts;
 mod secrets;
@@ -47,5 +48,7 @@ mod telegram;
 mod update;
 
 fn main() {
+    // Capture process birth ASAP so the `cli.start` perf milestone is accurate.
+    perf::record_start();
     cli::dispatch();
 }

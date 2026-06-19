@@ -61,6 +61,10 @@ export interface PopupInit {
   agentKind?: string | null;
   /** 发起本次提问的 agent 进程 pid；「聚焦终端」用。 */
   agentPid?: number | null;
+  /** 性能埋点是否开启（helper 收到 ASKHUMAN_PERF_ID）；前端据此决定是否上报 perf 标记。 */
+  perf?: boolean;
+  /** 性能测试：画完首帧后自动取消弹窗（仅 harness 用）。 */
+  perfAutodismiss?: boolean;
 }
 
 export interface QuestionAnswer {

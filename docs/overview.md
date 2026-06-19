@@ -367,7 +367,13 @@ pnpm tauri dev                                   # 调试（Vite + Tauri）
 pnpm build && cargo build --release --manifest-path src-tauri/Cargo.toml   # release（前端资源在 cargo 编译时嵌入二进制）
 cargo test --manifest-path src-tauri/Cargo.toml  # Rust 单测
 ./scripts/install.sh                              # 安装到 ~/.local/bin（mac/Linux）
+node scripts/perf-popup.mjs --runs 20            # 弹窗启动延迟 harness（见下「性能埋点」）
 ```
+
+### 性能埋点（弹窗启动延迟）
+
+- 环境变量 `ASKHUMAN_PERF=1` 开启（默认关、零开销）。CLI 铸 `perf_id` 经 `TaskRequest` 透传，daemon spawn helper 时再以 env 传给 helper/前端；CLI/daemon/helper/前端共 16 个里程碑统一写 `~/.askhuman/perf.log`（`<epoch_ms>\t<perf_id>\t<stage>\t<pid>`），按 `perf_id` 串成一条时间线。实现：`src-tauri/src/perf.rs` + 前端 `src/lib/perf.ts`（命令 `perf_mark`）。
+- harness `scripts/perf-popup.mjs`：零交互（弹窗画完首帧 `ASKHUMAN_PERF_AUTODISMISS=1` 自动取消）跑 N 次、聚合中位/p90、存/比基线，端到端 p90 超阈（默认 20%）退出码 1。方法论与基线见 `docs/specs/popup-launch-performance.md` §7。
 
 ## 注意事项
 

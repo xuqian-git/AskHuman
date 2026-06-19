@@ -1,0 +1,119 @@
+{
+  "generatedAt": "2026-06-19T03:26:21.215Z",
+  "runs": 20,
+  "complete": 18,
+  "metrics": {
+    "e2e+spawn (spawn->painted)": {
+      "count": 18,
+      "min": 540,
+      "median": 579,
+      "p90": 586,
+      "max": 615
+    },
+    "  proc spawn (->cli.start)": {
+      "count": 18,
+      "min": 10,
+      "median": 10.5,
+      "p90": 11,
+      "max": 12
+    },
+    "e2e (cli.start->fe.painted)": {
+      "count": 18,
+      "min": 530,
+      "median": 569,
+      "p90": 575,
+      "max": 604
+    },
+    "cli (start->submit)": {
+      "count": 18,
+      "min": 25,
+      "median": 26,
+      "p90": 28,
+      "max": 31
+    },
+    "  detect": {
+      "count": 18,
+      "min": 25,
+      "median": 26,
+      "p90": 27,
+      "max": 30
+    },
+    "ipc (submit->dmn.recv)": {
+      "count": 18,
+      "min": 0,
+      "median": 0,
+      "p90": 0.3000000000000007,
+      "max": 1
+    },
+    "daemon (recv->spawned)": {
+      "count": 18,
+      "min": 13,
+      "median": 19,
+      "p90": 20.3,
+      "max": 22
+    },
+    "  im_attach": {
+      "count": 18,
+      "min": 6,
+      "median": 8,
+      "p90": 9,
+      "max": 11
+    },
+    "spawn->gui proc start": {
+      "count": 18,
+      "min": 9,
+      "median": 10,
+      "p90": 10,
+      "max": 10
+    },
+    "gui connect (start->show)": {
+      "count": 18,
+      "min": 0,
+      "median": 0,
+      "p90": 1,
+      "max": 1
+    },
+    "GUI total (show->painted)": {
+      "count": 18,
+      "min": 476,
+      "median": 511.5,
+      "p90": 520,
+      "max": 548
+    },
+    "  tauri build()": {
+      "count": 18,
+      "min": 50,
+      "median": 56,
+      "p90": 65.3,
+      "max": 70
+    },
+    "  window visible": {
+      "count": 18,
+      "min": 219,
+      "median": 237.5,
+      "p90": 246.9,
+      "max": 249
+    },
+    "  page boot (->fe boot)": {
+      "count": 18,
+      "min": 347,
+      "median": 426,
+      "p90": 437.6,
+      "max": 441
+    },
+    "  frontend (boot->painted)": {
+      "count": 18,
+      "min": 76,
+      "median": 86,
+      "p90": 98.90000000000002,
+      "max": 153
+    },
+    "    popup_init": {
+      "count": 18,
+      "min": 15,
+      "median": 20,
+      "p90": 23.3,
+      "max": 26
+    }
+  }
+}
