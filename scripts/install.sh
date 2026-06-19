@@ -68,6 +68,13 @@ if [ "$(uname)" = "Darwin" ]; then
     echo "警告: 签名失败，已跳过" >&2
 fi
 
+# 顺手回收 target/ 历史编译残留：cargo 不会自动 GC 旧哈希产物（同一库会堆出多份），
+# 装了 cargo-sweep 就清掉 14 天未使用的（保留近期产物，下次仍可增量编译）。未装则跳过（best-effort）。
+if command -v cargo-sweep >/dev/null 2>&1; then
+  echo "==> 清理 target 历史残留 (cargo sweep --time 14)"
+  ( cd src-tauri && cargo sweep --time 14 ) >/dev/null 2>&1 || true
+fi
+
 echo "==> 完成：$INSTALL_DIR/AskHuman"
 if ! echo "$PATH" | tr ':' '\n' | grep -qx "$INSTALL_DIR"; then
   echo "提示: $INSTALL_DIR 不在 PATH 中，请将其加入 PATH。"
