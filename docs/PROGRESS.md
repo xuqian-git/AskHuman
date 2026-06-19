@@ -39,28 +39,7 @@ idle/换新 `recycle_warm` 重补。关键修正：隐藏窗（ordered-out）rAF
 vs warm 505（-68%）**、`show→painted` 476→135（-72%），cold/warm 无回归。视觉（无闪现/主题/回退）+ Dock 图标人眼确认 OK。
 详见 `docs/specs/popup-prewarm.md`、`docs/plans/popup-prewarm.md`。
 
-**待办**：`git push`（未 push commits：`87fa55e` feature+docs+baseline / `baf1c8c` progress / `2cb7b43` shutdown 重补泄漏 /
-`a28144e` Dock 待命 accessory / `6b120e3` Dock 领用图标）；headless 预热仅 Linux 可验（mac N/A）。
-
-## 进行中：IM 在世即响应（任何消息都给有意义的回复）—— 已实现+install，待真机自测
-
-需求 `docs/specs/im-always-respond.md` + 计划 `docs/plans/im-always-respond.md`。
-目标：daemon 在世时，任一启用 IM 渠道收到的**任何消息**都回一条有意义的回复（作答确认 / 动态引导 / 命令 / 识别回执），
-以区分「在运行」与「守护进程已退出（静默）」；完整保留现有作答/卡片/抢答/自动激活/识别功能。
-
-**已实现（cargo check 通过 + release install OK）**：
-- R1 存活即监听：`serve()` 启动即后台 `ensure_inbound_listeners`；移除 `working_count>0` 门控（不阻止空闲退出）。
-- R2 作答确认：`autochannel::{AckKind,AckMode,answer_ack_text}` + 各渠道会话**就地**回执（图片/文件/文字 × 卡片/文本兜底）。
-  共享入口 `conversation::answer_inbound_reply(kind?, mode)`：`Some`→确认、`None`→动态引导。四家逐一接入
-  （ding/feishu/slack 卡片附件 + 文本兜底；telegram 仅文字，附件 N/A）。卡片模式回执 spawn 不阻塞提交处理。
-- R3 动态引导 + `/help`：`autochannel::{classify→Parsed, Command::Help, help_text(auto, has_active_question)}`；
-  `/here` 关态改回引导（不再静默）；未知 `/命令` 回引导。引导**不含「已收到」**。
-- R3 协调：观察者在该渠道**有活动在途提问**时退避（`has_active_question_on`），交会话就地回执，避免重复回复。
-- R5 识别回执：`handle_detect` 成功后 `send_detect_ack` 经该 IM 回「识别成功，已自动填入<字段>」（不回显 ID）。
-- i18n 键：`autoChannel.help*` / `ack*Card|Fallback` / `detectAck|detectField*`（中英）。overview.md 已更新。
-
-**待办**：真机自测（四家：作答中发图片/文件/文字的回执；无提问时发普通消息/命令/未知命令的引导；`/detect` 成功回执；
-关/开自动激活两态；回归现有作答/抢答/补推）→ 通过后清此 section 并按需提交。
+**待办**：headless 预热仅 Linux 可验（mac N/A）。
 
 ## 待办：daemon 二进制变化检测 —— 轮询 vs filewatch（后续评估，优先级低）
 
