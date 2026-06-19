@@ -53,12 +53,14 @@ rAF 根本不回调（`background_throttling(Disabled)` 只防节流、不为隐
 弹窗照常上屏**（`gui.win_show` 触发），仅 show 后的 `fe.painted`/harness autodismiss 因无刷新而暂停（只影响 harness，
 其本就拒绝锁屏运行）。无「加载中→正文」闪现（show 时 DOM 已是正文）。
 
-**已验证**：daemon 重启日志 `preheating popup helper`/`warm popup ready`；隔离机热路径端到端 `dmn.assigned`→
-`gui.show_recv`→`gui.win_show`→`fe.painted`（解锁 ~212ms exit；息屏 show 仍触发）；GUI-free 生命周期（开→1 热进程、
-关→回收 0、再开→重补 1、停 daemon→自杀 0）。
+**已验证 + 已提交（`87fa55e`，未 push）**：
+- daemon 日志 `preheating popup helper`/`warm popup ready`；GUI-free 生命周期（开→1 热进程、关→回收 0、再开→重补 1、停 daemon→自杀 0）。
+- 三档基线已采（`docs/perf/baseline.json`）：**hot e2e p90 ≈ 161ms vs warm 505ms（-68%）**、`show→painted` 476→135ms（-72%）；cold/warm 无回归。
+- 锁屏/息屏：弹窗照常上屏（`gui.win_show` 触发，show 不依赖 rAF）；仅 show 后 `fe.painted`/autodismiss 暂停（只影响 harness）。
+- 并发：2 并发 = 1 hot(`dmn.assigned`) + 1 cold(`dmn.spawned`)，均绘制+退出（透明回退 OK）。
 
-**待办**：① 解锁+唤醒+勿遮挡下跑 `node scripts/perf-popup.mjs --update-baseline` 采三档基线（含 hot）；
-② 真机视觉 sanity（连弹/并发第2 冷回退/改主题/drain 换新；headless 仅 Linux）；③ 文档收尾 + 提交。
+**待办（需真机/人眼）**：① 视觉确认无闪现/空白/旧内容（阶段1 问题待答）；② 改主题后热弹窗取新主题；
+③ drain 换新回收+重补（toggle/stop 已验，drain 同走 `recycle_warm`，待真机确认）；④ headless（仅 Linux）；⑤ `git push`（待你确认）。
 
 ## 待办：daemon 二进制变化检测 —— 轮询 vs filewatch（后续评估，优先级低）
 
