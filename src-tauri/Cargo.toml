@@ -59,8 +59,9 @@ futures-util = "0.3.32"
 # 不引入 prost-build / protoc / build.rs（帧结构极小，自持更可控）。
 prost = "0.13"
 sys-locale = "0.3.2"
-# Markdown 解析（文本附件转 docx）。禁用 html/simd 等默认特性以控体积。
-pulldown-cmark = { version = "0.13.4", default-features = false }
+# Markdown 解析（文本附件转 docx + macOS QuickLook 渲染预览）。禁用 simd 等默认特性以控体积，
+# 仅保留 `html`（QuickLook 预览把 .md 渲染成 HTML 走原生面板，见 macos_quicklook.rs）。
+pulldown-cmark = { version = "0.13.4", default-features = false, features = ["html"] }
 # 打包 docx（OOXML zip）。仅启用 flate2+zlib-rs 的 deflate 后端（快且小，避免 zopfli）。
 zip = { version = "4.2.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 # 钉钉图片仅支持 jpg/png/gif/bmp(≤1MB)：把 webp 等不支持格式转码、并对超限图做缩放保护。

@@ -164,9 +164,11 @@ unsafe fn ensure_controller(app: &AppHandle, window: usize) -> Retained<Controll
 
 /// 打开预览：展示 `paths[index]` 单个文件；方向键经 handleEvent 逐个联动切换。
 pub fn show(app: AppHandle, window: usize, paths: &[String], index: usize) {
+    // Markdown 附件：渲染成自包含 HTML 临时文件再交给 QuickLook（系统对 .md 无渲染器，只显示源码）；
+    // 其它文件或渲染失败 → 用原路径按原样预览。
     let urls: Vec<Retained<NSURL>> = paths
         .iter()
-        .map(|p| NSURL::fileURLWithPath(&NSString::from_str(p)))
+        .map(|p| NSURL::fileURLWithPath(&NSString::from_str(&effective_preview_path(p))))
         .collect();
     if urls.is_empty() {
         return;
@@ -249,6 +251,130 @@ pub fn file_icon_png_base64(path: &str) -> Result<String, String> {
         Ok(format!("data:image/png;base64,{}", b64))
     }
 }
+
+/// 已识别的 Markdown 扩展名（小写、含点）。
+const MARKDOWN_EXTS: [&str; 5] = [".md", ".markdown", ".mdown", ".mkd", ".mdwn"];
+
+/// 取该路径用于 QuickLook 预览的实际文件：Markdown → 渲染成临时 HTML 返回其路径；
+/// 非 Markdown 或渲染失败 → 原路径（让 QuickLook 按原样预览，至少不丢功能）。
+fn effective_preview_path(path: &str) -> String {
+    let lower = path.to_ascii_lowercase();
+    if !MARKDOWN_EXTS.iter().any(|e| lower.ends_with(e)) {
+        return path.to_string();
+    }
+    render_markdown_to_temp_html(path).unwrap_or_else(|| path.to_string())
+}
+
+/// 读取 Markdown 文件、渲染为自包含 HTML（内联 CSS、深浅色自适应）写入临时文件，返回其路径。
+/// 临时文件落在 `temp/askhuman/preview/<uuid>/<原名>.html`：纳入 daemon 的 24h temp 清理；
+/// 独立子目录避免同名附件相互覆盖，并让标题栏显示「<原名>.html」（而非随机串）。
+fn render_markdown_to_temp_html(path: &str) -> Option<String> {
+    let src = std::fs::read_to_string(path).ok()?;
+    let stem = std::path::Path::new(path)
+        .file_stem()
+        .and_then(|n| n.to_str())
+        .unwrap_or("preview");
+    let title = std::path::Path::new(path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("preview");
+    let doc = wrap_html(title, &markdown_to_html(&src));
+
+    let dir = std::env::temp_dir()
+        .join("askhuman")
+        .join("preview")
+        .join(uuid::Uuid::new_v4().to_string());
+    std::fs::create_dir_all(&dir).ok()?;
+    let out = dir.join(format!("{}.html", stem));
+    std::fs::write(&out, doc.as_bytes()).ok()?;
+    Some(out.to_string_lossy().into_owned())
+}
+
+/// Markdown → HTML 片段。启用常用 GFM 扩展；**原始 HTML 一律转义为文本**（对齐前端
+/// markdown-it 的 `html:false`，避免本地预览里执行任意标记）。
+fn markdown_to_html(src: &str) -> String {
+    use pulldown_cmark::{html, Event, Options, Parser};
+    let mut opts = Options::empty();
+    opts.insert(Options::ENABLE_TABLES);
+    opts.insert(Options::ENABLE_STRIKETHROUGH);
+    opts.insert(Options::ENABLE_TASKLISTS);
+    opts.insert(Options::ENABLE_FOOTNOTES);
+    let parser = Parser::new_ext(src, opts).map(|ev| match ev {
+        Event::Html(s) | Event::InlineHtml(s) => Event::Text(s),
+        other => other,
+    });
+    let mut out = String::new();
+    html::push_html(&mut out, parser);
+    out
+}
+
+/// 包成自包含 HTML 文档：内联样式 + 深浅色随系统（QuickLook 用 WebKit 渲染、遵循系统外观）。
+fn wrap_html(title: &str, body: &str) -> String {
+    format!(
+        "<!DOCTYPE html><html><head><meta charset=\"utf-8\">\
+<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
+<title>{title}</title><style>{css}</style></head>\
+<body><article class=\"markdown-body\">{body}</article></body></html>",
+        title = escape_html_min(title),
+        css = PREVIEW_CSS,
+        body = body,
+    )
+}
+
+/// 最小 HTML 转义（仅用于 `<title>`）。
+fn escape_html_min(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+/// 预览样式：简洁 GitHub 风，深浅色随系统。
+const PREVIEW_CSS: &str = r#"
+:root { color-scheme: light dark; }
+body {
+  margin: 0;
+  background: #ffffff;
+  color: #1f2328;
+  font: 15px/1.65 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Arial, "PingFang SC", "Hiragino Sans GB", sans-serif;
+}
+.markdown-body { max-width: 820px; margin: 0 auto; padding: 28px 32px 48px; word-wrap: break-word; }
+.markdown-body h1, .markdown-body h2 { border-bottom: 1px solid #d8dee4; padding-bottom: .3em; }
+.markdown-body h1 { font-size: 1.9em; } .markdown-body h2 { font-size: 1.5em; }
+.markdown-body h3 { font-size: 1.25em; } .markdown-body h4 { font-size: 1em; }
+.markdown-body h1, .markdown-body h2, .markdown-body h3, .markdown-body h4, .markdown-body h5, .markdown-body h6 {
+  margin: 1.4em 0 .6em; font-weight: 600; line-height: 1.3;
+}
+.markdown-body p, .markdown-body ul, .markdown-body ol, .markdown-body blockquote, .markdown-body table, .markdown-body pre { margin: 0 0 1em; }
+.markdown-body a { color: #0969da; text-decoration: none; }
+.markdown-body a:hover { text-decoration: underline; }
+.markdown-body code {
+  font: .88em/1.5 ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  background: rgba(129,139,152,.18); padding: .2em .4em; border-radius: 6px;
+}
+.markdown-body pre {
+  background: #f6f8fa; padding: 14px 16px; border-radius: 8px; overflow: auto;
+}
+.markdown-body pre code { background: none; padding: 0; }
+.markdown-body blockquote { color: #59636e; border-left: .25em solid #d0d7de; padding: 0 1em; }
+.markdown-body table { border-collapse: collapse; display: block; overflow: auto; }
+.markdown-body th, .markdown-body td { border: 1px solid #d0d7de; padding: 6px 13px; }
+.markdown-body tr:nth-child(2n) { background: #f6f8fa; }
+.markdown-body img { max-width: 100%; }
+.markdown-body hr { border: 0; border-top: 1px solid #d8dee4; margin: 1.6em 0; }
+.markdown-body ul.contains-task-list { list-style: none; padding-left: 1.2em; }
+.markdown-body li input[type=checkbox] { margin: 0 .4em 0 -1.2em; }
+@media (prefers-color-scheme: dark) {
+  body { background: #1e1e1e; color: #e6edf3; }
+  .markdown-body h1, .markdown-body h2 { border-bottom-color: #3d444d; }
+  .markdown-body a { color: #4493f8; }
+  .markdown-body code { background: rgba(101,108,118,.32); }
+  .markdown-body pre { background: #161b22; }
+  .markdown-body blockquote { color: #9198a1; border-left-color: #3d444d; }
+  .markdown-body th, .markdown-body td { border-color: #3d444d; }
+  .markdown-body tr:nth-child(2n) { background: #161b22; }
+  .markdown-body hr { border-top-color: #3d444d; }
+}
+"#;
 
 /// 关闭当前预览面板（若存在且可见）。
 pub fn hide() {
