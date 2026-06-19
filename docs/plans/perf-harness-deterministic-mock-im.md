@@ -15,7 +15,8 @@
 
 - 所有运行时路径都在 `$HOME/.askhuman` 下（socket/lock/perf.log/agents/config）。harness 用临时 `HOME` 起**独立 daemon**，与真实 daemon 并存互不干扰。
 - canonical 配置：harness 在隔离 `HOME` 写一份 `config.json`，**启用全部 4 个 channel**、凭据为占位串、base URL 指向本地 mock，并开 `channels.popup.enabled`。
-- 隔离 daemon 不读用户钥匙串场景（凭据走 config.json 明文占位即可，`AppConfig::load` 钥匙串缺失回退明文）。
+- **零钥匙串副作用（实现时补）**：OS 钥匙串**不随 `HOME` 隔离**，`AppConfig::load()` 会把 config 里的明文占位密钥**迁移进/覆盖用户真实钥匙串**。故新增测试开关 `ASKHUMAN_NO_KEYCHAIN=1`（`secrets.rs`：等价「钥匙串不可用→明文回退」，零钥匙串读写、跨重载幂等），harness 对所有子进程设置之。
+- **屏幕可见守卫（实现时补）**：`fe.painted` 靠真实 WebView 的 `requestAnimationFrame`，macOS 锁屏/息屏/遮挡时会暂停 rAF → 弹窗不上屏、autodismiss 不触发、ask 挂超时。故 harness 启动前与每轮前读 `ioreg -n Root -d1 -r` 的 `CGSSessionScreenIsLocked`，**锁屏即报错不跑**；运行期开 `caffeinate -d` 防息屏；任一轮超时即判数据无效、报错中止。
 
 ## 改动一：Rust 侧 base URL 可被环境变量覆盖（仅测试用，默认不变）
 

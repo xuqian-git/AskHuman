@@ -17,8 +17,6 @@ use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 
-const CONNECTIONS_OPEN: &str = "https://slack.com/api/apps.connections.open";
-
 type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 /// 上抛给上层的业务事件（皆已 ack）。
@@ -161,7 +159,7 @@ pub async fn open_socket_url(
     app_token: &str,
 ) -> Result<String, SlackError> {
     let resp = http
-        .post(CONNECTIONS_OPEN)
+        .post(format!("{}/apps.connections.open", super::api_base()))
         .bearer_auth(app_token)
         .send()
         .await

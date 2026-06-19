@@ -19,6 +19,17 @@ pub mod ws;
 
 use std::fmt;
 
+/// Slack Web API base (`https://slack.com/api`). Overridable via `ASKHUMAN_SLACK_API_BASE` for
+/// tests/CI (the perf harness points it at a local mock IM); unset → the real endpoint, so
+/// production behaviour is unchanged. Covers Web API calls and Socket Mode `apps.connections.open`.
+pub fn api_base() -> String {
+    std::env::var("ASKHUMAN_SLACK_API_BASE")
+        .ok()
+        .map(|v| v.trim().trim_end_matches('/').to_string())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "https://slack.com/api".to_string())
+}
+
 #[derive(Debug)]
 pub enum SlackError {
     /// 配置缺失（附字段名提示）。

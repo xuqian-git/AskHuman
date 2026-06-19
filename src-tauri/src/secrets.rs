@@ -27,12 +27,26 @@ pub const ACCOUNT_SLACK_APP_TOKEN: &str = "channels.slack.appToken";
 #[derive(Debug, Clone, Copy)]
 pub struct Unavailable;
 
+/// Test/CI escape hatch: when `ASKHUMAN_NO_KEYCHAIN` is set (non-empty, != "0"), behave as if the
+/// secret store were unreachable — reads report `Unavailable`, writes/deletes no-op as `Unavailable`.
+/// Callers then fall back to plaintext config (see `config.rs`) without ever touching the real OS
+/// keychain (which is NOT isolated by `$HOME`). This keeps isolated runs — e.g. the perf harness
+/// under a throwaway `$HOME` — from reading or clobbering the user's real channel secrets.
+fn disabled() -> bool {
+    std::env::var("ASKHUMAN_NO_KEYCHAIN")
+        .map(|v| !v.is_empty() && v != "0")
+        .unwrap_or(false)
+}
+
 fn entry(account: &str) -> Result<Entry, Unavailable> {
     Entry::new(SERVICE, account).map_err(|_| Unavailable)
 }
 
 /// Read a secret. `Ok(None)` means "not set"; `Err(Unavailable)` means the store is unreachable.
 pub fn get(account: &str) -> Result<Option<String>, Unavailable> {
+    if disabled() {
+        return Err(Unavailable);
+    }
     match entry(account)?.get_password() {
         Ok(v) => Ok(Some(v)),
         Err(Error::NoEntry) => Ok(None),
@@ -42,11 +56,17 @@ pub fn get(account: &str) -> Result<Option<String>, Unavailable> {
 
 /// Create or overwrite a secret.
 pub fn set(account: &str, value: &str) -> Result<(), Unavailable> {
+    if disabled() {
+        return Err(Unavailable);
+    }
     entry(account)?.set_password(value).map_err(|_| Unavailable)
 }
 
 /// Delete a secret. A missing entry counts as success.
 pub fn delete(account: &str) -> Result<(), Unavailable> {
+    if disabled() {
+        return Err(Unavailable);
+    }
     match entry(account)?.delete_credential() {
         Ok(()) | Err(Error::NoEntry) => Ok(()),
         Err(_) => Err(Unavailable),

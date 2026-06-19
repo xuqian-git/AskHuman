@@ -174,7 +174,7 @@ async fn open_ws(
         "localIp": "127.0.0.1",
     });
     let resp = http
-        .post("https://api.dingtalk.com/v1.0/gateway/connections/open")
+        .post(format!("{}/v1.0/gateway/connections/open", super::api_base()))
         .json(&body)
         .send()
         .await

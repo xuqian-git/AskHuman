@@ -35,7 +35,7 @@ pub async fn get_token(
     }
 
     let resp = http
-        .post("https://api.dingtalk.com/v1.0/oauth2/accessToken")
+        .post(format!("{}/v1.0/oauth2/accessToken", super::api_base()))
         .json(&serde_json::json!({ "appKey": client_id, "appSecret": client_secret }))
         .send()
         .await

@@ -8,7 +8,6 @@ use crate::config::DingTalkChannelConfig;
 use serde_json::{json, Value};
 use std::time::Duration;
 
-const API_BASE: &str = "https://api.dingtalk.com";
 const OAPI_BASE: &str = "https://oapi.dingtalk.com";
 
 #[derive(Clone)]
@@ -79,7 +78,7 @@ impl DingTalkClient {
         let token = self.token().await?;
         let resp = self
             .http
-            .request(method, format!("{}{}", API_BASE, path))
+            .request(method, format!("{}{}", super::api_base(), path))
             .header("x-acs-dingtalk-access-token", token)
             .json(&body)
             .send()

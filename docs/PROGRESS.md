@@ -2,24 +2,28 @@
 
 按具体任务 / 需求记录待办与当前进展。任务 / 需求完成后删除其 section（历史留在 git）。
 
-## 进行中：弹窗启动延迟性能优化（埋点 + harness 已落地，优化方案待做）
+## 进行中：弹窗启动延迟性能优化（埋点 + 确定性 harness 已落地，待采基线 → 再做优化方案）
 
-文档：`docs/specs/popup-launch-performance.md`（完整调用链、等待点清单、优化方案、度量方法论 §7）。
+文档：`docs/specs/popup-launch-performance.md`（调用链、等待点、优化方案、度量方法论 §7）。
+harness 计划：`docs/plans/perf-harness-deterministic-mock-im.md`。优化计划：`docs/plans/popup-launch-low-risk-optimization.md`。
 
 已完成：
-- **埋点**（`ASKHUMAN_PERF` 门控，默认关、零开销）：`src-tauri/src/perf.rs` + CLI/daemon/helper/前端 16 个里程碑，
+- **埋点**（`ASKHUMAN_PERF` 门控，默认关、零开销）：`src-tauri/src/perf.rs` + CLI/daemon/helper/前端 ~18 里程碑，
   统一写 `~/.askhuman/perf.log`（`<epoch_ms>\t<perf_id>\t<stage>\t<pid>`），按 `perf_id` 串联整条时间线。
-- **harness**：`scripts/perf-popup.mjs`——零交互（弹窗画完首帧自动取消）跑 N 次、聚合中位/p90、
-  存/比基线、端到端 p90 超阈（默认 20%）退出码 1。
-- 已 `install.sh` 装好并实测：端到端热路径 ~0.55s，GUI/页面加载占 ~90%（基线样例见文档「附」）。
+- **确定性 harness**（无脑单命令 `node scripts/perf-popup.mjs`，固定 canonical 场景 + 固定基线 `docs/perf/baseline.json`，
+  有则比/无则建/劣化退非零，仅留 `--update-baseline`）：
+  - 隔离 daemon（临时 HOME，绝不碰真实 daemon / 在途）+ `ASKHUMAN_NO_KEYCHAIN=1`（零钥匙串副作用）。
+  - **本地 mock IM 全 4 渠道**（`scripts/perf-mock-im.mjs`）：建连+发送各注入 ~150ms 当「IM 阻塞弹窗」探针；
+    钉钉/Slack 硬编码端点经新 env `ASKHUMAN_{DINGTALK,SLACK}_API_BASE` 指向 mock（仅测试，未设不变）。
+  - **冷+热同跑**两组、各出表，基线含 `cold`/`warm`。
+  - **屏幕守卫**：锁屏（`ioreg` 读 `CGSSessionScreenIsLocked`）报错不跑、`caffeinate -d` 防息屏、弹窗未上屏即中止。
 
-harness 改进：改用**隔离 daemon**（临时 HOME，绝不碰真实 daemon / 在途提问），支持 `--cold`；
-新增 spawn 起点（含进程创建）+ 终点双 rAF。隔离基线已刷新到 `docs/perf/baseline.json`
-（端到端含 spawn p90 ≈474ms，page boot ~357ms 是大头）。
+**当前卡点 / 下一步**：本机此刻锁屏，无法采集真实基线（弹窗 rAF 被暂停）。需在**屏幕解锁+唤醒+勿遮挡弹窗**下跑
+`node scripts/perf-popup.mjs --update-baseline` 采 cold/warm 基线写入 `docs/perf/baseline.json`，随后再做优化方案。
 
-计划：`docs/plans/popup-launch-low-risk-optimization.md`（首轮低风险组合 = 方案7 代码分割 + 方案2
-popupInit 提前 + 方案1 main.ts 不阻塞 + 支撑改动「popup_init 作为弹窗唯一非钥匙串配置源」）。
-**待用户确认计划后再改优化代码。** 后续：方案6 预热（大头）、方案5 detect 移 daemon 等见 spec §4-6。
+后续优化：首轮低风险组合 = 方案7 代码分割 + 方案2 popupInit 提前 + 方案1 main.ts 不阻塞
+（见 `docs/plans/popup-launch-low-risk-optimization.md`，**待基线就绪后再改优化代码**）；
+再后：方案6 预热（大头）、方案5 detect 移 daemon 等见 spec §4-6。
 
 ## 待办：daemon 二进制变化检测 —— 轮询 vs filewatch（后续评估，优先级低）
 

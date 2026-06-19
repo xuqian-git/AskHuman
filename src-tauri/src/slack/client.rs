@@ -9,9 +9,6 @@ use crate::config::SlackChannelConfig;
 use serde_json::{json, Value};
 use std::time::Duration;
 
-/// Slack Web API 根地址（固定）。
-const API_BASE: &str = "https://slack.com/api";
-
 /// 等待文件分享进时间线的最长时长（实测约数秒，留足余量）。
 const FILE_SHARE_TIMEOUT: Duration = Duration::from_secs(15);
 /// 轮询 `files.info` 的间隔。
@@ -68,7 +65,7 @@ impl SlackClient {
     async fn call(&self, method: &str, body: Value) -> Result<Value, SlackError> {
         let resp = self
             .http
-            .post(format!("{}/{}", API_BASE, method))
+            .post(format!("{}/{}", super::api_base(), method))
             .bearer_auth(&self.bot_token)
             .json(&body)
             .send()
@@ -162,7 +159,7 @@ impl SlackClient {
         // 1. 取上传地址 + file_id（form 编码）。
         let v = self
             .http
-            .post(format!("{}/files.getUploadURLExternal", API_BASE))
+            .post(format!("{}/files.getUploadURLExternal", super::api_base()))
             .bearer_auth(&self.bot_token)
             .form(&[("filename", name), ("length", &length.to_string())])
             .send()

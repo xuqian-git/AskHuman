@@ -19,6 +19,17 @@ pub mod token;
 
 use std::fmt;
 
+/// DingTalk OpenAPI base (`https://api.dingtalk.com`). Overridable via `ASKHUMAN_DINGTALK_API_BASE`
+/// for tests/CI (the perf harness points it at a local mock IM); unset → the real endpoint, so
+/// production behaviour is unchanged. Covers token, Stream `connections/open` and card OpenAPI calls.
+pub fn api_base() -> String {
+    std::env::var("ASKHUMAN_DINGTALK_API_BASE")
+        .ok()
+        .map(|v| v.trim().trim_end_matches('/').to_string())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "https://api.dingtalk.com".to_string())
+}
+
 #[derive(Debug)]
 pub enum DingTalkError {
     /// 配置缺失（附字段名提示）。
