@@ -173,6 +173,19 @@ mod unix_impl {
         active_channel: Mutex<Option<String>>,
         /// 已启动入站监听器的注册表（防重复 spawn + 改配置时主动停旧监听并重建）。
         inbound_listeners: InboundRegistry,
+        /// 方案6 弹窗预热「热池」：最多 1 个已挂载、隐藏待命的热实例连接。来请求时 `dispatch_popup` 取出
+        /// 并把请求 entry 交给其 holder 任务领用上屏，省掉冷 spawn + WebView 初始化。**非保活**（不计入
+        /// `active`），daemon 仍可正常空闲退出（在途请求由 CLI submit 连接保活）。
+        warm_pool: Mutex<Option<WarmSlot>>,
+        /// 正在补热中（去重，避免并发 spawn 多个热实例）。
+        warm_spawning: AtomicBool,
+    }
+
+    /// 热池中一个待命热实例的句柄：`assign` 用于把领用的请求 entry 交给其 holder 任务（`handle_gui_warm`）；
+    /// `gui_tx` 仅用于身份比对（热进程自然死亡时判定池中是否仍是本槽）。
+    struct WarmSlot {
+        assign: tokio::sync::oneshot::Sender<Arc<request::RequestEntry>>,
+        gui_tx: tokio::sync::mpsc::UnboundedSender<ServerMsg>,
     }
 
     /// 入站监听注册表：渠道 id → 该监听任务的停止信号（`Notify`）。
@@ -362,6 +375,8 @@ mod unix_impl {
             tray_subs: Mutex::new(Vec::new()),
             active_channel: Mutex::new(crate::autochannel::load_active()),
             inbound_listeners: InboundRegistry::default(),
+            warm_pool: Mutex::new(None),
+            warm_spawning: AtomicBool::new(false),
         });
 
         // 空闲退出检查。
@@ -461,6 +476,10 @@ mod unix_impl {
         // 菜单栏图标已开启则兜底拉起 GUI 宿主（单实例去重；always 主要靠登录项）。
         maybe_spawn_gui_host(&state.config.lock().unwrap().clone());
 
+        // 方案6：daemon ready 后预热一个弹窗实例（self-gated：关 / 无显示则不补）。新 daemon / 二进制换新
+        // 后的首个弹窗仍冷，但其余请求都能命中热实例。
+        maybe_topup_warm(&state);
+
         loop {
             tokio::select! {
                 _ = state.shutdown.notified() => break,
@@ -481,6 +500,9 @@ mod unix_impl {
             tokio::time::sleep(Duration::from_millis(2000)).await;
         }
 
+        // 方案6：关停前回收热实例（drop 连接 → 热进程收 EOF 自杀，不悬挂）。
+        recycle_warm(&state);
+
         // 退出前持久化 agent 注册表（spec D18：换新 / 闲退后由新 daemon 重载复核）。
         state.agents.persist();
 
@@ -499,6 +521,8 @@ mod unix_impl {
     enum Control {
         Submit(TaskRequest),
         Gui(String),
+        /// 方案6 预热弹窗握手：接管连接，入热池待命、等领用。
+        GuiWarm,
         /// 状态窗口订阅：接管连接，持续推送 agent 快照。
         AgentsSub,
         /// 菜单栏宿主订阅：接管连接，持续推送 `TrayState`（非保活）。
@@ -515,6 +539,7 @@ mod unix_impl {
         match control_loop(&mut reader, &mut w, &state).await {
             Control::Submit(task) => handle_submit(task, reader, w, &state).await,
             Control::Gui(token) => handle_gui(token, reader, w, &state).await,
+            Control::GuiWarm => handle_gui_warm(reader, w, &state).await,
             Control::AgentsSub => handle_agents_sub(reader, w, &state).await,
             Control::TraySub => handle_tray_sub(reader, w, &state).await,
             Control::Closed => {}
@@ -624,6 +649,8 @@ mod unix_impl {
                 }
                 ClientMsg::Submit(task) => return Control::Submit(task),
                 ClientMsg::GuiHello { token } => return Control::Gui(token),
+                // 方案6 预热弹窗握手（无 token）：接管连接入热池待命。
+                ClientMsg::GuiWarmReady => return Control::GuiWarm,
                 // Agent 生命周期事件上报（即发即走）：更新注册表，变化则持久化 + 推订阅窗口。
                 ClientMsg::AgentEvent {
                     agent,
@@ -682,6 +709,9 @@ mod unix_impl {
         if state.draining.swap(true, Ordering::SeqCst) {
             return; // 已在排空。
         }
+        // 方案6：进入排空即回收热实例（它是旧二进制；新 daemon 起来后再补热）。`draining` 已置位，
+        // 故后续不会再补热；排空期到来的请求走冷路径（现有 drain 语义）。
+        recycle_warm(state);
         broadcast_tray_state(state);
         let state = state.clone();
         tokio::spawn(async move {
@@ -784,27 +814,17 @@ mod unix_impl {
         // 初始化与下面的「入站监听 + IM 建连」并行——token 在 `registry.create()` 即登记，helper 可
         // 立即连上，不存在「helper 先连、entry 未注册」竞态。冷启动下这把 IM 建连（数百 ms）整段移出
         // 弹窗端到端关键路径。
-        let popup_ok = match spawn_gui_helper(&entry.token, &perf_id, perf_autodismiss) {
-            Ok(()) => {
-                crate::perf::mark(&perf_id, "dmn.spawned");
-                true
-            }
-            Err(e) => {
-                log(&format!("failed to spawn GUI helper: {}", e));
-                let _ = ipc::write_msg(
-                    &mut w,
-                    &ServerMsg::Warn {
-                        text: format!(
-                            "{}failed to spawn popup: {}",
-                            crate::i18n::err_prefix(lang),
-                            e
-                        ),
-                    },
-                )
-                .await;
-                false
-            }
-        };
+        // 方案6：优先领用热池中的预热弹窗（秒级上屏）；池空 / 关 / 无显示 / holder 死 → 回退冷 spawn。
+        let popup_ok = dispatch_popup(&entry, state, &perf_id, perf_autodismiss);
+        if !popup_ok {
+            let _ = ipc::write_msg(
+                &mut w,
+                &ServerMsg::Warn {
+                    text: format!("{}failed to spawn popup", crate::i18n::err_prefix(lang)),
+                },
+            )
+            .await;
+        }
 
         // 方案5(b)：从 caller_pid 异步向上 walk 进程树解析 agent（家族 + pid，含 env 判不出时的 MCP 兜底），
         // 完成后补刷注册表活动并把结果后推弹窗 badge。整段在独立任务里跑，绝不阻塞本请求的关键路径。
@@ -903,10 +923,10 @@ mod unix_impl {
         log(&format!("request {} done", request_id));
     }
 
-    /// GUI Helper 连接：凭 token 关联请求、下发 show、收 answer 投递协调器。
+    /// GUI Helper 连接：凭 token 关联请求，随后进入 `serve_gui`（下发 show、收 answer 投递协调器）。
     async fn handle_gui(
         token: String,
-        mut reader: Reader,
+        reader: Reader,
         w: OwnedWriteHalf,
         state: &Arc<ServerState>,
     ) {
@@ -914,8 +934,6 @@ mod unix_impl {
             log("gui hello with unknown token; closing");
             return;
         };
-        entry.gui_connected.store(true, Ordering::SeqCst);
-
         // GUI 发送端：专用写任务串行写出 ServerMsg，供 show 下发与 adapter cancel 共用。
         let (gui_tx, mut gui_rx) = tokio::sync::mpsc::unbounded_channel::<ServerMsg>();
         let mut w = w;
@@ -926,6 +944,20 @@ mod unix_impl {
                 }
             }
         });
+        serve_gui(entry, reader, gui_tx, writer, state).await;
+    }
+
+    /// 冷/热弹窗共用的「服务」尾段：登记 `entry.gui` 写端、下发 show、补发 AgentResolved/UpdateState，
+    /// 随后读 GUI 答复 / 等取消通知，收尾清空 `entry.gui` 槽并结束写任务（→ Helper EOF 退出）。
+    /// 冷路径由 `handle_gui` 在 token 握手后调用；热路径由 `handle_gui_warm` 在被领用后调用。
+    async fn serve_gui(
+        entry: Arc<request::RequestEntry>,
+        mut reader: Reader,
+        gui_tx: tokio::sync::mpsc::UnboundedSender<ServerMsg>,
+        writer: tokio::task::JoinHandle<()>,
+        state: &Arc<ServerState>,
+    ) {
+        entry.gui_connected.store(true, Ordering::SeqCst);
         if let Ok(mut slot) = entry.gui.lock() {
             *slot = Some(gui_tx.clone());
         }
@@ -989,6 +1021,81 @@ mod unix_impl {
         }
         drop(gui_tx);
         let _ = writer.await;
+    }
+
+    /// 方案6 预热弹窗连接（`--popup --warm` 拉起的进程 → `GuiWarmReady`）：建专用写端、入热池待命，
+    /// 等二选一——① `dispatch_popup` 领用并经 `assign` 交来请求 entry → 进入 `serve_gui`；
+    /// ② 连接 EOF/holder 死亡 → 清池 + 触发补热。**非保活**（不计入 `active`，同托盘订阅）。
+    async fn handle_gui_warm(mut reader: Reader, w: OwnedWriteHalf, state: &Arc<ServerState>) {
+        // 非保活：抵消 `handle_conn` 入口的 active+1，使「仅有待命热实例」时 daemon 仍可空闲退出。
+        state.active.fetch_sub(1, Ordering::SeqCst);
+
+        let (gui_tx, mut gui_rx) = tokio::sync::mpsc::unbounded_channel::<ServerMsg>();
+        let mut w = w;
+        let writer = tokio::spawn(async move {
+            while let Some(msg) = gui_rx.recv().await {
+                if ipc::write_msg(&mut w, &msg).await.is_err() {
+                    break;
+                }
+            }
+        });
+
+        // 入池（恒 ≤1）：池已占说明已有热实例 → 本连接多余，直接关闭退出。
+        // 注意：MutexGuard 非 Send，绝不能跨 await 持有 → 用紧作用域块只算出 `occupied` 布尔，再在块外 await。
+        let (assign_tx, assign_rx) = tokio::sync::oneshot::channel::<Arc<request::RequestEntry>>();
+        let occupied = {
+            let mut pool = state.warm_pool.lock().unwrap();
+            if pool.is_some() {
+                true
+            } else {
+                *pool = Some(WarmSlot {
+                    assign: assign_tx,
+                    gui_tx: gui_tx.clone(),
+                });
+                state.warm_spawning.store(false, Ordering::SeqCst);
+                false
+            }
+        };
+        if occupied {
+            drop(gui_tx);
+            let _ = writer.await;
+            state.active.fetch_add(1, Ordering::SeqCst);
+            return;
+        }
+        log("warm popup ready; standing by");
+
+        // 待命：等领用（biased 优先，避免与 EOF 竞态丢失领用）或连接断开（热进程死亡）。
+        let assigned = tokio::select! {
+            biased;
+            a = assign_rx => a.ok(),
+            _ = wait_cli_eof(&mut reader) => None,
+        };
+
+        match assigned {
+            // 被领用：与冷路径同尾段（下发 show + 读应答）。
+            Some(entry) => {
+                serve_gui(entry, reader, gui_tx, writer, state).await;
+            }
+            // 热进程死亡 / 被回收：若池中仍是本槽则清空。
+            None => {
+                {
+                    let mut pool = state.warm_pool.lock().unwrap();
+                    if pool
+                        .as_ref()
+                        .map(|s| s.gui_tx.same_channel(&gui_tx))
+                        .unwrap_or(false)
+                    {
+                        *pool = None;
+                    }
+                }
+                drop(gui_tx);
+                let _ = writer.await;
+            }
+        }
+
+        state.active.fetch_add(1, Ordering::SeqCst);
+        // 领用 / 死亡后维持池满（self-gated：关 / 无显示 / draining 则不补）。
+        maybe_topup_warm(state);
     }
 
     /// 是否有状态窗口在订阅。
@@ -2173,6 +2280,124 @@ mod unix_impl {
         cmd.spawn().map(|_| ())
     }
 
+    /// 方案6：spawn 一个预热弹窗进程（`--popup --warm`，无 token、无 perf env）。它会建好隐藏窗 + 挂载前端
+    /// 后发 `GuiWarmReady` 入热池待命。
+    fn spawn_warm_helper() -> std::io::Result<()> {
+        use std::process::{Command, Stdio};
+        let exe = std::env::current_exe()?;
+        let mut cmd = Command::new(exe);
+        cmd.arg("--popup")
+            .arg("--warm")
+            .arg("--endpoint")
+            .arg(transport::socket_path())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        cmd.spawn().map(|_| ())
+    }
+
+    /// 弹窗预热是否启用（配置开关，读最近一次配置快照，无磁盘 I/O）。
+    fn warm_enabled(state: &Arc<ServerState>) -> bool {
+        state
+            .config
+            .lock()
+            .map(|c| c.general.popup_prewarm)
+            .unwrap_or(false)
+    }
+
+    /// 是否有可用显示（§D-M3）：无显示（headless）不预热，零浪费。macOS 恒真（GUI 会话）；
+    /// Linux 看 `DISPLAY`/`WAYLAND_DISPLAY`。
+    fn has_display() -> bool {
+        #[cfg(target_os = "macos")]
+        {
+            true
+        }
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            std::env::var_os("DISPLAY").is_some() || std::env::var_os("WAYLAND_DISPLAY").is_some()
+        }
+    }
+
+    /// 方案6 弹窗派发：优先领用热池中的预热弹窗（把请求 entry 交给其 holder 任务，秒级上屏）；
+    /// 池空 / 开关关 / 无显示 / holder 已死 → 回退冷 spawn。返回弹窗是否成功就绪。
+    fn dispatch_popup(
+        entry: &Arc<request::RequestEntry>,
+        state: &Arc<ServerState>,
+        perf_id: &str,
+        perf_autodismiss: bool,
+    ) -> bool {
+        // 取出热池槽（恒 ≤1）。
+        let slot = state.warm_pool.lock().unwrap().take();
+        if let Some(slot) = slot {
+            match slot.assign.send(entry.clone()) {
+                Ok(()) => {
+                    crate::perf::mark(perf_id, "dmn.assigned");
+                    // 领用成功 → 立即补热，维持池满。
+                    maybe_topup_warm(state);
+                    return true;
+                }
+                Err(_) => {
+                    // holder 已死（罕见竞态）：池已 take 空，触发补热后回退冷路径。
+                    maybe_topup_warm(state);
+                }
+            }
+        }
+        // 冷路径（兜底，完整保留）。
+        match spawn_gui_helper(&entry.token, perf_id, perf_autodismiss) {
+            Ok(()) => {
+                crate::perf::mark(perf_id, "dmn.spawned");
+                true
+            }
+            Err(e) => {
+                log(&format!("failed to spawn GUI helper: {}", e));
+                false
+            }
+        }
+    }
+
+    /// 方案6 补热（top-up，恒维持 1 个待命热实例）。自门控：开关关 / 无显示 / 排空中 / 池非空 / 已在补热
+    /// 任一满足则不补。补热进程连上发 `GuiWarmReady` 后由 `handle_gui_warm` 入池并清 `warm_spawning`。
+    fn maybe_topup_warm(state: &Arc<ServerState>) {
+        if !warm_enabled(state) || !has_display() || state.draining.load(Ordering::SeqCst) {
+            return;
+        }
+        if state.warm_pool.lock().unwrap().is_some() {
+            return;
+        }
+        // 去重：已在补热中则跳过（避免并发 spawn 多个热实例）。
+        if state.warm_spawning.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        match spawn_warm_helper() {
+            Ok(()) => {
+                log("preheating popup helper");
+                // 兜底：若热进程崩溃于连接前，N 秒后清 `warm_spawning` 允许再次补热。
+                let state = state.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_secs(10)).await;
+                    if state.warm_pool.lock().unwrap().is_none() {
+                        state.warm_spawning.store(false, Ordering::SeqCst);
+                    }
+                });
+            }
+            Err(e) => {
+                state.warm_spawning.store(false, Ordering::SeqCst);
+                log(&format!("failed to preheat popup helper: {}", e));
+            }
+        }
+    }
+
+    /// 方案6 回收：清空热池槽（drop `assign`/`gui_tx` → holder 的 `assign_rx` 收 Err → 走死亡分支 →
+    /// drop 其写端 → 热进程收 EOF 自杀）。用于关开关 / 进入排空 / 关停。
+    fn recycle_warm(state: &Arc<ServerState>) {
+        let slot = state.warm_pool.lock().unwrap().take();
+        if slot.is_some() {
+            log("recycling warm popup helper");
+        }
+        drop(slot);
+        state.warm_spawning.store(false, Ordering::SeqCst);
+    }
+
     fn cleanup() {
         let _ = std::fs::remove_file(transport::socket_path());
         let _ = std::fs::remove_file(lifecycle::meta_path());
@@ -2219,6 +2444,12 @@ mod unix_impl {
             .broadcast_to_guis(ServerMsg::ConfigChanged { general });
         // 配置变更可能刚开启菜单栏图标 → 兜底拉起宿主（宿主自身也监听配置，二者均幂等）。
         maybe_spawn_gui_host(&new);
+        // 方案6：弹窗预热开关随配置热切换——开则补热（self-gated），关则回收现有热实例。
+        if warm_enabled(state) {
+            maybe_topup_warm(state);
+        } else {
+            recycle_warm(state);
+        }
         log("config reloaded");
     }
 

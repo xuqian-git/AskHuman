@@ -110,6 +110,9 @@ impl RequestRegistry {
             project: task.project,
             agent_kind: task.agent_kind,
             agent_pid: task.agent_pid,
+            // 方案6：透传 perf 上下文，热 helper 领用时据此开启埋点（无 env 也能量化热路径）。
+            perf_id: task.perf_id,
+            perf_autodismiss: task.perf_autodismiss,
         };
 
         let entry = Arc::new(RequestEntry {

@@ -115,6 +115,10 @@ pub struct GeneralConfig {
     pub popup_sound: String,
     /// 菜单栏 / 托盘状态图标模式（off/active/always，spec D4）。默认 off（旧用户零行为变化）。
     pub menu_bar_icon: MenuBarIconMode,
+    /// 弹窗预热（方案6）：daemon 常驻一个已挂载、隐藏待命的 `--popup --warm` 进程，来请求时直接喂
+    /// `Show` 上屏（省掉 WebView 初始化 + 页面加载 + 挂载的关键路径开销）。默认开；可关（非实验项）。
+    /// 代价是常驻一个隐藏 WebView 进程（少量内存）。无显示环境（headless）自动不生效。
+    pub popup_prewarm: bool,
 }
 
 /// 回复历史默认保留条数。
@@ -135,6 +139,7 @@ impl Default for GeneralConfig {
             history_limit: default_history_limit(),
             popup_sound: String::new(),
             menu_bar_icon: MenuBarIconMode::Off,
+            popup_prewarm: true,
         }
     }
 }
@@ -486,6 +491,7 @@ mod tests {
         assert_eq!(c.general.speech_shortcut, "cmd+d");
         assert_eq!(c.general.history_limit, 200);
         assert_eq!(c.general.menu_bar_icon, MenuBarIconMode::Off);
+        assert!(c.general.popup_prewarm);
         assert!(c.channels.popup.enabled);
         assert_eq!(c.channels.popup.width, 560.0);
         assert_eq!(c.channels.popup.height, 620.0);

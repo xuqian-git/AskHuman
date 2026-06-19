@@ -63,29 +63,48 @@ enum View {
 pub struct PopupIpc {
     /// 向 Daemon 发送 `answer` 等消息（写任务已在 `run_gui_helper` 中起好）。
     pub gui_tx: tokio::sync::mpsc::UnboundedSender<crate::ipc::ClientMsg>,
-    /// Daemon 分配的 request_id（回带在 `answer` 中）。
+    /// Daemon 分配的 request_id（回带在 `answer` 中）。预热（warm）模式领用前为空，收到 `Show` 时填入。
     pub request_id: String,
-    /// 读取 Daemon → GUI 的消息流（cancel / 连接断开）。
+    /// 读取 Daemon → GUI 的消息流（cancel / 连接断开 / 预热模式下的首条 `Show` 领用）。
     pub reader: std::pin::Pin<Box<dyn tokio::io::AsyncBufRead + Send>>,
+    /// 方案6 预热模式：true 表示本进程是「热弹窗」——建窗后隐藏待命、不带请求，由首条 `Show` 领用上屏。
+    pub warm: bool,
+}
+
+/// 方案6 预热弹窗的「领用槽」：热进程建窗挂载后停在待命态（`show=None`）；daemon 发来 `Show` 即填入，
+/// 前端经 `popup_init` 读到后渲染、绘制完成才 `show()`。仅预热弹窗进程 manage 本状态。
+#[cfg(unix)]
+pub struct WarmPopup {
+    pub show: std::sync::Mutex<Option<crate::ipc::ShowPayload>>,
 }
 
 /// 弹窗作答 → Daemon 的桥：把前端 `submit_popup` / `cancel_popup` 转成 IPC `answer` 发回 Daemon。
 /// 仅 GUI Helper 模式存在；单进程（非 unix 回退）路径用 `Coordinator`。
 pub struct GuiBridge {
     tx: tokio::sync::mpsc::UnboundedSender<crate::ipc::ClientMsg>,
-    request_id: String,
+    /// Daemon 分配的 request_id（回带在 `answer` 中）。预热弹窗领用前为空，收到 `Show` 时由 reader 循环填入，
+    /// 故用内部可变。
+    request_id: std::sync::Mutex<String>,
     /// 仅投递一次（发送/取消互斥，去重）。
     done: AtomicBool,
     app: tauri::AppHandle,
 }
 
 impl GuiBridge {
+    /// 预热弹窗领用时回填 request_id（仅一次）。
+    pub fn set_request_id(&self, id: String) {
+        if let Ok(mut g) = self.request_id.lock() {
+            *g = id;
+        }
+    }
+
     fn terminal(&self, action: ChannelAction, answers: Vec<QuestionAnswer>) {
         if self.done.swap(true, Ordering::SeqCst) {
             return;
         }
+        let request_id = self.request_id.lock().map(|g| g.clone()).unwrap_or_default();
         let _ = self.tx.send(crate::ipc::ClientMsg::Answer {
-            request_id: self.request_id.clone(),
+            request_id,
             action,
             answers,
         });
@@ -116,6 +135,52 @@ impl GuiBridge {
     pub fn is_done(&self) -> bool {
         self.done.load(Ordering::SeqCst)
     }
+}
+
+/// 方案6：预热弹窗领用 + 前端把本次请求内容绘制完成后，由 `popup_show_window` 命令在主线程调用本函数，
+/// 把一直隐藏待命的弹窗上屏：按**当前** config 兜底重设尺寸/置顶/出现动画/玻璃，再 `show()` + 提示音 +
+/// 聚焦 + Dock 角标。延后到此刻 show 可杜绝「空白/旧内容闪现」（窗口隐藏到本次内容已绘制才出现）。
+#[cfg(unix)]
+pub(crate) fn finalize_popup_show(app: &tauri::AppHandle) {
+    use tauri::Manager;
+    let Some(win) = app.get_webview_window("popup") else {
+        return;
+    };
+    // 预热期间用户若改过尺寸/置顶，这里按最新 config 兜底（主题由构建 + ConfigChanged 已同步）。
+    let config = AppConfig::load_without_secrets();
+    let _ = win.set_size(tauri::LogicalSize::new(
+        config.channels.popup.width,
+        config.channels.popup.height,
+    ));
+    let _ = win.set_always_on_top(config.general.always_on_top);
+    // 预热期间 config 若变过，这里按最新主题兜底同步原生外观（NSAppearance / vibrancy）。
+    crate::commands::apply_theme_to_windows(app, &crate::commands::theme_str(config.general.theme));
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(ns) = win.ns_window() {
+            crate::macos_window_anim::set_appear_animation(
+                ns,
+                config.general.appear_animation.ns_animation_behavior(),
+            );
+        }
+        if matches!(config.general.window_effect, WindowEffect::Glass) {
+            apply_liquid_glass(&win);
+        }
+        let count = if let Some(w) = app.try_state::<WarmPopup>() {
+            w.show
+                .lock()
+                .ok()
+                .and_then(|g| g.as_ref().map(|s| s.request.questions.len()))
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        crate::macos_dock_icon::announce_questions(count);
+    }
+    let _ = win.show();
+    crate::perf::mark_env("gui.win_show");
+    crate::sound::play(&config.general.popup_sound);
+    let _ = win.set_focus();
 }
 
 /// 无任何可用通信 Channel 时的退出码（供下游据此降级）。
@@ -545,11 +610,58 @@ pub fn run_gui_host(config: AppConfig) -> ! {
 /// 流程：连 Daemon → 出示一次性 token → 收 `show` → 本进程主线程跑 Tauri 弹窗；
 /// 用户作答 / 取消经 IPC `answer` 回 Daemon；收到 `cancel` 或连接断开即退出。
 #[cfg(unix)]
-pub fn run_gui_helper(_endpoint: String, token: String) -> ! {
+pub fn run_gui_helper(_endpoint: String, token: String, warm: bool) -> ! {
     use crate::ipc::{self, transport, ClientMsg, ServerMsg};
     use tokio::io::BufReader;
 
     crate::perf::mark_env("gui.start");
+
+    // 方案6 预热模式：连接 + 发 `GuiWarmReady`，立即建窗挂载、隐藏待命；首条 `Show` 在 reader 循环里领用。
+    if warm {
+        let connected = tauri::async_runtime::block_on(async move {
+            let stream = transport::connect().await?;
+            let (r, mut w) = stream.into_split();
+            ipc::write_msg(&mut w, &ClientMsg::GuiWarmReady).await?;
+            Ok::<_, std::io::Error>((BufReader::new(r), w))
+        });
+        let (reader, writer) = match connected {
+            Ok(v) => v,
+            Err(e) => {
+                stderr_redirect::eprintln_real(&format!("askhuman warm popup helper: {}", e));
+                std::process::exit(3);
+            }
+        };
+        let (gui_tx, mut gui_rx) = tokio::sync::mpsc::unbounded_channel::<ClientMsg>();
+        tauri::async_runtime::spawn(async move {
+            let mut writer = writer;
+            while let Some(msg) = gui_rx.recv().await {
+                if ipc::write_msg(&mut writer, &msg).await.is_err() {
+                    break;
+                }
+            }
+        });
+        // 待命态：无请求；source/project/agent 等领用时由 `Show` 注入（见 setup 的 reader 循环）。
+        let state = AppState {
+            request: AskRequest::new(crate::models::MessagePrompt::default(), Vec::new(), false),
+            config: AppConfig::load_without_secrets(),
+            source: String::new(),
+            project: String::new(),
+            agent_kind: None,
+            agent_pid: None,
+        };
+        let popup_ipc = PopupIpc {
+            gui_tx,
+            request_id: String::new(),
+            reader: Box::pin(reader),
+            warm: true,
+        };
+        if let Err(e) = launch(state, View::Popup, Some(popup_ipc)) {
+            stderr_redirect::eprintln_real(&format!("askhuman warm popup helper failed: {}", e));
+            std::process::exit(3);
+        }
+        std::process::exit(0);
+    }
+
     // 连接 + 握手 + 读 show（在 Tauri 全局运行时上完成，确保后续读写任务同一 reactor）。
     let connected = tauri::async_runtime::block_on(async move {
         let stream = transport::connect().await?;
@@ -605,6 +717,7 @@ pub fn run_gui_helper(_endpoint: String, token: String) -> ! {
         gui_tx,
         request_id,
         reader: Box::pin(reader),
+        warm: false,
     };
     if let Err(e) = launch(state, View::Popup, Some(popup_ipc)) {
         stderr_redirect::eprintln_real(&format!("askhuman popup helper failed: {}", e));
@@ -632,6 +745,8 @@ fn launch(state: AppState, view: View, popup_ipc: Option<PopupIpc>) -> tauri::Re
 
     // GUI Helper 模式（Daemon 拉起的弹窗进程）：弹窗是唯一渠道，恒显示窗口；作答经 IPC 回 Daemon。
     let is_helper = popup_ipc.is_some();
+    // 方案6 预热弹窗：建窗后隐藏待命、不带请求，由首条 `Show` 领用上屏（延后 show）。
+    let warm = popup_ipc.as_ref().map(|i| i.warm).unwrap_or(false);
     // 通道启用判定（仅单进程提问模式使用）。
     let messaging_active = has_active_messaging(&state.config);
     // Helper：恒开弹窗。单进程：弹窗禁用且无可用消息渠道时兜底仍开弹窗，避免进程挂起。
@@ -655,6 +770,7 @@ fn launch(state: AppState, view: View, popup_ipc: Option<PopupIpc>) -> tauri::Re
             crate::commands::perf_mark,
             crate::commands::popup_agent_terminal,
             crate::commands::popup_agent_resolved,
+            crate::commands::popup_show_window,
             crate::commands::submit_popup,
             crate::commands::cancel_popup,
             crate::commands::open_path,
@@ -795,14 +911,14 @@ fn launch(state: AppState, view: View, popup_ipc: Option<PopupIpc>) -> tauri::Re
             crate::macos_dock_icon::set_dock_icon();
             match view {
                 View::Popup => {
-                    // Dock 跳动 + 角标提问数（仅 popup）。
+                    // Dock 跳动 + 角标提问数（冷路径有请求；预热路径延后到 `popup_show_window` 领用时）。
                     #[cfg(target_os = "macos")]
-                    {
+                    if !warm {
                         let count = app.state::<AppState>().request.questions.len();
                         crate::macos_dock_icon::announce_questions(count);
                     }
 
-                    if show_popup {
+                    if show_popup || warm {
                         let builder = WebviewWindowBuilder::new(
                             app,
                             "popup",
@@ -815,26 +931,36 @@ fn launch(state: AppState, view: View, popup_ipc: Option<PopupIpc>) -> tauri::Re
                         // 先隐藏构建，设好原生出现动画后再显示，触发 macOS 窗口出现动画。
                         .visible(false)
                         .always_on_top(always_on_top)
+                        // 方案6：禁用 WebView 后台节流，使隐藏/被遮挡时 rAF/定时器照常回调。预热窗长期隐藏；
+                        // 且「内容绘制完成才 show()」依赖双 rAF，默认 Suspend 会暂停回调 → 永不上屏。
+                        .background_throttling(
+                            tauri::utils::config::BackgroundThrottlingPolicy::Disabled,
+                        )
                         .theme(theme);
                         let win = apply_surface(builder, window_bg, window_effect).build()?;
-                        // macOS：隐藏构建后先设原生出现动画（样式由设置决定），再 show()。
-                        #[cfg(target_os = "macos")]
-                        if let Ok(ns) = win.ns_window() {
-                            crate::macos_window_anim::set_appear_animation(ns, appear_behavior);
-                        }
-                        // 玻璃模式：显示前挂整窗 Liquid Glass（旧系统由插件回退 vibrancy）。
-                        // 模糊模式：背景已在 apply_surface 构建期挂好，无需处理。
-                        #[cfg(target_os = "macos")]
-                        if matches!(window_effect, WindowEffect::Glass) {
-                            apply_liquid_glass(&win);
-                        }
-                        let _ = win.show();
-                        crate::perf::mark_env("gui.win_show");
-                        // Play the configured popup sound after the window becomes visible.
-                        crate::sound::play(&app.state::<AppState>().config.general.popup_sound);
-                        // GUI Helper 由 Daemon 拉起，可能不自动获焦 → 尽力前置。
-                        if is_helper {
-                            let _ = win.set_focus();
+                        // 预热路径：窗口保持隐藏待命，待 `Show` 领用、前端绘制完成后由 `popup_show_window` 上屏。
+                        if !warm {
+                            // macOS：隐藏构建后先设原生出现动画（样式由设置决定），再 show()。
+                            #[cfg(target_os = "macos")]
+                            if let Ok(ns) = win.ns_window() {
+                                crate::macos_window_anim::set_appear_animation(ns, appear_behavior);
+                            }
+                            // 玻璃模式：显示前挂整窗 Liquid Glass（旧系统由插件回退 vibrancy）。
+                            // 模糊模式：背景已在 apply_surface 构建期挂好，无需处理。
+                            #[cfg(target_os = "macos")]
+                            if matches!(window_effect, WindowEffect::Glass) {
+                                apply_liquid_glass(&win);
+                            }
+                            let _ = win.show();
+                            crate::perf::mark_env("gui.win_show");
+                            // Play the configured popup sound after the window becomes visible.
+                            crate::sound::play(
+                                &app.state::<AppState>().config.general.popup_sound,
+                            );
+                            // GUI Helper 由 Daemon 拉起，可能不自动获焦 → 尽力前置。
+                            if is_helper {
+                                let _ = win.set_focus();
+                            }
                         }
                     }
 
@@ -845,13 +971,21 @@ fn launch(state: AppState, view: View, popup_ipc: Option<PopupIpc>) -> tauri::Re
                                 gui_tx,
                                 request_id,
                                 reader,
+                                warm: _,
                             } = ipc;
                             app.manage(GuiBridge {
                                 tx: gui_tx,
-                                request_id,
+                                request_id: std::sync::Mutex::new(request_id),
                                 done: AtomicBool::new(false),
                                 app: app.handle().clone(),
                             });
+                            // 方案6 预热：manage 领用槽（None=待命）；首条 `Show` 经 reader 循环填入并唤醒前端。
+                            #[cfg(unix)]
+                            if warm {
+                                app.manage(WarmPopup {
+                                    show: std::sync::Mutex::new(None),
+                                });
+                            }
                             // 读 Daemon → GUI 的消息：被抢答 cancel / 连接断开 → 退出本进程。
                             let app_handle = app.handle().clone();
                             tauri::async_runtime::spawn(async move {
@@ -862,6 +996,31 @@ fn launch(state: AppState, view: View, popup_ipc: Option<PopupIpc>) -> tauri::Re
                                     )
                                     .await
                                     {
+                                        // 方案6 预热领用：首条 `Show` 把请求注入已挂载的待命弹窗。
+                                        // 回填 GuiBridge.request_id + 存入领用槽，再 emit 唤醒前端拉取渲染
+                                        //（前端 pull `popup_init` 取已领用请求 → 绘制 → 调 `popup_show_window` 上屏）。
+                                        #[cfg(unix)]
+                                        Ok(Some(crate::ipc::ServerMsg::Show(show))) => {
+                                            use tauri::{Emitter, Manager};
+                                            // 方案6 埋点：热 helper 无 perf env，领用时由 Show 注入 perf 上下文，
+                                            // 使其 fe.painted/gui.win_show 与 CLI 同 perf_id 关联。
+                                            crate::perf::set_runtime(
+                                                &show.perf_id,
+                                                show.perf_autodismiss,
+                                            );
+                                            crate::perf::mark_env("gui.show_recv");
+                                            if let Some(bridge) =
+                                                app_handle.try_state::<GuiBridge>()
+                                            {
+                                                bridge.set_request_id(show.request_id.clone());
+                                            }
+                                            if let Some(warm_state) =
+                                                app_handle.try_state::<WarmPopup>()
+                                            {
+                                                *warm_state.show.lock().unwrap() = Some(show);
+                                            }
+                                            let _ = app_handle.emit("popup-show", ());
+                                        }
                                         Ok(Some(crate::ipc::ServerMsg::Cancel { .. })) => {
                                             app_handle.exit(0);
                                             break;

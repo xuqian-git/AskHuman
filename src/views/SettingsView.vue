@@ -1113,6 +1113,20 @@ onBeforeUnmount(() => unlistenProgress?.());
               <span class="track"></span>
             </label>
           </div>
+          <hr class="divider" />
+          <div class="row">
+            <span class="label">{{ t("settings.popupBehavior.prewarm") }}</span>
+            <span class="spacer"></span>
+            <label class="switch">
+              <input
+                type="checkbox"
+                v-model="config.general.popupPrewarm"
+                @change="persist"
+              />
+              <span class="track"></span>
+            </label>
+          </div>
+          <p class="card-desc">{{ t("settings.popupBehavior.prewarmHint") }}</p>
           <template v-if="isMac && glassSupported">
             <hr class="divider" />
             <div class="row">

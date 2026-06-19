@@ -114,6 +114,8 @@ export default {
     popupBehavior: {
       title: "弹窗行为",
       alwaysOnTop: "窗口置顶",
+      prewarm: "弹窗预热",
+      prewarmHint: "在后台常驻一个待命弹窗，让它弹出更快。会占用少量内存。",
       windowEffect: "窗口效果",
       effectGlass: "玻璃",
       effectBlur: "模糊",

@@ -21,11 +21,19 @@ export function mark(stage: string): void {
   }
 }
 
-/** Enable reporting and flush everything buffered before perf state was known. */
-export function enable(): void {
+/**
+ * Enable reporting. By default flush everything buffered before perf state was known (cold path:
+ * the buffered marks belong to this request). Pass `dropBuffered` for the **warm adoption** path:
+ * the buffered marks (fe.bootstrap/fe.mounted/standby popup_init) happened during *prewarm*, not
+ * for this request — flushing them under the request's perf_id would pollute the timeline
+ * (negative "page boot"), so we discard them and only report marks made after adoption.
+ */
+export function enable(dropBuffered = false): void {
   if (enabled) return;
   enabled = true;
-  for (const m of buffered.splice(0)) {
+  const pending = buffered.splice(0);
+  if (dropBuffered) return;
+  for (const m of pending) {
     void perfMark(m.stage, m.ts).catch(() => {});
   }
 }

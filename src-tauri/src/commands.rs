@@ -14,7 +14,8 @@ use tauri::{AppHandle, Emitter, Manager, State};
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PopupInit {
-    request: AskRequest,
+    /// 本次提问内容。方案6 预热弹窗在**未领用**（待命）时为 `None`（前端等 `popup-show` 事件再 pull）。
+    request: Option<AskRequest>,
     theme: String,
     always_on_top: bool,
     /// 标题来源名：「Question from {source_name}」。可经环境变量定制。
@@ -38,26 +39,106 @@ pub struct PopupInit {
     perf: bool,
     /// 性能测试：画完首帧后自动取消弹窗（仅 harness 用）。
     perf_autodismiss: bool,
+    /// 方案6：本进程是否为预热弹窗（窗口起始隐藏）。为真时前端在内容绘制完成后调 `popup_show_window`
+    /// 让后端上屏（延后 show）；冷路径为假（窗口已在 setup 中显示）。
+    warm: bool,
 }
 
 #[tauri::command]
-pub fn popup_init(state: State<AppState>) -> PopupInit {
+pub fn popup_init(app: AppHandle, state: State<AppState>) -> PopupInit {
+    // 方案6 预热弹窗：内容来自领用槽（`WarmPopup.show`）——`Some`=已领用、`None`=待命（request 返回 null，
+    // 前端等 `popup-show` 唤醒后再 pull）。冷 / 单进程：内容在构建时已注入 `AppState`。
+    // language：预热弹窗进程长期存活、`state.config` 可能滞后，故领用时优先用 `Show.lang`（已解析的
+    // en/zh）；其余路径用本进程 config 的原始值（auto/en/zh）。
+    let default_lang = state.config.general.language.clone();
+    #[cfg(unix)]
+    let (request, source, project, agent_kind, agent_pid, language, warm) =
+        if let Some(w) = app.try_state::<crate::app::WarmPopup>() {
+            match w.show.lock().ok().and_then(|g| g.clone()) {
+                Some(s) => (
+                    Some(s.request),
+                    s.source,
+                    s.project,
+                    s.agent_kind,
+                    s.agent_pid,
+                    s.lang,
+                    true,
+                ),
+                None => (
+                    None,
+                    String::new(),
+                    String::new(),
+                    None,
+                    None,
+                    default_lang,
+                    true,
+                ),
+            }
+        } else {
+            (
+                Some(state.request.clone()),
+                state.source.clone(),
+                state.project.clone(),
+                state.agent_kind.clone(),
+                state.agent_pid,
+                default_lang,
+                false,
+            )
+        };
+    #[cfg(not(unix))]
+    let (request, source, project, agent_kind, agent_pid, language, warm) = (
+        Some(state.request.clone()),
+        state.source.clone(),
+        state.project.clone(),
+        state.agent_kind.clone(),
+        state.agent_pid,
+        default_lang,
+        false,
+    );
+    let _ = &app;
+
+    // 预热进程长存、`state.config` 可能滞后：领用时按最新 config 取主题/置顶/语音（无钥匙串）；
+    // 其余路径（刚 spawn 的冷 helper / 单进程）用本进程 config 即可。
+    let fresh = if warm {
+        Some(AppConfig::load_without_secrets())
+    } else {
+        None
+    };
+    let cfg = fresh.as_ref().unwrap_or(&state.config);
+
+    let project_name = crate::project::display_name(&project);
     PopupInit {
-        request: state.request.clone(),
-        theme: theme_str(state.config.general.theme),
-        always_on_top: state.config.general.always_on_top,
+        request,
+        theme: theme_str(cfg.general.theme),
+        always_on_top: cfg.general.always_on_top,
         // GUI Helper 模式下来源名由 Daemon 上送（A11）；单进程 / 设置回退取本进程环境。
-        source_name: state.source.clone(),
-        project: state.project.clone(),
-        project_name: crate::project::display_name(&state.project),
-        agent_kind: state.agent_kind.clone(),
-        agent_pid: state.agent_pid,
-        language: state.config.general.language.clone(),
-        speech_language: state.config.general.speech_language.clone(),
-        speech_shortcut: state.config.general.speech_shortcut.clone(),
-        perf: !crate::perf::env_id().is_empty(),
+        source_name: source,
+        project,
+        project_name,
+        agent_kind,
+        agent_pid,
+        language,
+        speech_language: cfg.general.speech_language.clone(),
+        speech_shortcut: cfg.general.speech_shortcut.clone(),
+        perf: !crate::perf::effective_id().is_empty(),
         perf_autodismiss: crate::perf::autodismiss(),
+        warm,
     }
+}
+
+/// 方案6：预热弹窗把本次请求内容绘制完成后，由前端调用本命令，让后端在主线程把隐藏的弹窗上屏（延后 show，
+/// 杜绝空白/旧内容闪现）。冷路径不会调用（窗口已在 setup 中显示）。
+#[tauri::command]
+pub fn popup_show_window(app: AppHandle) {
+    #[cfg(unix)]
+    {
+        let app2 = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            crate::app::finalize_popup_show(&app2);
+        });
+    }
+    #[cfg(not(unix))]
+    let _ = app;
 }
 
 /// 前端性能埋点回传：把某阶段标记写入 `perf.log`（关联 id 取自 helper 进程的 `ASKHUMAN_PERF_ID`）。
@@ -65,7 +146,7 @@ pub fn popup_init(state: State<AppState>) -> PopupInit {
 /// 埋点关闭（无关联 id）时为 no-op。
 #[tauri::command]
 pub fn perf_mark(stage: String, ts: Option<f64>) {
-    let id = crate::perf::env_id();
+    let id = crate::perf::effective_id();
     match ts {
         Some(t) => crate::perf::mark_at(&id, &stage, t as u128),
         None => crate::perf::mark(&id, &stage),
@@ -302,7 +383,7 @@ fn image_mime_from_path(path: &str) -> &'static str {
     }
 }
 
-fn theme_str(theme: ThemeMode) -> String {
+pub(crate) fn theme_str(theme: ThemeMode) -> String {
     match theme {
         ThemeMode::System => "system",
         ThemeMode::Light => "light",

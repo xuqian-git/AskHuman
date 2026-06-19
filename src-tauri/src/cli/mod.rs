@@ -118,6 +118,9 @@ pub fn dispatch() {
             {
                 let mut endpoint = String::new();
                 let mut token = String::new();
+                // 方案6：预热模式由 daemon 以 `--popup --warm` 拉起（无 token），先建窗挂载、隐藏待命，
+                // 入 daemon「热池」，来请求时由 daemon 喂 Show 领用上屏。
+                let mut warm = false;
                 let mut i = 2;
                 while i < argv.len() {
                     match argv[i].as_str() {
@@ -129,10 +132,14 @@ pub fn dispatch() {
                             token = argv[i + 1].clone();
                             i += 2;
                         }
+                        "--warm" => {
+                            warm = true;
+                            i += 1;
+                        }
                         _ => i += 1,
                     }
                 }
-                crate::app::run_gui_helper(endpoint, token);
+                crate::app::run_gui_helper(endpoint, token, warm);
             }
             #[cfg(not(unix))]
             {

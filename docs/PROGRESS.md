@@ -28,8 +28,37 @@ Settings/History/Agents 异步组件、popup_init 作弹窗唯一非钥匙串配
 - WARM 端到端 p90 ≈ **520ms**（首轮后 ~583）：大头仍是 `GUI total show→painted` ≈496（window visible ~250 + page boot ~435），即 WebView/页面加载固有冷成本。
 - CLI `detect` 两路均 ~1ms（方案5：原 COLD ~39 / WARM ~27ms 的 ps 游走已离开 CLI）。
 
-**余下（远期、架构级，未排期）**：方案6 预热/进程池复用（唯一能真正「藏掉」WebView/页面加载大头）、
-方案8 延后 show/骨架屏（改观感不减时长）、markdown-it 仅 `isMarkdown` 时按需懒加载（见 spec §4/§6）。
+**余下**：方案8 延后 show/骨架屏（改观感不减时长，热路径已并入方案6）、markdown-it 仅 `isMarkdown` 时按需懒加载（见 spec §4/§6）。
+
+### 进行中：方案6 弹窗预热（进程池）—— 代码已落地+编译/装机/机制验证通过；待解锁采基线 + 真机视觉 sanity + 提交
+
+需求 `docs/specs/popup-prewarm.md` + 计划 `docs/plans/popup-prewarm.md`。
+形态：daemon 预热 1 个 `--popup --warm` helper（已挂载、无请求隐藏待命），来请求由 `dispatch_popup` 领用喂
+`Show` 直接上屏、用后后台重建；**默认开**可关、非实验；并发第 2+/无显示/未就绪/drain 透明回退现有冷 spawn；
+热连接非保活、idle/换新回收重补。
+
+**已落地（编译 + install 通过）**
+- 阶段1 config `general.popupPrewarm`（默认开）+ 设置页开关 + i18n。
+- 阶段2 helper `--warm` 角色；前端待命/`popup-show` 领用注入/渲染；窗口 `background_throttling(Disabled)`。
+- 阶段3 daemon 热池（`warm_pool`/`WarmSlot`）+ `handle_gui_warm` + `serve_gui`（冷热共用尾段）+ `dispatch_popup` 领用 + 冷 spawn 完整回退。
+- 阶段4 补热 `maybe_topup_warm`（启动/领用后/死亡后/开关开）+ `has_display`（headless 不预热）+ 生命周期
+  （热连接非保活、idle/排空/换新 `recycle_warm` 重补）。
+- 阶段5 perf 透传：`ShowPayload` 带 `perf_id`/`perf_autodismiss`，热 helper 领用时 `perf::set_runtime` 开埋点
+  （无 env 也能量化）；harness 增 **`hot`** 档（prewarm 开、热路径 only 聚合、`daemon recv→assigned` 行）；
+  cold/warm 档显式 `popupPrewarm=false` 保持与旧基线可比。
+
+**关键修正（验证中发现）**：原设计「隐藏窗双 rAF 绘制完成才 show」**不可行**——窗口 ordered-out 无 display link，
+rAF 根本不回调（`background_throttling(Disabled)` 只防节流、不为隐藏窗驱动帧）。改为**领用时 `nextTick` 等 DOM
+更新好正文后直接后端 `popup_show_window` 上屏**（show 不再依赖 rAF），rAF/打点放到 show 之后。实测：**息屏/锁屏下
+弹窗照常上屏**（`gui.win_show` 触发），仅 show 后的 `fe.painted`/harness autodismiss 因无刷新而暂停（只影响 harness，
+其本就拒绝锁屏运行）。无「加载中→正文」闪现（show 时 DOM 已是正文）。
+
+**已验证**：daemon 重启日志 `preheating popup helper`/`warm popup ready`；隔离机热路径端到端 `dmn.assigned`→
+`gui.show_recv`→`gui.win_show`→`fe.painted`（解锁 ~212ms exit；息屏 show 仍触发）；GUI-free 生命周期（开→1 热进程、
+关→回收 0、再开→重补 1、停 daemon→自杀 0）。
+
+**待办**：① 解锁+唤醒+勿遮挡下跑 `node scripts/perf-popup.mjs --update-baseline` 采三档基线（含 hot）；
+② 真机视觉 sanity（连弹/并发第2 冷回退/改主题/drain 换新；headless 仅 Linux）；③ 文档收尾 + 提交。
 
 ## 待办：daemon 二进制变化检测 —— 轮询 vs filewatch（后续评估，优先级低）
 

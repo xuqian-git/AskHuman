@@ -27,6 +27,7 @@ import {
   focusAgentTerminal,
   popupAgentTerminal,
   popupAgentResolved,
+  popupShowWindow,
 } from "../lib/ipc";
 import { isFocusableTerminal } from "../lib/terminals";
 import { startDrag } from "@crabnebula/tauri-plugin-drag";
@@ -291,6 +292,8 @@ let unlistenUpdate: UnlistenFn | null = null;
 let unlistenCloseReq: UnlistenFn | null = null;
 let unlistenFlash: UnlistenFn | null = null;
 let unlistenAgent: UnlistenFn | null = null;
+// 方案6 预热弹窗：daemon 领用时 emit 的唤醒事件，前端据此 pull 请求并渲染。
+let unlistenShow: UnlistenFn | null = null;
 
 function triggerFlash() {
   // 重启动画：先关再于下一帧开，确保连续点击也能重新触发。
@@ -944,45 +947,44 @@ function onKeydown(e: KeyboardEvent) {
   if (!typing) handleAttachmentKey(e);
 }
 
-onMounted(async () => {
-  // 同步窗口监听（开销极小）：放最前，保证粘贴 / 快捷键 / Esc 从首帧即可用。
-  window.addEventListener("paste", onPaste);
-  window.addEventListener("keydown", onKeydown);
-  document.addEventListener("mouseup", onDocMouseUp);
-  // 关键路径：第一步即取请求内容并渲染，尽快上屏；其余初始化全部移到渲染之后（见 initAfterPaint）。
-  try {
-    const init = await popupInit();
-    // 后端在 helper 进程收到 ASKHUMAN_PERF_ID 时置 perf=true：开启前端埋点并冲刷此前缓存的标记。
-    if (init.perf) perfEnableFe();
-    perfMarkFe("fe.popup_init_done");
-    applyTheme(init.theme);
-    theme.value = init.theme;
-    // 精确语言来自 popup_init（零钥匙串）；main.ts 只做 auto 兜底，故此处校正。
-    if (typeof init.language === "string") applyLanguage(init.language);
-    pinned.value = init.alwaysOnTop;
-    sourceName.value = init.sourceName;
-    projectName.value = init.projectName;
-    projectPath.value = init.project;
-    agentKind.value = init.agentKind ?? "";
-    agentPid.value = init.agentPid ?? null;
-    // 语音设置改取自 popup_init（不再走 get_settings / 钥匙串）。
-    speechLang.value = init.speechLanguage || "auto";
-    speechShortcut.value = init.speechShortcut || "cmd+d";
-    request.value = init.request;
-    const n = init.request.questions.length;
-    chosenByQ.value = Array.from({ length: n }, () => []);
-    inputByQ.value = Array.from({ length: n }, () => "");
-    imagesByQ.value = Array.from({ length: n }, () => []);
-    replyFilesByQ.value = Array.from({ length: n }, () => []);
-    visited.value = Array.from({ length: n }, () => false);
-    if (n > 0) visited.value[0] = true;
-    loadThumbs();
-    loadDragIcons();
+// 方案6 预热：领用一次性守卫——首个带 request 的 init 才渲染，避免重复领用。
+let adopting = false;
+
+// 把（含 request 的）init 渲染上屏：套主题/语言/来源 → 设 request → 双 rAF 打点 → 首帧后再做非关键初始化。
+// 预热弹窗（init.warm）窗口起始隐藏，绘制完成后调 popup_show_window 让后端延后 show（杜绝空白闪现）。
+function renderInit(init: PopupInit) {
+  const req = init.request;
+  if (!req) return;
+  applyTheme(init.theme);
+  theme.value = init.theme;
+  // 精确语言来自 popup_init（零钥匙串）；main.ts 只做 auto 兜底，故此处校正。
+  if (typeof init.language === "string") applyLanguage(init.language);
+  pinned.value = init.alwaysOnTop;
+  sourceName.value = init.sourceName;
+  projectName.value = init.projectName;
+  projectPath.value = init.project;
+  agentKind.value = init.agentKind ?? "";
+  agentPid.value = init.agentPid ?? null;
+  // 语音设置改取自 popup_init（不再走 get_settings / 钥匙串）。
+  speechLang.value = init.speechLanguage || "auto";
+  speechShortcut.value = init.speechShortcut || "cmd+d";
+  request.value = req;
+  const n = req.questions.length;
+  chosenByQ.value = Array.from({ length: n }, () => []);
+  inputByQ.value = Array.from({ length: n }, () => "");
+  imagesByQ.value = Array.from({ length: n }, () => []);
+  replyFilesByQ.value = Array.from({ length: n }, () => []);
+  visited.value = Array.from({ length: n }, () => false);
+  if (n > 0) visited.value[0] = true;
+  loadThumbs();
+  loadDragIcons();
+  // 首帧之后：聚焦 + 打点 + （harness）自动取消。冷热路径共用。
+  const afterPaint = () => {
+    inputRef.value?.focus({ preventScroll: true });
+    autoGrow();
+    // 双 rAF：第一帧让正文进入 DOM 并即将绘制，第二帧回调时该帧已真正合成上屏，
+    // 此刻打点更贴近用户真正看到内容的时刻（比单 rAF 晚约 1 帧）。
     requestAnimationFrame(() => {
-      inputRef.value?.focus({ preventScroll: true });
-      autoGrow();
-      // 双 rAF：第一帧让正文进入 DOM 并即将绘制，第二帧回调时该帧已真正合成上屏，
-      // 此刻打点更贴近用户真正看到内容的时刻（比单 rAF 晚约 1 帧）。
       requestAnimationFrame(() => {
         perfMarkFe("fe.painted");
         // harness 模式：内容已上屏即自动取消，免人工点按。
@@ -991,8 +993,68 @@ onMounted(async () => {
         }
       });
     });
-    // 内容已渲染：把其余初始化（事件监听 / 语音 / 自更新 / 终端探测）放到首帧之后，不阻塞首屏。
-    void initAfterPaint(init);
+  };
+  if (init.warm) {
+    // 预热弹窗的窗口此刻仍隐藏（ordered-out），没有 display link → rAF 不会回调，故不能「先双 rAF 再 show」。
+    // 改为：nextTick 等 DOM 把正文更新完，再请后端上屏；窗口可见后 WebKit 即绘制当前 DOM（已是正文，无
+    // 「加载中→正文」闪现），rAF 也随之恢复，afterPaint 在 show 之后打点 / 自动取消。
+    nextTick(() => {
+      popupShowWindow().catch(() => {});
+      afterPaint();
+    });
+  } else {
+    // 冷路径：窗口已在 setup 中显示，rAF 正常回调。
+    afterPaint();
+  }
+  // 内容已渲染：把其余初始化（事件监听 / 语音 / 自更新 / 终端探测）放到首帧之后，不阻塞首屏。
+  void initAfterPaint(init);
+}
+
+// 预热弹窗领用：重新 pull popup_init，若已带 request 则渲染（一次性）。
+async function adopt() {
+  if (request.value || adopting) return;
+  adopting = true;
+  try {
+    const init = await popupInit();
+    if (init.request) {
+      // 热路径领用：丢弃预热阶段缓存的标记（fe.bootstrap/fe.mounted/待命 popup_init 不属本次请求），
+      // 只上报领用后的标记（如 fe.painted），避免污染时间线（负的 page boot）。
+      if (init.perf) perfEnableFe(true);
+      renderInit(init);
+    }
+  } catch (err) {
+    console.error("popup adopt 失败", err);
+  } finally {
+    adopting = false;
+  }
+}
+
+onMounted(async () => {
+  // 同步窗口监听（开销极小）：放最前，保证粘贴 / 快捷键 / Esc 从首帧即可用。
+  window.addEventListener("paste", onPaste);
+  window.addEventListener("keydown", onKeydown);
+  document.addEventListener("mouseup", onDocMouseUp);
+  // 方案6：预热弹窗领用唤醒事件——尽早注册以免漏接（冷路径不会收到，无害）。
+  unlistenShow = await listen("popup-show", () => {
+    void adopt();
+  });
+  // 关键路径：第一步即取请求内容并渲染，尽快上屏；其余初始化全部移到渲染之后（见 initAfterPaint）。
+  try {
+    const init = await popupInit();
+    // 后端在 helper 进程收到 ASKHUMAN_PERF_ID 时置 perf=true：开启前端埋点并冲刷此前缓存的标记。
+    if (init.perf) perfEnableFe();
+    perfMarkFe("fe.popup_init_done");
+    if (init.request) {
+      // 冷路径 / 已领用：直接渲染。
+      renderInit(init);
+    } else {
+      // 预热待命：先按当前主题/语言渲染（窗口隐藏），等 popup-show 领用。
+      applyTheme(init.theme);
+      theme.value = init.theme;
+      if (typeof init.language === "string") applyLanguage(init.language);
+      // 兜底竞态：领用可能发生在首个 popup_init 与监听注册之间，立即复查一次。
+      void adopt();
+    }
   } catch (err) {
     console.error("popup_init 失败", err);
     loadError.value = String(err);
@@ -1128,6 +1190,7 @@ onBeforeUnmount(() => {
   unlistenCloseReq?.();
   unlistenFlash?.();
   unlistenAgent?.();
+  unlistenShow?.();
   if (flashTimer) window.clearTimeout(flashTimer);
   stopListening();
   unlistenSpeech.forEach((fn) => fn());

@@ -18,8 +18,12 @@
 //     Telegram/Slack) pointed at it via config + ASKHUMAN_{DINGTALK,SLACK}_API_BASE. The mock adds
 //     ~150ms to every connect/send so an "IM blocks the popup" regression shows up in e2e.
 //   * Cold set  (daemon stopped before each run -> daemon cold start + IM reconnect every time;
-//                this is where the IM-on-path delay lands today) and
-//     Warm set  (daemon kept hot, IM routers reused -> steady-state popup latency).
+//                this is where the IM-on-path delay lands today),
+//     Warm set  (daemon kept hot, IM routers reused, popup prewarm OFF -> steady-state cold-spawn
+//                popup latency; comparable to the pre-方案6 baseline) and
+//     Hot set   (daemon kept hot, popup PREWARM ON -> a prewarmed helper is adopted per request, so
+//                the WebView init/page-load/mount are pre-paid; measures the warm-path show->painted).
+//                Only runs that actually hit the hot path (dmn.assigned) are aggregated.
 //
 // Prereq: run ./scripts/install.sh first so the on-disk binary carries the perf instrumentation,
 // the keychain escape hatch and the IM base-URL overrides.
@@ -43,7 +47,10 @@ const THRESHOLD_PCT = 20; // regression gate on e2e (spawn->painted) p90
 const MOCK_DELAY_MS = 150; // injected IM connect/send latency (the regression probe)
 const COLD_RUNS = 12, COLD_WARMUP = 2;
 const WARM_RUNS = 24, WARM_WARMUP = 4;
+const HOT_RUNS = 20, HOT_WARMUP = 4;
 const RUN_TIMEOUT_MS = 30000;
+const WARM_READY_TIMEOUT_MS = 5000; // max wait for a prewarmed helper to (re)appear before a hot run
+const WARM_SETTLE_MS = 700; // after the warm process appears, let it finish mount + GuiWarmReady
 
 // ---- arg parsing (only flags that don't change WHAT is tested) -------------
 
@@ -138,12 +145,13 @@ function childEnv(home, urls) {
   };
 }
 
-/** Write the canonical config.json (all four channels enabled, pointed at the mock). */
-function writeCanonicalConfig(home, urls) {
+/** Write the canonical config.json (all four channels enabled, pointed at the mock).
+ *  `prewarm` toggles 方案6 popup prewarm: OFF for cold/warm (measure cold-spawn), ON for the hot set. */
+function writeCanonicalConfig(home, urls, prewarm) {
   const dir = join(home, ".askhuman");
   mkdirSync(dir, { recursive: true });
   const config = {
-    general: { theme: "system", language: "en" },
+    general: { theme: "system", language: "en", popupPrewarm: !!prewarm },
     channels: {
       popup: { enabled: true },
       telegram: { enabled: true, botToken: "mock-bot", chatId: "1", apiBaseUrl: urls.telegram },
@@ -163,6 +171,27 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 /** Run a daemon control subcommand against the isolated HOME (blocking). */
 function daemonCmd(bin, home, urls, args) {
   return spawnSync(bin, ["daemon", ...args], { stdio: "ignore", env: childEnv(home, urls) });
+}
+
+/** True iff a prewarmed popup helper for this HOME's daemon socket is currently running. */
+function warmHelperRunning(home) {
+  const socket = join(home, ".askhuman", "daemon.sock");
+  // `--` so pgrep doesn't parse the pattern's leading dashes as flags; match the socket-scoped arg.
+  const r = spawnSync("pgrep", ["-f", "--", `warm --endpoint ${socket}`], { encoding: "utf8" });
+  return r.status === 0 && r.stdout.trim().length > 0;
+}
+
+/** Wait until a prewarmed helper (re)appears for this HOME, then let it settle (mount + GuiWarmReady). */
+async function waitWarmReady(home) {
+  const deadline = Date.now() + WARM_READY_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    if (warmHelperRunning(home)) {
+      await sleep(WARM_SETTLE_MS);
+      return true;
+    }
+    await sleep(100);
+  }
+  return false; // timed out: this run will likely cold-fall-back and be filtered out of the hot aggregate
 }
 
 /** Spawn one auto-dismissing AskHuman ask; resolves when the process exits. */
@@ -214,6 +243,7 @@ const METRICS = [
   ["  detect", "cli.start", "cli.detect_done"],
   ["ipc (submit->dmn.recv)", "cli.submit", "dmn.submit_recv"],
   ["daemon (recv->spawned)", "dmn.submit_recv", "dmn.spawned"],
+  ["daemon (recv->assigned/hot)", "dmn.submit_recv", "dmn.assigned"],
   ["  im_attach", "dmn.accepted", "dmn.im_done"],
   ["spawn->gui proc start", "dmn.spawned", "gui.start"],
   ["gui connect (start->show)", "gui.start", "gui.show_recv"],
@@ -265,8 +295,9 @@ function summarize(values) {
   return { count: v.length, min: v[0], median: percentile(v, 50), p90: percentile(v, 90), max: v[v.length - 1] };
 }
 
-/** Drop the `warmup` earliest invocations (by cli.start), then aggregate per-segment stats. */
-function aggregate(groups, warmup) {
+/** Drop the `warmup` earliest invocations (by cli.start), then aggregate per-segment stats.
+ *  `hotOnly` keeps only runs that actually hit the warm path (dmn.assigned present). */
+function aggregate(groups, warmup, hotOnly = false) {
   let entries = Object.values(groups);
   if (warmup > 0) {
     entries = Object.entries(groups)
@@ -274,7 +305,8 @@ function aggregate(groups, warmup) {
       .slice(warmup)
       .map(([, g]) => g);
   }
-  const complete = entries.filter((g) => g["cli.start"] !== undefined && g["fe.painted"] !== undefined);
+  let complete = entries.filter((g) => g["cli.start"] !== undefined && g["fe.painted"] !== undefined);
+  if (hotOnly) complete = complete.filter((g) => g["dmn.assigned"] !== undefined);
   const metrics = {};
   for (const [label, from, to] of METRICS) {
     const vals = [];
@@ -340,14 +372,19 @@ function gate(title, agg, baseAgg) {
 
 // ---- main ------------------------------------------------------------------
 
-async function runSet(label, bin, home, urls, runs, cold) {
-  process.stdout.write(`running ${label} set (${runs} runs${cold ? ", daemon cold each run" : ""})...\n`);
+async function runSet(label, bin, home, urls, runs, cold, hot = false) {
+  process.stdout.write(
+    `running ${label} set (${runs} runs${cold ? ", daemon cold each run" : ""}${hot ? ", prewarmed" : ""})...\n`,
+  );
   for (let i = 0; i < runs; i++) {
     assertScreenUsable(`before ${label} run ${i + 1}`);
     if (cold) {
       daemonCmd(bin, home, urls, ["stop", "--force"]);
       await sleep(200);
     }
+    // Hot set: wait for the (re)prewarmed helper to be ready so the request adopts it instead of
+    // cold-falling-back. Runs that still miss are filtered out by the hot-only aggregate.
+    if (hot) await waitWarmReady(home);
     const how = await runOnce(bin, home, urls);
     process.stdout.write(`\r  ${i + 1}/${runs} (${how})    `);
     if (how !== "exit") {
@@ -376,7 +413,8 @@ async function main() {
   const mock = await startMockIm({ delayMs: MOCK_DELAY_MS });
   const home = mkdtempSync(join(tmpdir(), "askhuman-perf-"));
   const perfLog = join(home, ".askhuman", "perf.log");
-  writeCanonicalConfig(home, mock.urls);
+  // cold + warm sets measure cold-spawn popup latency → prewarm OFF.
+  writeCanonicalConfig(home, mock.urls, false);
 
   console.log(`AskHuman:     ${bin}`);
   console.log(`isolated HOME: ${home}`);
@@ -403,19 +441,36 @@ async function main() {
     await sleep(400);
     const warmTo = Date.now();
 
+    // HOT: popup prewarm ON (方案6). Restart the daemon with the new config so it preheats, then
+    // each request adopts the prewarmed helper (WebView init pre-paid). Only hot-path runs counted.
+    daemonCmd(bin, home, mock.urls, ["stop", "--force"]);
+    await sleep(200);
+    writeCanonicalConfig(home, mock.urls, true);
+    daemonCmd(bin, home, mock.urls, ["start"]);
+    await sleep(600);
+    const hotFrom = Date.now();
+    await runSet("hot", bin, home, mock.urls, HOT_RUNS, false, true);
+    await sleep(400);
+    const hotTo = Date.now();
+
     const coldAgg = aggregate(parsePerfLog(perfLog, coldFrom, coldTo), COLD_WARMUP);
     const warmAgg = aggregate(parsePerfLog(perfLog, warmFrom, warmTo), WARM_WARMUP);
+    const hotAgg = aggregate(parsePerfLog(perfLog, hotFrom, hotTo), HOT_WARMUP, true);
 
     const baseline = !o.updateBaseline && existsSync(BASELINE_PATH)
       ? JSON.parse(readFileSync(BASELINE_PATH, "utf8"))
       : null;
 
     printTable("COLD (daemon+IM cold)", coldAgg, baseline?.cold);
-    printTable("WARM (steady state)", warmAgg, baseline?.warm);
+    printTable("WARM (steady state, prewarm off)", warmAgg, baseline?.warm);
+    printTable("HOT (方案6 prewarm, hot-path only)", hotAgg, baseline?.hot);
     console.log("");
 
     if (coldAgg.complete === 0 || warmAgg.complete === 0) {
       console.error("error: no complete invocations captured (is the installed binary instrumented?)");
+      exitCode = 1;
+    } else if (hotAgg.complete === 0) {
+      console.error("error: no hot-path invocations captured (prewarm not adopted; check popupPrewarm/display)");
       exitCode = 1;
     } else if (o.updateBaseline || !existsSync(BASELINE_PATH)) {
       const action = o.updateBaseline ? "updated" : "bootstrapped";
@@ -425,12 +480,16 @@ async function main() {
         mockDelayMs: MOCK_DELAY_MS,
         cold: { complete: coldAgg.complete, metrics: coldAgg.metrics },
         warm: { complete: warmAgg.complete, metrics: warmAgg.metrics },
+        hot: { complete: hotAgg.complete, metrics: hotAgg.metrics },
       };
       mkdirSync(dirname(BASELINE_PATH), { recursive: true });
       writeFileSync(BASELINE_PATH, JSON.stringify(out, null, 2));
       console.log(`${action} baseline: ${BASELINE_PATH}`);
     } else {
-      const regressed = gate("cold", coldAgg, baseline.cold) | gate("warm", warmAgg, baseline.warm);
+      const regressed =
+        gate("cold", coldAgg, baseline.cold) |
+        gate("warm", warmAgg, baseline.warm) |
+        gate("hot", hotAgg, baseline.hot);
       if (regressed) exitCode = 1;
     }
   } finally {

@@ -49,7 +49,8 @@ export type PopupAnimation = "none" | "document" | "alert";
 export type WindowEffect = "glass" | "blur";
 
 export interface PopupInit {
-  request: AskRequest;
+  /** 本次提问内容。方案6 预热弹窗未领用（待命）时为 null，前端等 `popup-show` 事件再 pull。 */
+  request: AskRequest | null;
   theme: ThemeMode;
   alwaysOnTop: boolean;
   sourceName: string;
@@ -71,6 +72,8 @@ export interface PopupInit {
   perf?: boolean;
   /** 性能测试：画完首帧后自动取消弹窗（仅 harness 用）。 */
   perfAutodismiss?: boolean;
+  /** 方案6：本进程是否为预热弹窗（窗口起始隐藏）。为真时前端在内容绘制完成后调 `popup_show_window` 上屏。 */
+  warm?: boolean;
 }
 
 export interface QuestionAnswer {
@@ -179,6 +182,8 @@ export interface GeneralConfig {
   popupSound: string;
   /** Menu bar / tray status icon mode (off/active/always). Desktop only (macOS/Linux). */
   menuBarIcon: MenuBarIconMode;
+  /** Popup pre-warm (faster popups by keeping one mounted, hidden helper ready). Default true. */
+  popupPrewarm: boolean;
 }
 
 /** Menu bar / tray status icon mode (mirrors Rust `MenuBarIconMode`). */

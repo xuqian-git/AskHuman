@@ -178,6 +178,13 @@ pub struct ShowPayload {
     /// 发起本次提问的 agent 进程 pid（进程树 walk 得到），探测不到为 None。弹窗据此判断 / 执行「聚焦终端」。
     #[serde(default)]
     pub agent_pid: Option<u32>,
+    /// 性能埋点关联 id（方案6 热路径用）：冷 helper 经 env 拿到，热 helper 没有 env，故由 Show 透传，
+    /// 领用时写入 perf 运行时上下文，使热进程的 `fe.painted`/`gui.win_show` 与 CLI 的 `cli.start` 同 id 关联。
+    #[serde(default)]
+    pub perf_id: String,
+    /// 性能测试：画完首帧后自动取消弹窗（仅 harness 用）。热 helper 同样经 Show 透传（无 env）。
+    #[serde(default)]
+    pub perf_autodismiss: bool,
 }
 
 /// 客户端（CLI / GUI Helper）→ Daemon 的消息。
@@ -198,6 +205,10 @@ pub enum ClientMsg {
     Submit(TaskRequest),
     /// GUI Helper 握手：出示 Daemon 下发的一次性 token。
     GuiHello { token: String },
+    /// 预热 GUI Helper 握手（方案6）：由 daemon 以 `--popup --warm` 拉起的进程在建好隐藏窗 + 挂载前端后
+    /// 发送，表示「已就绪、入热池待命」。daemon 据此把该连接登记进热池，来请求时直接发 `Show` 领用，
+    /// 无需现 spawn 新进程。无 token（领用时才关联具体请求）。
+    GuiWarmReady,
     /// 设置进程请求「自动识别 userId/open_id」（Q6）。握手后发送，阻塞等单个结果。
     Detect(DetectRequest),
     /// GUI Helper 回传用户作答（`action` 区分发送/取消）。

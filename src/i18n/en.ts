@@ -118,6 +118,9 @@ export default {
     popupBehavior: {
       title: "Popup behavior",
       alwaysOnTop: "Always on top",
+      prewarm: "Pre-warm popup",
+      prewarmHint:
+        "Keep one popup ready in the background so it appears faster. Uses a little memory.",
       windowEffect: "Window effect",
       effectGlass: "Glass",
       effectBlur: "Blur",

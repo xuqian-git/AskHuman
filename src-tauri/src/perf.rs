@@ -40,15 +40,44 @@ pub fn enabled() -> bool {
     *ENABLED.get_or_init(|| env_truthy("ASKHUMAN_PERF"))
 }
 
-/// Whether the harness asked the popup to auto-cancel right after first paint (test-only).
-pub fn autodismiss() -> bool {
-    static AD: OnceLock<bool> = OnceLock::new();
-    *AD.get_or_init(|| env_truthy("ASKHUMAN_PERF_AUTODISMISS"))
+/// Runtime perf context for the **warm popup** (方案6): a prewarmed helper is spawned without any
+/// perf env, so when it is later adopted for a request it learns the request's `perf_id` +
+/// autodismiss from the injected `ShowPayload` and stores them here. `effective_id` / `autodismiss`
+/// fall back to this when the env vars are absent. Single-use process → set once.
+fn runtime_cell() -> &'static std::sync::Mutex<(String, bool)> {
+    static RUNTIME: OnceLock<std::sync::Mutex<(String, bool)>> = OnceLock::new();
+    RUNTIME.get_or_init(|| std::sync::Mutex::new((String::new(), false)))
 }
 
-/// Correlation id carried via `ASKHUMAN_PERF_ID` (daemon sets it on the spawned helper).
+/// Set the runtime perf context (warm popup adoption). Idempotent / last-write-wins.
+pub fn set_runtime(perf_id: &str, autodismiss: bool) {
+    if let Ok(mut g) = runtime_cell().lock() {
+        *g = (perf_id.to_string(), autodismiss);
+    }
+}
+
+/// Whether the harness asked the popup to auto-cancel right after first paint (test-only).
+/// Honors the env var (cold helper) or the runtime context (warm helper, injected via `ShowPayload`).
+pub fn autodismiss() -> bool {
+    if env_truthy("ASKHUMAN_PERF_AUTODISMISS") {
+        return true;
+    }
+    runtime_cell().lock().map(|g| g.1).unwrap_or(false)
+}
+
+/// Correlation id carried via `ASKHUMAN_PERF_ID` (daemon sets it on the spawned cold helper).
 pub fn env_id() -> String {
     std::env::var("ASKHUMAN_PERF_ID").unwrap_or_default()
+}
+
+/// Effective correlation id for marks: the env id (cold helper / daemon-per-request) if present,
+/// else the runtime id (warm helper, set on adoption). Empty → perf off → marks are no-ops.
+pub fn effective_id() -> String {
+    let env = env_id();
+    if !env.is_empty() {
+        return env;
+    }
+    runtime_cell().lock().map(|g| g.0.clone()).unwrap_or_default()
 }
 
 fn env_truthy(key: &str) -> bool {
@@ -73,9 +102,9 @@ pub fn mark(perf_id: &str, stage: &str) {
     mark_at(perf_id, stage, now_ms());
 }
 
-/// Record a milestone for the env-provided correlation id (helper-side marks).
+/// Record a milestone for the effective correlation id (helper-side marks; honors warm runtime id).
 pub fn mark_env(stage: &str) {
-    mark(&env_id(), stage);
+    mark(&effective_id(), stage);
 }
 
 /// Record the harness-provided spawn timestamp (`ASKHUMAN_PERF_SPAWN_TS`, epoch ms) under
