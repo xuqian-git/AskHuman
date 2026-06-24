@@ -49,7 +49,7 @@ AskHuman/
     App.vue                  按 URL ?view=popup|settings|history 路由
     views/PopupView.vue      弹窗：顶部导航栏（含「历史」按钮）+ Markdown/选项/文本/图片 + -f 附件区
                              (选中/打开/预览/拖出/右键) + 拖入回复文件胶囊 + 底部操作条；
-                             message 下方右对齐小工具条（复制 Message + Markdown/源码切换，切换作用于整篇 message+所有问题，默认 Markdown、纯前端视图态不回传）；
+                             message 下方右对齐小工具条（复制 Message + Markdown/源码切换，切换作用于整篇 message+所有问题，默认 Markdown、纯前端视图态不回传；仅在有共享 Message 时显示，直接提问无 message 则整条隐藏）；
                              多问题(n>1)且开实验开关 experimental.vertical_questions 时纵向平铺所有题卡片（.q-card），当前题(active)左侧 accent 高亮，上一个/下一个=滚动定位（详见下文「多问题纵向列表」）；开关关=旧版一次一题左右滑动
     views/AgentsView.vue     (实验性) Agent 状态窗口：按类型(Claude/Codex/Cursor)分组、状态优先排序
                              (工作中>空闲>已结束)、相对时间动态刷新；订阅 daemon 推送的 agents-updated

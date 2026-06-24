@@ -1749,10 +1749,10 @@ onBeforeUnmount(() => {
       </div>
       </template>
 
-      <!-- message 下方右对齐工具条：复制 Message + Markdown/源码切换（切换作用于整篇） -->
-      <div class="msg-tools">
+      <!-- message 下方右对齐工具条：复制 Message + Markdown/源码切换（切换作用于整篇）。
+           仅在有共享 Message 时显示——直接提问（无 message）不显示复制/源码按钮。 -->
+      <div v-if="messageText.trim()" class="msg-tools">
         <button
-          v-if="messageText.trim()"
           class="mt-btn"
           :class="{ done: copiedMessage }"
           type="button"
