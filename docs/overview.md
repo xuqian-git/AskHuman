@@ -203,13 +203,18 @@ AskHuman/
       update/                版本自更新：mod.rs(检测/比较/Updater/select/check) / direct.rs(GitHub 资产替换) /
                              npm.rs(npm i -g) / notes.rs(release notes 取/聚合) / state.rs(update.json)
       agents/                (实验性, Unix) Agent 生命周期追踪：mod.rs(AgentKind=claude/codex/cursor +
-                             LifecycleEvent=session-start/turn-start/turn-end/session-end) /
+                             LifecycleEvent=session-start/turn-start/turn-end/session-end/activity[回合内
+                             Pre/PostToolUse 工具心跳，刷活动时间+保持工作中、不结束回合]) /
                              detect.rs(按 env 判真实运行家族[Cursor 双触发去重] / session_id 解析 /
                              walk 进程树定位 agent pid / walk_any_agent[env 判不出时按进程树兜底拿
                              kind+pid，MCP 模式专用] / kill-0 存活) /
                              title.rs(三家会话标题解析：cursor meta.json / codex·claude jsonl) /
-                             registry.rs(AgentRecord 注册表：apply_event 推导 工作中/空闲/已结束、
+                             registry.rs(AgentRecord 注册表：apply_event 推导 工作中/空闲/已结束[Activity
+                             状态不变时返回 false 不落盘/广播，避免工具心跳刷屏]、
                              touch_activity[按 session 刷新] / touch_activity_by_pid[MCP 兜底：按 pid 刷新已存在 session]、
+                             refresh_by_pids[按 pid 刷新活动，供在途 ask 豁免]、
+                             working_backstop_sweep[WORKING_BACKSTOP_SECS=30min 兜底：工作中且久无活动且无在途 ask
+                             → 降级空闲，兜 Claude 打断/API 错误等无 hook 场景]、
                              poll_liveness、ttl_sweep[1h 兜底]、ended 最多留 10 条、persist/load
                              ~/.askhuman/agents.json、snapshot 推送) /
                              report.rs(隐藏子命令 `__agent-hook <agent> <event>` 上报器：去重+解析+发 daemon)
@@ -305,8 +310,10 @@ AskHuman/
 > 需求 `docs/specs/agent-lifecycle-tracking.md` + 计划 `docs/plans/agent-lifecycle-tracking.md`（基于 `demo/agent-lifecycle/FINDINGS.md` 三家实测）。**独立于** IM 渠道激活，只追踪、不做 attach/激活。
 
 - **开关入口**：设置「通用」底部隐蔽开关「实验性功能」(`config.experimental.enabled`，默认关、Windows 不显示) → 出现「实验」Tab，内含 Claude/Codex/Cursor 三家「生命周期追踪」开关；开/关＝安装/卸载**用户级** lifecycle hook（`integrations/agent_lifecycle.rs`，开关真值实时查 `agent_lifecycle_status`，与既有 timeout hook 互不影响）。
-- **事件采集**：hook 命令统一为 `AskHuman __agent-hook <agent> <event>`（`agents/report.rs`）；四类事件 session-start/turn-start/turn-end/session-end（Codex 无 session-end）。reporter 按 env 判真实运行家族做**去重**（Cursor 兼容加载 `~/.claude` 致每事件双触发，env 有 `CURSOR_*`→只认 cursor、跳过 claude 那次），并 walk 进程树定位真实 agent pid、解析 session_id（env 专用变量优先，回退 stdin JSON）。
-- **状态推导**：daemon 内 `AgentRegistry`（`agents/registry.rs`）以 **session_id 为身份**、pid 仅判存活。turn-start/turn-end 切「工作中/空闲」；**进程存活轮询（1s）是权威的「已结束」判据**（关窗/`kill -9` 时事件全丢，靠它）；1h TTL 兜底（任何 hook 事件或 `AskHuman` 提问会刷新**对应 session** 的活动时间）。ended 最多留 10 条。状态持久化 `~/.askhuman/agents.json`，daemon 换新/重启后重载并 kill-0 复核。
+- **事件采集**：hook 命令统一为 `AskHuman __agent-hook <agent> <event>`（`agents/report.rs`）；事件 session-start/turn-start/turn-end/session-end + **activity**（回合内 Pre/PostToolUse 工具心跳，三家都装）。Claude 另加 **StopFailure→turn-end**（API 错误结束回合时官方文档明确 Stop 不触发，靠它补结束）；Codex 无 session-end / 无 StopFailure。reporter 按 env 判真实运行家族做**去重**（Cursor 兼容加载 `~/.claude` 致每事件双触发，env 有 `CURSOR_*`→只认 cursor、跳过 claude 那次），并 walk 进程树定位真实 agent pid、解析 session_id（env 专用变量优先，回退 stdin JSON）。
+- **状态推导**：daemon 内 `AgentRegistry`（`agents/registry.rs`）以 **session_id 为身份**、pid 仅判存活。turn-start/activity 切「工作中」、turn-end 切「空闲」；**进程存活轮询（15s）是权威的「已结束」判据**（关窗/`kill -9` 时事件全丢，靠它）；1h TTL 兜底（任何 hook 事件或 `AskHuman` 提问会刷新**对应 session** 的活动时间）。ended 最多留 10 条。状态持久化 `~/.askhuman/agents.json`，daemon 换新/重启后重载并 kill-0 复核。
+- **「工作中」兜底超时（30min）**：Claude **用户打断回合**时没有任何 hook 触发（官方确认 Stop/Notification 均不来），transcript 也只在完成时整条原子写入、不能当心跳——故无法即时检测打断。兜底：daemon 每 15s tick 跑 `working_backstop_sweep(WORKING_BACKSTOP_SECS=30min)`，把「工作中且距上次活动超 30min」的记录降级为空闲（活动时间由 turn-start/activity[Pre/PostToolUse]/提问刷新，故执行长编译等工具的合法长回合不会被误判）。**在途 AskHuman 豁免**：tick 先用 `RequestRegistry::in_flight_agent_pids()`（在途请求关联的 agent pid）经 `refresh_by_pids` 刷新活动，使「等待人类回答」期间永不被降级。打断后走开 → 30min 内自愈；下次提问/关窗也会即时纠正。
+- **hook 升级迁移**：版本升级新增事件后，已开启的用户**无需手动关开开关**——daemon 启动时 `agent_lifecycle::migrate_outdated()` 对**已安装但过期**的家族幂等重装（仅改含 `__agent-hook` 标记的条目）；「实验」Tab 每家额外提供一键『更新』按钮（outdated 时显露，仿 rules/hook 卡）。
 - **闲退守卫**：仅「工作中」agent 或有状态窗口连接才阻止 daemon 闲时退出（空闲 agent 不算）；**graceful drain（版本换新）不受存活 agent 影响**。
 - **状态窗口**：`AskHuman agents monitor`（原 `agents status` 改名，spec `cli-config.md` D8）→ 有 GUI 时**路由到统一 GUI 宿主**（`gui_host::host_open(Agents)`，全局单窗；兜底 `app::run_agents` + `create_agents_window`），订阅 `ServerMsg::AgentsState` 推送、前端 `AgentsView.vue` 跨项目按类型分组、状态优先排序、相对时间动态刷新；headless 或 `--json`/`--text` → 取一次 `AgentsState` 快照（`client::request_agents_snapshot`）渲染文本/JSON（`agents_cmd.rs`）。**未开启生命周期追踪时入口收敛**：托盘隐藏「Agent 状态」项（见「菜单栏图标」节），命令 `agents monitor` 仍可运行（保留直接打开场景），但窗口空状态提示「只有开启生命周期追踪的 Agent 启动后才会在此显示」。CLI help 不做条件隐藏，靠此空状态兜底。**「聚焦终端」（macOS）**：状态窗口每行（有 pid、非 ended、**且所在终端被支持**）一个图标按钮 → `focus_agent_terminal(pid)` 命令（`integrations/terminal_focus.rs`）由存活 agent pid 取控制终端 tty（`ps -o tty=`）+ 终端类型，按类型分派 AppleScript 精确匹配 `tty`：**Terminal.app**（`tab` 的 `tty`，选中标签页 + 窗口置前）/ **iTerm2**（`session` 的 `tty`，用 bundle id `com.googlecode.iterm2` 定位，选中 session/tab/window），命中后激活该 App（首次需「自动化」TCC 授权）；不支持的终端 / 无 tty / 未授权 / 找不到一律静默（前端 console.warn）。**按钮显隐按终端类型**：daemon 快照对每个活动记录惰性识别终端（`agents::detect::terminal_kind`：由 pid 沿进程链匹配 `apple-terminal`/`iterm2`/`vscode`/`cursor`/`tmux`/… 缓存进 `AgentRecord.terminal`），前端 `SUPPORTED_TERMINALS` 集合（当前 `apple-terminal` + `iterm2`，见 `lib/terminals.ts`）决定是否展示按钮；加新终端支持时同时补「前端集合 + 后端聚焦实现」。kitty/WezTerm/tmux/编辑器内置终端等留待后续。
   - **订阅生命周期**：仅由前端在 `agents-updated` 监听就绪后经 `agents_start_subscription` 命令触发（不在开窗时启动，否则 daemon 首帧立即快照会早于监听而丢失）。长命的 GUI 宿主里订阅与窗口绑定——`start_agents_subscription` 检测到 `HostState` 即走 `gui_host::restart_agents_subscription`：每次挂载都**重启**订阅（daemon 重推一帧立即快照，避免复用旧订阅导致首屏长 Loading），窗口关闭（`recount_windows` 发现无 `agents` 窗口）即 `stop_agents_subscription` 停掉（释放 daemon 连接，不再借订阅给 daemon 续命）。独立 agents 进程 / 弹窗兜底则一次性启动、随进程退出。
