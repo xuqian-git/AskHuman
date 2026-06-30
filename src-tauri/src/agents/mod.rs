@@ -66,6 +66,9 @@ pub enum LifecycleEvent {
     TurnStart,
     TurnEnd,
     SessionEnd,
+    /// 「仍在活动」：回合进行中的工具调用（Pre/PostToolUse）。刷新活动时间 + 保持/置为「工作中」，
+    /// **不**结束回合。用于喂「Working 兜底超时」的活动心跳，避免长回合被误判空闲。
+    Activity,
 }
 
 impl LifecycleEvent {
@@ -75,6 +78,7 @@ impl LifecycleEvent {
             LifecycleEvent::TurnStart => "turn-start",
             LifecycleEvent::TurnEnd => "turn-end",
             LifecycleEvent::SessionEnd => "session-end",
+            LifecycleEvent::Activity => "activity",
         }
     }
 
@@ -84,6 +88,7 @@ impl LifecycleEvent {
             "turn-start" => Some(LifecycleEvent::TurnStart),
             "turn-end" => Some(LifecycleEvent::TurnEnd),
             "session-end" => Some(LifecycleEvent::SessionEnd),
+            "activity" => Some(LifecycleEvent::Activity),
             _ => None,
         }
     }
@@ -109,6 +114,7 @@ mod tests {
             LifecycleEvent::TurnStart,
             LifecycleEvent::TurnEnd,
             LifecycleEvent::SessionEnd,
+            LifecycleEvent::Activity,
         ] {
             assert_eq!(LifecycleEvent::parse(e.as_str()), Some(e));
         }

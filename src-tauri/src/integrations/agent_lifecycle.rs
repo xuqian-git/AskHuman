@@ -38,22 +38,31 @@ pub struct LifecycleStatus {
 fn events(kind: AgentKind) -> &'static [(&'static str, &'static str)] {
     match kind {
         // Claude：SessionStart/UserPromptSubmit/Stop/SessionEnd。
+        // 另加 StopFailure（API 错误结束回合时代替 Stop，官方文档明确 Stop 此时不触发）→ turn-end；
+        // Pre/PostToolUse → activity（回合内工具调用心跳，喂「工作中兜底超时」，避免长回合误判空闲）。
         AgentKind::Claude => &[
             ("SessionStart", "session-start"),
             ("UserPromptSubmit", "turn-start"),
+            ("PreToolUse", "activity"),
+            ("PostToolUse", "activity"),
             ("Stop", "turn-end"),
+            ("StopFailure", "turn-end"),
             ("SessionEnd", "session-end"),
         ],
-        // Codex：无 SessionEnd（FINDINGS §6）。
+        // Codex：无 SessionEnd / 无 StopFailure / 无 Notification（FINDINGS §6）。Pre/PostToolUse → activity。
         AgentKind::Codex => &[
             ("SessionStart", "session-start"),
             ("UserPromptSubmit", "turn-start"),
+            ("PreToolUse", "activity"),
+            ("PostToolUse", "activity"),
             ("Stop", "turn-end"),
         ],
-        // Cursor：原生 camelCase 事件。
+        // Cursor：原生 camelCase 事件。preToolUse/postToolUse → activity。
         AgentKind::Cursor => &[
             ("sessionStart", "session-start"),
             ("beforeSubmitPrompt", "turn-start"),
+            ("preToolUse", "activity"),
+            ("postToolUse", "activity"),
             ("stop", "turn-end"),
             ("sessionEnd", "session-end"),
         ],
@@ -65,6 +74,8 @@ fn codex_label(event_key: &str) -> Option<&'static str> {
     match event_key {
         "SessionStart" => Some("session_start"),
         "UserPromptSubmit" => Some("user_prompt_submit"),
+        "PreToolUse" => Some("pre_tool_use"),
+        "PostToolUse" => Some("post_tool_use"),
         "Stop" => Some("stop"),
         _ => None,
     }
@@ -83,6 +94,25 @@ pub fn any_installed() -> bool {
     [AgentKind::Claude, AgentKind::Codex, AgentKind::Cursor]
         .iter()
         .any(|k| status(*k).installed)
+}
+
+/// 启动时自动迁移：对**已安装但过期**的 lifecycle hook 幂等重装（补齐新增事件 / 修正命令路径）。
+/// 仅刷新用户已开启的家族（installed 才动），绝不为未启用的家族安装。返回被迁移的家族列表。
+/// 用于「升级二进制后，已开启生命周期追踪的用户自动拿到新 hook」，无需手动关开开关。
+pub fn migrate_outdated() -> Vec<AgentKind> {
+    if !supported() {
+        return Vec::new();
+    }
+    let mut migrated = Vec::new();
+    for kind in [AgentKind::Claude, AgentKind::Codex, AgentKind::Cursor] {
+        let st = status(kind);
+        if st.installed && st.outdated {
+            if install(kind).is_ok() {
+                migrated.push(kind);
+            }
+        }
+    }
+    migrated
 }
 
 /// 当前可执行文件绝对路径（hook 命令调用它）。
@@ -621,14 +651,22 @@ mod tests {
     }
 
     #[test]
-    fn claude_install_adds_four_events_nested() {
+    fn claude_install_adds_all_events_nested() {
         let out = apply_json_install(AgentKind::Claude, EXE, "{}", Shape::Nested).unwrap();
         let v = to_value(&out);
-        for ev in ["SessionStart", "UserPromptSubmit", "Stop", "SessionEnd"] {
+        for (ev, lc) in [
+            ("SessionStart", "session-start"),
+            ("UserPromptSubmit", "turn-start"),
+            ("PreToolUse", "activity"),
+            ("PostToolUse", "activity"),
+            ("Stop", "turn-end"),
+            ("StopFailure", "turn-end"),
+            ("SessionEnd", "session-end"),
+        ] {
             let arr = v["hooks"][ev].as_array().unwrap();
-            assert_eq!(arr.len(), 1);
+            assert_eq!(arr.len(), 1, "event {ev} should have one entry");
             let cmd = arr[0]["hooks"][0]["command"].as_str().unwrap();
-            assert!(cmd.contains(MARKER) && cmd.contains("claude"));
+            assert!(cmd.contains(MARKER) && cmd.contains("claude") && cmd.contains(lc));
         }
     }
 

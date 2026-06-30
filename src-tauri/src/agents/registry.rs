@@ -23,6 +23,13 @@ const MAX_ENDED: usize = 10;
 /// TTL 兜底时长（spec D12）：仅对**无 pid**的活动记录生效。
 pub const TTL_SECS: u64 = 3600;
 
+/// 「工作中」兜底超时：某 agent 进程仍在、但距上次活动超过此时长且没有在途 AskHuman 请求，
+/// 即把它从「工作中」降级为「空闲」。用于兜底 Claude「用户打断回合」这类**没有任何 hook**
+/// 的场景（打断后会一直卡在「工作中」，直到下个回合/进程退出）。设得足够大（30 分钟），
+/// 这样正常的长回合（编译/测试/长回复）几乎不会被误判——它只在「真卡住」时才触发。
+/// 等待人类回答 AskHuman 期间由 daemon 按在途请求持续刷新活动，故等多久都不会被它降级。
+pub const WORKING_BACKSTOP_SECS: u64 = 30 * 60;
+
 /// agent 三态（spec D8，展示用词 工作中 / 空闲 / 已结束）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -137,6 +144,7 @@ impl AgentRegistry {
         let mut inner = self.inner.lock().unwrap();
 
         // 轮换（spec D7）：同一 pid 上若已有「另一个 session」活动 → 旧的判结束。
+        let mut changed = false;
         if let Some(pid) = pid {
             let rotated: Vec<AgentRecord> = drain_where(&mut inner.active, |r| {
                 r.pid == Some(pid) && r.session_id != session_id
@@ -145,12 +153,13 @@ impl AgentRegistry {
                 r.state = AgentState::Ended;
                 r.ended_at = Some(now);
                 push_ended(&mut inner.ended, r);
+                changed = true;
             }
         }
 
         // 幂等登记 + 更新（任何事件都能建，不依赖 session-start）。
         let idx = inner.active.iter().position(|r| r.session_id == session_id);
-        let idx = match idx {
+        let (idx, created) = match idx {
             Some(i) => {
                 let r = &mut inner.active[i];
                 if pid.is_some() {
@@ -160,7 +169,7 @@ impl AgentRegistry {
                     r.cwd = cwd;
                 }
                 r.last_activity = now;
-                i
+                (i, false)
             }
             None => {
                 inner.active.push(AgentRecord {
@@ -175,23 +184,34 @@ impl AgentRegistry {
                     ended_at: None,
                     terminal: None,
                 });
-                inner.active.len() - 1
+                (inner.active.len() - 1, true)
             }
         };
+        changed |= created;
 
-        // 事件 → 状态。
+        // 事件 → 状态。`changed` 决定是否持久化 + 广播：**Activity（工具心跳）在状态不变时返回
+        // false**，避免长回合里每次工具调用都落盘/广播（last_activity 仍已在内存刷新，喂兜底超时；
+        // 相对时间由前端 ticker + 15s 轮询广播兜底）。
+        let prev = inner.active[idx].state;
         match event {
             LifecycleEvent::SessionStart => { /* 已确保登记，保持 Idle */ }
-            LifecycleEvent::TurnStart => inner.active[idx].state = AgentState::Working,
-            LifecycleEvent::TurnEnd => inner.active[idx].state = AgentState::Idle,
+            LifecycleEvent::TurnStart | LifecycleEvent::Activity => {
+                inner.active[idx].state = AgentState::Working;
+                changed |= prev != AgentState::Working;
+            }
+            LifecycleEvent::TurnEnd => {
+                inner.active[idx].state = AgentState::Idle;
+                changed |= prev != AgentState::Idle;
+            }
             LifecycleEvent::SessionEnd => {
                 let mut r = inner.active.remove(idx);
                 r.state = AgentState::Ended;
                 r.ended_at = Some(now);
                 push_ended(&mut inner.ended, r);
+                changed = true;
             }
         }
-        true
+        changed
     }
 
     /// ask 调用顺带刷新活动 + 重置 TTL（spec D21）：仅刷新已存在的同家族 session，不新建。
@@ -313,6 +333,46 @@ impl AgentRegistry {
             r.state = AgentState::Ended;
             r.ended_at = Some(now);
             push_ended(&mut inner.ended, r);
+        }
+        changed
+    }
+
+    /// 在途 AskHuman 请求豁免：给「pid 命中在途请求集合」的活动记录刷新活动时间。
+    /// daemon 每个轮询 tick 先调它（用所有在途请求的 agent pid），这样「等待人类回答 AskHuman」
+    /// 期间对应 agent 的活动时间一直新鲜，`working_backstop_sweep` 永远不会把它降级为空闲。
+    /// 返回是否命中（仅用于调试，不触发广播——刷新活动不改变状态）。
+    pub fn refresh_by_pids(&self, pids: &[u32]) -> bool {
+        if pids.is_empty() {
+            return false;
+        }
+        let now = now_secs();
+        let mut inner = self.inner.lock().unwrap();
+        let mut hit = false;
+        for r in inner.active.iter_mut() {
+            if let Some(pid) = r.pid {
+                if pids.contains(&pid) {
+                    r.last_activity = now;
+                    hit = true;
+                }
+            }
+        }
+        hit
+    }
+
+    /// 「工作中」兜底超时扫描：把「工作中」且距上次活动超过 `timeout_secs` 的记录降级为「空闲」。
+    /// 兜底 Claude「用户打断回合」这类无 hook 场景（见 `WORKING_BACKSTOP_SECS`）。调用前应先用
+    /// `refresh_by_pids` 豁免在途 AskHuman 的 agent。返回是否有变化（供广播）。
+    pub fn working_backstop_sweep(&self, timeout_secs: u64) -> bool {
+        let now = now_secs();
+        let mut inner = self.inner.lock().unwrap();
+        let mut changed = false;
+        for r in inner.active.iter_mut() {
+            if r.state == AgentState::Working
+                && now.saturating_sub(r.last_activity) > timeout_secs
+            {
+                r.state = AgentState::Idle;
+                changed = true;
+            }
         }
         changed
     }
@@ -453,6 +513,83 @@ mod tests {
             120,
         );
         assert_eq!(r.working_count(), 0);
+    }
+
+    #[test]
+    fn activity_keeps_working_and_refreshes() {
+        // Pre/PostToolUse → Activity：置工作中 + 刷新活动，不结束回合。
+        let r = reg();
+        r.apply_event(
+            AgentKind::Claude,
+            LifecycleEvent::TurnStart,
+            "s1",
+            Some(111),
+            None,
+            100,
+        );
+        assert_eq!(r.working_count(), 1);
+        // 时间推进后来一次 Activity：仍工作中，且活动时间被刷新。
+        r.apply_event(
+            AgentKind::Claude,
+            LifecycleEvent::Activity,
+            "s1",
+            Some(111),
+            None,
+            500,
+        );
+        assert_eq!(r.working_count(), 1);
+    }
+
+    #[test]
+    fn working_backstop_demotes_stale_working() {
+        let r = reg();
+        // 工作中、活动时间停在 t=1。
+        r.apply_event(
+            AgentKind::Claude,
+            LifecycleEvent::TurnStart,
+            "stuck",
+            Some(std::process::id()),
+            None,
+            1,
+        );
+        assert_eq!(r.working_count(), 1);
+        // 超时阈值很小 → 应被降级为空闲。
+        assert!(r.working_backstop_sweep(10));
+        assert_eq!(r.working_count(), 0);
+        assert_eq!(r.idle_count(), 1);
+        // 再扫一次无变化（已是空闲）。
+        assert!(!r.working_backstop_sweep(10));
+    }
+
+    #[test]
+    fn refresh_by_pids_exempts_inflight_from_backstop() {
+        // 场景1：在途 ask（pid 命中）→ 刷新活动 → 不被兜底降级。
+        let r = reg();
+        r.apply_event(
+            AgentKind::Claude,
+            LifecycleEvent::TurnStart,
+            "asking",
+            Some(4242),
+            None,
+            1, // 活动时间停在很久以前
+        );
+        assert!(r.refresh_by_pids(&[4242])); // 刷新到 now
+        assert!(!r.working_backstop_sweep(10)); // 新鲜 → 不降级
+        assert_eq!(r.working_count(), 1);
+
+        // 场景2：pid 不在在途集合 → 不刷新 → 陈旧 → 被降级。
+        let r2 = reg();
+        r2.apply_event(
+            AgentKind::Claude,
+            LifecycleEvent::TurnStart,
+            "stale",
+            Some(4242),
+            None,
+            1,
+        );
+        assert!(!r2.refresh_by_pids(&[9999])); // pid 不匹配，未刷新
+        assert!(r2.working_backstop_sweep(10)); // 陈旧 → 降级
+        assert_eq!(r2.working_count(), 0);
     }
 
     #[test]

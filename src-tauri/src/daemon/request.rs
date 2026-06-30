@@ -159,6 +159,28 @@ impl RequestRegistry {
         self.inner.lock().unwrap().by_id.values().cloned().collect()
     }
 
+    /// 所有在途请求关联的调用方 agent pid（去重）。供 daemon「工作中兜底超时」豁免——
+    /// 凡有在途 AskHuman 请求的 agent（正等待人类回答）都持续刷新活动、不被降级为空闲。
+    /// 优先用异步解析出的 `resolved_agent.pid`（最准、当次现取），否则回退 `show.agent_pid`。
+    pub fn in_flight_agent_pids(&self) -> Vec<u32> {
+        let inner = self.inner.lock().unwrap();
+        let mut pids: Vec<u32> = Vec::new();
+        for entry in inner.by_id.values() {
+            let pid = entry
+                .resolved_agent
+                .lock()
+                .ok()
+                .and_then(|g| g.as_ref().and_then(|a| a.pid))
+                .or(entry.show.agent_pid);
+            if let Some(pid) = pid {
+                if pid != 0 && !pids.contains(&pid) {
+                    pids.push(pid);
+                }
+            }
+        }
+        pids
+    }
+
     /// 在途请求摘要（按创建顺序，托盘「待答」子菜单用）：每条 `{id, 预览}`。
     pub fn pending_infos(&self) -> Vec<PendingRequestInfo> {
         let mut entries: Vec<Arc<RequestEntry>> = {

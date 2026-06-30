@@ -69,6 +69,16 @@ mod unix_impl {
         Duration::from_secs(secs)
     }
 
+    /// 「工作中」兜底超时秒数。默认 `WORKING_BACKSTOP_SECS`（30min），
+    /// 可用 `ASKHUMAN_WORKING_BACKSTOP_SECS` 覆盖（便于实测自愈，无需真等 30 分钟）。
+    fn working_backstop_secs() -> u64 {
+        std::env::var("ASKHUMAN_WORKING_BACKSTOP_SECS")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .filter(|&s| s > 0)
+            .unwrap_or(crate::agents::registry::WORKING_BACKSTOP_SECS)
+    }
+
     fn version() -> String {
         env!("CARGO_PKG_VERSION").to_string()
     }
@@ -356,6 +366,16 @@ mod unix_impl {
         // Ensure the user hooks directory exists and includes a sample script.
         crate::hooks::ensure_sample();
 
+        // 自动迁移：已开启生命周期追踪的家族若 hook 过期（升级新增了事件 / 命令路径变化），
+        // 启动时幂等重装一次，让已安装用户无需手动关开开关即可拿到新 hook（仅刷新已安装的家族）。
+        {
+            let migrated = crate::integrations::agent_lifecycle::migrate_outdated();
+            if !migrated.is_empty() {
+                let names: Vec<&str> = migrated.iter().map(|k| k.as_str()).collect();
+                log(&format!("migrated outdated lifecycle hooks: {}", names.join(", ")));
+            }
+        }
+
         let state = Arc::new(ServerState {
             startup_fp,
             started_at,
@@ -458,7 +478,14 @@ mod unix_impl {
             tokio::spawn(async move {
                 loop {
                     tokio::time::sleep(Duration::from_secs(15)).await;
-                    let changed = state.agents.poll_liveness() | state.agents.ttl_sweep();
+                    // 在途 AskHuman 豁免：先给「正等待人类回答」的 agent 刷新活动，使其不被兜底降级。
+                    state
+                        .agents
+                        .refresh_by_pids(&state.registry.in_flight_agent_pids());
+                    // 进程存活轮询 + 无 pid TTL 兜底 + 「工作中」兜底超时（打断这类无 hook 场景）。
+                    let changed = state.agents.poll_liveness()
+                        | state.agents.ttl_sweep()
+                        | state.agents.working_backstop_sweep(working_backstop_secs());
                     if changed {
                         state.agents.persist();
                     }

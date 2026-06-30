@@ -675,6 +675,21 @@ async function toggleLifecycle(kind: AgentKind, on: boolean) {
   }
 }
 
+// 过期 lifecycle hook 一键更新：幂等重装（补齐新增事件 / 修正命令路径）后刷新状态。
+async function updateLifecycle(kind: AgentKind) {
+  if (lifecycleBusy.value[kind]) return;
+  lifecycleBusy.value[kind] = true;
+  lifecycleError.value[kind] = null;
+  try {
+    await agentLifecycleInstall(kind);
+    lifecycleStatus.value[kind] = await agentLifecycleStatus(kind);
+  } catch (e) {
+    lifecycleError.value[kind] = String(e);
+  } finally {
+    lifecycleBusy.value[kind] = false;
+  }
+}
+
 // 打开「实验」开关时显露实验 Tab；关闭时若停留在实验 Tab 则退回通用。
 async function toggleExperimental() {
   if (!config.value) return;
@@ -1571,6 +1586,19 @@ onBeforeUnmount(() => unlistenProgress?.());
                 </p>
               </div>
               <span class="spacer"></span>
+              <button
+                v-if="
+                  lifecycleStatus[kind].installed &&
+                  lifecycleStatus[kind].outdated
+                "
+                class="btn btn-update"
+                type="button"
+                :disabled="lifecycleBusy[kind]"
+                @click="updateLifecycle(kind)"
+              >
+                <span class="dot-update"></span
+                >{{ t("settings.integration.update") }}
+              </button>
               <label class="switch">
                 <input
                   type="checkbox"
