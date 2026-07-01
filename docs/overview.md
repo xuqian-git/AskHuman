@@ -53,7 +53,8 @@ AskHuman/
                              多问题(n>1)且开实验开关 experimental.vertical_questions 时纵向平铺所有题卡片（.q-card），当前题(active)左侧 accent 高亮，上一个/下一个=滚动定位（详见下文「多问题纵向列表」）；开关关=旧版一次一题左右滑动
     views/AgentsView.vue     (实验性) Agent 状态窗口：按类型(Claude/Codex/Cursor)分组、状态优先排序
                              (工作中>空闲>已结束)、相对时间动态刷新；订阅 daemon 推送的 agents-updated
-    views/SettingsView.vue   设置：通用（含「回复历史」保留条数 + 超额「立即清理」+ 底部隐蔽开关「实验性功能」）
+    views/SettingsView.vue   设置：通用（含「回复历史」保留条数 + 超额「立即清理」+ 3 题综合示例的「弹出测试窗口」
+                             + 底部隐蔽开关「实验性功能」）
                              / Agent / 通信渠道（+ 开启实验后出现「实验」Tab）多 Tab
                              （Agent Tab：顶部原理说明 + 「手动集成」参考提示词卡[CLI | MCP 分段切换，MCP 视图附三家 MCP 配置示例片段，绝对路径占位] + 「自动集成」按 Cursor/Claude Code/Codex 分组、每家一个 **CLI | MCP | 未集成** 三态分段控件[一键切换自动卸旧装新；推荐档位带绿色「推荐」标记：Cursor/Claude=CLI、Codex=MCP（Codex 无法延长 CLI 超时）]，下方按当前模式列出产物：CLI=Rule+超时 Hook[Codex 无 Hook 给提示]、MCP=Rule+MCP 配置；**产物过期/缺失时按产物粒度提示**：每个产物行「打开」左侧出现橙色「更新」按钮（仅刷该项，`agent_mode_update_artifact`，与 `needs_update` 同口径的 `artifact_updates` 驱动 `ruleNeedsUpdate/hookNeedsUpdate/mcpNeedsUpdate`），「自动集成」标题下另有跨三家的**待更新总览**（统计各 X 个 Rule/Hook/MCP 需更新 + 「全部更新」一键逐家 `agent_mode_update`），有任意待更新时给「Agents」Tab 标加橙色提示点；文件行「打开」下拉：在 Finder 中显示 / 用默认程序打开）
     views/HistoryView.vue    独立历史窗口：顶部项目下拉 + 清空菜单 + 搜索条（关键字空格分割 AND 匹配 message/题干/选中选项/输入回答/文件名，作用于项目筛选结果之上、左列表摘要高亮命中词）；左列表（渠道徽标/相对时间/摘要）右只读详情

@@ -446,9 +446,13 @@ pub fn tr(lang: Lang, key: &'static str) -> &'static str {
             "This is a test popup for previewing the appear animation and appearance.",
             "这是一个测试弹窗，用于预览弹出动画与外观。",
         ),
-        "test.question" => pick(lang, "Test question: how does the popup look?", "测试问题：弹窗效果看起来如何？"),
+        "test.questionAppearance" => pick(lang, "How does the popup look?", "弹窗效果看起来如何？"),
         "test.optionGood" => pick(lang, "Looks good", "很好"),
         "test.optionAdjust" => pick(lang, "Needs tweaks", "再调整"),
+        "test.questionAnimation" => pick(lang, "Does the appear animation feel smooth?", "弹出动画是否流畅？"),
+        "test.optionSmooth" => pick(lang, "Smooth", "流畅"),
+        "test.optionLaggy" => pick(lang, "A little laggy", "有些卡顿"),
+        "test.questionSuggestions" => pick(lang, "Any other suggestions?", "还有其他建议吗？"),
 
         // —— IPC 命令直接返回的 GUI 文案（commands.rs）——
         "cmd.invalidAttachmentIndex" => pick(lang, "Invalid attachment index", "无效的附件索引"),

@@ -702,7 +702,7 @@ pub fn get_prompt(variant: Option<String>) -> String {
     }
 }
 
-/// 设置页「弹出测试窗口」：以独立子进程跑一个示例提问，
+/// 设置页「弹出测试窗口」：以独立子进程跑一个多问题示例，
 /// 完全复用真实弹窗流程并读取已保存的配置（含出现动画），便于快速预览效果。
 #[tauri::command]
 pub fn open_test_popup() -> Result<(), String> {
@@ -714,11 +714,19 @@ pub fn open_test_popup() -> Result<(), String> {
         .args([
             crate::i18n::tr(lang, "test.message"),
             "-q",
-            crate::i18n::tr(lang, "test.question"),
-            "-o",
+            crate::i18n::tr(lang, "test.questionAppearance"),
+            "-o!",
             crate::i18n::tr(lang, "test.optionGood"),
             "-o",
             crate::i18n::tr(lang, "test.optionAdjust"),
+            "-q",
+            crate::i18n::tr(lang, "test.questionAnimation"),
+            "-o!",
+            crate::i18n::tr(lang, "test.optionSmooth"),
+            "-o",
+            crate::i18n::tr(lang, "test.optionLaggy"),
+            "-q",
+            crate::i18n::tr(lang, "test.questionSuggestions"),
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
