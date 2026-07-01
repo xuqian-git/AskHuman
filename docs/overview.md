@@ -379,6 +379,10 @@ AskHuman/
 
 ## 构建 / 开发 / 测试
 
+- `scripts/install.sh` 在 macOS 自动使用本机 codesigning identity 和固定 identifier 正式签名；
+  后台 Codex app-server 无法访问签名私钥时，通过一次性 LaunchAgent 同步委托用户 GUI launchd domain
+  完成（不打开 Terminal），失败则中止安装，避免留下无法执行或破坏钥匙串信任的产物。
+
 ```bash
 pnpm install
 pnpm tauri dev                                   # 调试（Vite + Tauri）
