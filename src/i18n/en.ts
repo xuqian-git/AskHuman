@@ -12,6 +12,13 @@ export default {
     loadError: "Failed to load: {msg}",
     questionFrom: "Question from {source}",
     messageFrom: "Message from {source}",
+    // Header popup time: relative time (frontend switches to absolute after a day).
+    time: {
+      justNow: "just now",
+      secondsAgo: "{n}s ago",
+      minutesAgo: "{n}m ago",
+      hoursAgo: "{n}h ago",
+    },
     attachments: "Attachments · {n}",
     inputPlaceholder: "Type your reply…",
     addImage: "Add image",

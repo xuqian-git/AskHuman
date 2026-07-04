@@ -76,6 +76,8 @@ export interface PopupInit {
   perfAutodismiss?: boolean;
   /** 方案6：本进程是否为预热弹窗（窗口起始隐藏）。为真时前端在内容绘制完成后调 `popup_show_window` 上屏。 */
   warm?: boolean;
+  /** 提问创建时刻（epoch 毫秒）：弹窗据此显示相对时间（几秒/分钟/小时前），超过一天显示绝对时间。0=未知。 */
+  createdAtMs?: number;
 }
 
 export interface QuestionAnswer {

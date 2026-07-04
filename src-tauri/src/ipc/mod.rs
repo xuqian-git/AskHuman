@@ -185,6 +185,10 @@ pub struct ShowPayload {
     /// 性能测试：画完首帧后自动取消弹窗（仅 harness 用）。热 helper 同样经 Show 透传（无 env）。
     #[serde(default)]
     pub perf_autodismiss: bool,
+    /// 提问创建时刻（daemon 建请求时的 epoch 毫秒）。弹窗据此显示「几秒/分钟/小时前」的相对时间。
+    /// 预热弹窗领用时得到的即为提问真正到达时刻（而非热进程 spawn 时刻）。
+    #[serde(default)]
+    pub created_at_ms: u64,
 }
 
 /// 客户端（CLI / GUI Helper）→ Daemon 的消息。

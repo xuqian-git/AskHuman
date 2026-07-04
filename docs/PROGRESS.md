@@ -2,6 +2,20 @@
 
 按具体任务 / 需求记录待办与当前进展。任务 / 需求完成后删除其 section（历史留在 git）。
 
+## 待验收：弹窗头部显示「提问时间」（相对时间，满一天转绝对）
+
+`install.sh` 通过、vue-tsc 通过。在弹窗头部「Message from …（含胶囊）」之后加一枚灰色小字时间：
+- **锚点**：提问创建时刻（epoch ms）。daemon 建请求时 `RequestRegistry::create()` 记录，经
+  `ShowPayload.created_at_ms` → `PopupInit.createdAtMs` 透传；冷/单进程弹窗取弹窗构造时刻兜底；
+  非弹窗窗口置 0。预热弹窗领用时得到的即为提问真正到达时刻（非热进程 spawn 时刻）。
+- **显示**：`<5s 刚刚 / <60s N 秒前 / <60min N 分钟前 / <24h N 小时前`，满 24h 改绝对
+  `toLocaleString()`（跟随系统）。前端每秒 tick 走字；hover(title) 给精确绝对时间。
+- **窄窗**：`.brand-time` 给远高于标题/胶囊的收缩权重（flex-shrink 100000）+ overflow 裁剪，
+  空间不足时**最先**被压没。
+- 触点：`ipc.ShowPayload` / `daemon/request.rs` / `app::AppState`（7 处构造）/ `commands.popup_init`
+  / `types.ts` / `PopupView.vue` / i18n `popup.time.*`。
+- **未做**：未真机看弹窗（需重启 daemon 用上新二进制）——待你验收。
+
 ## 待验收：/status 当前活动（一期 transcript 尾部 + 二期 hook 实时工具 + 会话层斜线修复）
 
 一期 `docs/plans/im-status-activity.md`、二期 `docs/plans/im-status-realtime-hook.md` 均已全量落地，

@@ -113,6 +113,8 @@ impl RequestRegistry {
             // 方案6：透传 perf 上下文，热 helper 领用时据此开启埋点（无 env 也能量化热路径）。
             perf_id: task.perf_id,
             perf_autodismiss: task.perf_autodismiss,
+            // 提问创建时刻：弹窗相对时间的锚点（预热弹窗领用时即为真正到达时刻）。
+            created_at_ms: crate::perf::now_ms() as u64,
         };
 
         let entry = Arc::new(RequestEntry {

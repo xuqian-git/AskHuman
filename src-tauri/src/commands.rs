@@ -44,6 +44,9 @@ pub struct PopupInit {
     /// 方案6：本进程是否为预热弹窗（窗口起始隐藏）。为真时前端在内容绘制完成后调 `popup_show_window`
     /// 让后端上屏（延后 show）；冷路径为假（窗口已在 setup 中显示）。
     warm: bool,
+    /// 提问创建时刻（epoch 毫秒）：弹窗据此显示相对时间（几秒/分钟/小时前），超过一天显示绝对时间。
+    /// 0 表示未知（非弹窗窗口）。
+    created_at_ms: u64,
 }
 
 #[tauri::command]
@@ -54,7 +57,7 @@ pub fn popup_init(app: AppHandle, state: State<AppState>) -> PopupInit {
     // en/zh）；其余路径用本进程 config 的原始值（auto/en/zh）。
     let default_lang = state.config.general.language.clone();
     #[cfg(unix)]
-    let (request, source, project, agent_kind, agent_pid, language, warm) =
+    let (request, source, project, agent_kind, agent_pid, language, warm, created_at_ms) =
         if let Some(w) = app.try_state::<crate::app::WarmPopup>() {
             match w.show.lock().ok().and_then(|g| g.clone()) {
                 Some(s) => (
@@ -65,6 +68,7 @@ pub fn popup_init(app: AppHandle, state: State<AppState>) -> PopupInit {
                     s.agent_pid,
                     s.lang,
                     true,
+                    s.created_at_ms,
                 ),
                 None => (
                     None,
@@ -74,6 +78,7 @@ pub fn popup_init(app: AppHandle, state: State<AppState>) -> PopupInit {
                     None,
                     default_lang,
                     true,
+                    0,
                 ),
             }
         } else {
@@ -85,10 +90,11 @@ pub fn popup_init(app: AppHandle, state: State<AppState>) -> PopupInit {
                 state.agent_pid,
                 default_lang,
                 false,
+                state.created_at_ms,
             )
         };
     #[cfg(not(unix))]
-    let (request, source, project, agent_kind, agent_pid, language, warm) = (
+    let (request, source, project, agent_kind, agent_pid, language, warm, created_at_ms) = (
         Some(state.request.clone()),
         state.source.clone(),
         state.project.clone(),
@@ -96,6 +102,7 @@ pub fn popup_init(app: AppHandle, state: State<AppState>) -> PopupInit {
         state.agent_pid,
         default_lang,
         false,
+        state.created_at_ms,
     );
     let _ = &app;
 
@@ -126,6 +133,7 @@ pub fn popup_init(app: AppHandle, state: State<AppState>) -> PopupInit {
         perf: !crate::perf::effective_id().is_empty(),
         perf_autodismiss: crate::perf::autodismiss(),
         warm,
+        created_at_ms,
     }
 }
 

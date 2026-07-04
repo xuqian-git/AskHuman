@@ -41,6 +41,9 @@ pub struct AppState {
     pub agent_kind: Option<String>,
     /// 发起本次提问的 agent 进程 pid，仅弹窗（Daemon 上送）有值；用于「聚焦终端」与终端可激活性判断。
     pub agent_pid: Option<u32>,
+    /// 提问创建时刻（epoch 毫秒）：弹窗相对时间的锚点。冷/单进程路径取弹窗构造时刻；GUI helper 取 `Show`
+    /// 透传的创建时刻。非弹窗窗口（设置/历史/Agents/GuiHost）不使用，置 0。
+    pub created_at_ms: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -301,6 +304,8 @@ fn run_gui_ask(request: AskRequest, config: AppConfig, messaging_active: bool) -
         project: crate::project::detect(),
         agent_kind: None,
         agent_pid: None,
+        // 单进程弹窗无 daemon：以构造时刻为提问时间锚点。
+        created_at_ms: crate::perf::now_ms() as u64,
     };
     match launch(state, View::Popup, None) {
         Ok(()) => std::process::exit(0), // 成功路径已在 launch 内退出，此处不可达
@@ -526,6 +531,7 @@ pub fn run_settings(config: AppConfig) -> ! {
         project: crate::project::detect(),
         agent_kind: None,
         agent_pid: None,
+        created_at_ms: 0,
     };
     if let Err(e) = launch(state, View::Settings, None) {
         stderr_redirect::eprintln_real(&format!(
@@ -549,6 +555,7 @@ pub fn run_history(project: String, all: bool, config: AppConfig) -> ! {
         project,
         agent_kind: None,
         agent_pid: None,
+        created_at_ms: 0,
     };
     if let Err(e) = launch(state, View::History { all }, None) {
         stderr_redirect::eprintln_real(&format!(
@@ -573,6 +580,7 @@ pub fn run_agents(config: AppConfig) -> ! {
         project: crate::project::detect(),
         agent_kind: None,
         agent_pid: None,
+        created_at_ms: 0,
     };
     if let Err(e) = launch(state, View::Agents, None) {
         stderr_redirect::eprintln_real(&format!(
@@ -602,6 +610,7 @@ pub fn run_gui_host(config: AppConfig) -> ! {
         project: crate::project::detect(),
         agent_kind: None,
         agent_pid: None,
+        created_at_ms: 0,
     };
     if let Err(e) = launch(state, View::GuiHost, None) {
         stderr_redirect::eprintln_real(&format!("askhuman gui-host failed: {}", e));
@@ -653,6 +662,8 @@ pub fn run_gui_helper(_endpoint: String, token: String, warm: bool) -> ! {
             project: String::new(),
             agent_kind: None,
             agent_pid: None,
+            // 待命态：领用时由 `Show` 注入真正的创建时刻（popup_init 读 WarmPopup.show）。
+            created_at_ms: 0,
         };
         let popup_ipc = PopupIpc {
             gui_tx,
@@ -717,6 +728,7 @@ pub fn run_gui_helper(_endpoint: String, token: String, warm: bool) -> ! {
         project: show.project,
         agent_kind: show.agent_kind,
         agent_pid: show.agent_pid,
+        created_at_ms: show.created_at_ms,
     };
     let popup_ipc = PopupIpc {
         gui_tx,

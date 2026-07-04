@@ -396,6 +396,29 @@ const headerPrefix = computed(() =>
 const headerSuffix = computed(() =>
   agentInline.value ? headerParts.value.suffix : ""
 );
+// 弹窗头部时间：提问创建时刻（epoch ms，daemon 上送；冷/单进程为弹窗构造时刻）。0/缺失=不显示。
+const createdAtMs = ref(0);
+// 每秒 tick，让相对时间随停留时长自动走字（与请求内容解耦）。
+const nowMs = ref(Date.now());
+let timeTicker: number | undefined;
+// 相对时间：满一天改绝对时间（Q2 甲）。<5s 刚刚 / <60s N 秒前 / <60min N 分钟前 / <24h N 小时前。
+const popupTimeRel = computed(() => {
+  const created = createdAtMs.value;
+  if (!created) return "";
+  const diff = Math.max(0, Math.floor((nowMs.value - created) / 1000));
+  if (diff < 5) return t("popup.time.justNow");
+  if (diff < 60) return t("popup.time.secondsAgo", { n: diff });
+  const min = Math.floor(diff / 60);
+  if (min < 60) return t("popup.time.minutesAgo", { n: min });
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return t("popup.time.hoursAgo", { n: hr });
+  // 满一天：绝对时间（跟随系统语言/格式）。
+  return new Date(created).toLocaleString();
+});
+// hover 精确绝对时间（title）。
+const popupTimeAbs = computed(() =>
+  createdAtMs.value ? new Date(createdAtMs.value).toLocaleString() : ""
+);
 // 多题显示「Question i/n」；单题（仅在有 Message 时显示头部）只显示「Question」。
 const questionHeaderLabel = computed(() =>
   isMulti.value
@@ -1257,6 +1280,9 @@ function renderInit(init: PopupInit) {
   projectPath.value = init.project;
   agentKind.value = init.agentKind ?? "";
   agentPid.value = init.agentPid ?? null;
+  createdAtMs.value = init.createdAtMs ?? 0;
+  // 领用/渲染即刻校准 now，避免 tick 首帧前相对时间偏大。
+  nowMs.value = Date.now();
   // 语音设置改取自 popup_init（不再走 get_settings / 钥匙串）。
   speechLang.value = init.speechLanguage || "auto";
   speechShortcut.value = init.speechShortcut || "cmd+d";
@@ -1339,6 +1365,10 @@ async function adopt() {
 }
 
 onMounted(async () => {
+  // 头部相对时间每秒走字（开销极小；无 createdAt 时 computed 返回空，不渲染）。
+  timeTicker = window.setInterval(() => {
+    nowMs.value = Date.now();
+  }, 1000);
   // 同步窗口监听（开销极小）：放最前，保证粘贴 / 快捷键 / Esc 从首帧即可用。
   window.addEventListener("paste", onPaste);
   window.addEventListener("keydown", onKeydown);
@@ -1506,6 +1536,7 @@ onBeforeUnmount(() => {
   unlistenFlash?.();
   unlistenAgent?.();
   unlistenShow?.();
+  if (timeTicker) window.clearInterval(timeTicker);
   if (flashTimer) window.clearTimeout(flashTimer);
   if (copiedTimer) window.clearTimeout(copiedTimer);
   io?.disconnect();
@@ -1587,6 +1618,12 @@ onBeforeUnmount(() => {
         <span v-if="headerSuffix" class="brand-title brand-suffix">{{
           headerSuffix
         }}</span>
+        <span
+          v-if="popupTimeRel"
+          class="brand-time"
+          :title="popupTimeAbs"
+          >· {{ popupTimeRel }}</span
+        >
       </span>
       <span class="nav-actions">
         <div v-if="updateAvailable" class="update-wrap">
@@ -2260,6 +2297,20 @@ onBeforeUnmount(() => {
 .brand.inline .brand-workspace {
   flex-shrink: 1;
   min-width: 0;
+}
+/* 头部弹窗时间：灰色小字，紧跟头部之后。空间不足时最先让位——给远高于标题/胶囊的收缩权重
+   （100000 ≫ 后缀 1000 ≫ 前缀 50 ≫ 项目 1）+ overflow 裁剪，使其先被压没再动其它元素。 */
+.brand-time {
+  pointer-events: auto;
+  flex: 0 100000 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  opacity: 0.7;
+  letter-spacing: 0.1px;
 }
 /* 标题旁的来源胶囊（agent / workspace）：浅灰底圆角矩形纯文字。
    需 pointer-events:auto 才能 hover 出原生 title / 接收点击（导航栏其余可拖拽）。

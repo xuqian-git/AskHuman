@@ -12,6 +12,13 @@ export default {
     loadError: "加载失败：{msg}",
     questionFrom: "来自 {source} 的提问",
     messageFrom: "来自 {source} 的消息",
+    // 头部弹窗时间：相对时间（满一天后由前端改用绝对时间）。
+    time: {
+      justNow: "刚刚",
+      secondsAgo: "{n} 秒前",
+      minutesAgo: "{n} 分钟前",
+      hoursAgo: "{n} 小时前",
+    },
     attachments: "附件 · {n}",
     inputPlaceholder: "输入你的回复…",
     addImage: "添加图片",
