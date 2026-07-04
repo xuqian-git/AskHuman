@@ -134,6 +134,123 @@ pub fn uninstall() -> std::io::Result<()> {
     Ok(())
 }
 
+// ===== Daemon 登录项（保活模式：daemon 本体开机自启）=====
+//
+// 与 guihost 登录项**分开**，且**纯文件写/删**（不 launchctl bootstrap/bootout）。理由：
+// - 保活模式下 daemon 由「打开开关即 `client::ensure_running`」在当前会话即起；登录项只负责**下次登录**自启
+//   （~/Library/LaunchAgents 下的 plist 会在登录时被 launchd 自动加载，无需显式 bootstrap）。
+// - 关闭保活时只删文件、**绝不 bootout**：bootout 会给正在跑的 daemon 发 SIGTERM 强杀，而需求是让它按
+//   原 5min 空闲策略自然退出。故避免任何会杀进程的 launchctl 操作。
+// - KeepAlive=false：避免「daemon 空闲退出后被 launchd 立刻拉起」与自然退出/换挡打架。
+
+const DAEMON_LABEL: &str = "com.naituw.humaninloop.daemon";
+
+#[cfg(target_os = "macos")]
+fn daemon_item_path() -> PathBuf {
+    crate::paths::home()
+        .join("Library")
+        .join("LaunchAgents")
+        .join(format!("{DAEMON_LABEL}.plist"))
+}
+
+#[cfg(target_os = "macos")]
+fn daemon_contents(exe: &str) -> String {
+    let exe = exe
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;");
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{DAEMON_LABEL}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{exe}</string>
+        <string>daemon</string>
+        <string>run</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>
+"#
+    )
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn daemon_item_path() -> PathBuf {
+    crate::paths::home()
+        .join(".config")
+        .join("autostart")
+        .join("askhuman-daemon.desktop")
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn daemon_contents(exe: &str) -> String {
+    format!(
+        "[Desktop Entry]\n\
+Type=Application\n\
+Name=AskHuman Daemon\n\
+Exec=\"{exe}\" daemon start\n\
+X-GNOME-Autostart-enabled=true\n\
+NoDisplay=true\n\
+Terminal=false\n"
+    )
+}
+
+/// daemon 登录项是否已安装。
+pub fn daemon_is_installed() -> bool {
+    daemon_item_path().exists()
+}
+
+/// 已装但记录的 exe 与当前不一致（移动安装位置后需刷新）。
+pub fn daemon_needs_update() -> bool {
+    if !daemon_is_installed() {
+        return false;
+    }
+    match std::fs::read_to_string(daemon_item_path()) {
+        Ok(text) => !text.contains(&current_exe()),
+        Err(_) => true,
+    }
+}
+
+/// 写入/刷新 daemon 登录项文件（纯文件、不 launchctl）。幂等。
+pub fn install_daemon() -> std::io::Result<()> {
+    let path = daemon_item_path();
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(&path, daemon_contents(&current_exe()))
+}
+
+/// 删除 daemon 登录项文件（**不** bootout，避免强杀正在运行的 daemon）。幂等。
+pub fn uninstall_daemon() -> std::io::Result<()> {
+    let path = daemon_item_path();
+    if path.exists() {
+        std::fs::remove_file(&path)?;
+    }
+    Ok(())
+}
+
+/// 让 daemon 登录项与「是否保活」一致：保活→写/刷新文件、否则→删文件。幂等，供 daemon 启动 /
+/// 配置变更 / 宿主换挡复用。
+pub fn sync_daemon(keep_alive: bool) -> std::io::Result<()> {
+    if keep_alive {
+        if daemon_is_installed() && !daemon_needs_update() {
+            Ok(())
+        } else {
+            install_daemon()
+        }
+    } else {
+        uninstall_daemon()
+    }
+}
+
 // ===== 共用 =====
 
 /// 登录项是否已安装。
@@ -201,6 +318,27 @@ mod tests {
     fn desktop_has_exec_and_autostart() {
         let d = desktop_contents("/home/u/.local/bin/AskHuman");
         assert!(d.contains("Exec=\"/home/u/.local/bin/AskHuman\" --gui-host"));
+        assert!(d.contains("X-GNOME-Autostart-enabled=true"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn daemon_plist_runs_daemon_at_load_without_keepalive() {
+        let p = daemon_contents("/usr/local/bin/AskHuman");
+        assert!(p.contains("<string>/usr/local/bin/AskHuman</string>"));
+        assert!(p.contains("<string>daemon</string>"));
+        assert!(p.contains("<string>run</string>"));
+        assert!(p.contains("<key>RunAtLoad</key>"));
+        // 保活 daemon 登录项刻意**不带** KeepAlive（见模块头注释）。
+        assert!(!p.contains("<key>KeepAlive</key>"));
+        assert!(p.contains(DAEMON_LABEL));
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn daemon_desktop_starts_daemon() {
+        let d = daemon_contents("/home/u/.local/bin/AskHuman");
+        assert!(d.contains("Exec=\"/home/u/.local/bin/AskHuman\" daemon start"));
         assert!(d.contains("X-GNOME-Autostart-enabled=true"));
     }
 }

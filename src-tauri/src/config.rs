@@ -83,6 +83,18 @@ pub enum MenuBarIconMode {
     Always,
 }
 
+/// 守护进程生命周期模式（实验 Tab，仅 Unix daemon 有意义；Windows 无 daemon、忽略）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum DaemonLifecycleMode {
+    /// 按 agent 活动：首次提问 / hook 拉起，无在途/无「工作中」agent 且空闲超时后自动退出。默认（旧行为）。
+    #[default]
+    Activity,
+    /// 保活：不再空闲退出；装 daemon 登录项开机自启（作用于 daemon 本体，类似托盘 always）。
+    /// 让 IM 随时可收消息，代价是常驻少量资源 + 保持 IM 通道连接。
+    KeepAlive,
+}
+
 /// 弹窗背景效果。仅 macOS 26+ 可在二者间切换；旧系统无论选哪个都呈现模糊。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -119,6 +131,8 @@ pub struct GeneralConfig {
     /// `Show` 上屏（省掉 WebView 初始化 + 页面加载 + 挂载的关键路径开销）。默认开；可关（非实验项）。
     /// 代价是常驻一个隐藏 WebView 进程（少量内存）。无显示环境（headless）自动不生效。
     pub popup_prewarm: bool,
+    /// 守护进程生命周期模式（activity 默认 / keepalive 保活）。UI 入口在「实验」Tab；仅 Unix daemon 有意义。
+    pub daemon_lifecycle: DaemonLifecycleMode,
 }
 
 /// 回复历史默认保留条数。
@@ -140,6 +154,7 @@ impl Default for GeneralConfig {
             popup_sound: String::new(),
             menu_bar_icon: MenuBarIconMode::Off,
             popup_prewarm: true,
+            daemon_lifecycle: DaemonLifecycleMode::Activity,
         }
     }
 }
@@ -583,6 +598,19 @@ mod tests {
         std::fs::write(&path, r#"{"general":{"menuBarIcon":"bogus"}}"#).unwrap();
         let c = AppConfig::load_from(&path);
         assert_eq!(c.general.menu_bar_icon, MenuBarIconMode::Off);
+    }
+
+    #[test]
+    fn daemon_lifecycle_parses_lowercase_and_defaults() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(&path, r#"{"general":{"daemonLifecycle":"keepalive"}}"#).unwrap();
+        let c = AppConfig::load_from(&path);
+        assert_eq!(c.general.daemon_lifecycle, DaemonLifecycleMode::KeepAlive);
+        // 缺字段 → 默认 Activity（旧配置零影响）。
+        std::fs::write(&path, r#"{"general":{"theme":"dark"}}"#).unwrap();
+        let c = AppConfig::load_from(&path);
+        assert_eq!(c.general.daemon_lifecycle, DaemonLifecycleMode::Activity);
     }
 
     #[cfg(unix)]

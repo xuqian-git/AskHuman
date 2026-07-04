@@ -119,6 +119,12 @@ export default {
       verticalQuestionsTitle: "多问题纵向同时显示",
       verticalQuestionsDesc:
         "提出多个问题时，纵向平铺同时显示所有问题（当前题高亮、滚动/悬停切换、快捷键导航）。关闭时为旧版「一次显示一个问题、上一步/下一步切换」。",
+      daemonLifecycleTitle: "守护进程生命周期",
+      daemonLifecycleLabel: "模式",
+      daemonLifecycleActivity: "按活动",
+      daemonLifecycleKeepalive: "保活",
+      daemonLifecycleHint:
+        "「按活动」：Agent 开始活动或提问时才启动守护进程，空闲一段时间后自动退出。「保活」：守护进程常驻并开机自启，让 IM 随时可接收消息；但会持续占用少量系统资源并占用 IM 通道。建议在多台设备上同时使用时为各设备配置不同的 IM 机器人。",
     },
     appearance: {
       title: "外观",

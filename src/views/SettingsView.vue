@@ -64,6 +64,7 @@ import type {
   AgentMode,
   AgentModeStatus,
   AppConfig,
+  DaemonLifecycleMode,
   LifecycleStatus,
   MenuBarIconMode,
   PopupAnimation,
@@ -477,6 +478,14 @@ async function changeAnimation(anim: PopupAnimation) {
 async function changeMenuBarIcon(mode: MenuBarIconMode) {
   if (!config.value) return;
   config.value.general.menuBarIcon = mode;
+  await persist();
+}
+
+// 守护进程生命周期二态（activity/keepalive）。仅持久化；daemon 与宿主监听 config 变化后自行
+// 换挡（保活→立即拉起 + 装开机自启登录项 + 不空闲退出；见 src-tauri daemon / app::gui_host）。
+async function changeDaemonLifecycle(mode: DaemonLifecycleMode) {
+  if (!config.value) return;
+  config.value.general.daemonLifecycle = mode;
   await persist();
 }
 
@@ -1629,6 +1638,36 @@ onBeforeUnmount(() => unlistenProgress?.());
               </label>
             </div>
           </template>
+        </div>
+
+        <!-- 守护进程生命周期（默认按活动启动/空闲退出；保活=常驻+开机自启） -->
+        <div class="card">
+          <p class="card-title">
+            {{ t("settings.experimental.daemonLifecycleTitle") }}
+          </p>
+          <div class="row">
+            <span class="label">{{
+              t("settings.experimental.daemonLifecycleLabel")
+            }}</span>
+            <span class="spacer"></span>
+            <div class="segmented">
+              <button
+                :class="{ active: config.general.daemonLifecycle === 'activity' }"
+                @click="changeDaemonLifecycle('activity')"
+              >
+                {{ t("settings.experimental.daemonLifecycleActivity") }}
+              </button>
+              <button
+                :class="{ active: config.general.daemonLifecycle === 'keepalive' }"
+                @click="changeDaemonLifecycle('keepalive')"
+              >
+                {{ t("settings.experimental.daemonLifecycleKeepalive") }}
+              </button>
+            </div>
+          </div>
+          <p class="card-desc">
+            {{ t("settings.experimental.daemonLifecycleHint") }}
+          </p>
         </div>
 
         <!-- IM 渠道按需发送（从「渠道」Tab 迁来，归入实验区；配置键仍为 autoActivation） -->

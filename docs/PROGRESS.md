@@ -2,6 +2,16 @@
 
 按具体任务 / 需求记录待办与当前进展。任务 / 需求完成后删除其 section（历史留在 git）。
 
+## 待验收：守护进程「保活模式」（实验 Tab）
+
+在「实验」Tab 加**分段控件**（与状态栏图标一致）选 daemon 生命周期：`activity`（默认＝当前行为：按需拉起、5min 空闲退出）/ `keepalive`（保活）。已全量落地：
+- **保活 = 装 daemon 登录项（开机自启，`~/Library/LaunchAgents/*.daemon.plist` `RunAtLoad`、无 `KeepAlive`；Linux `daemon start`）+ 空闲循环跳过退出（每轮 `load_without_secrets` 读一次）+ 打开开关即立即启动 daemon（宿主 `apply_config` 换挡即 `ensure_running`，一次触发）**。
+- **关闭 = 卸登录项（仅删 plist/.desktop 文件、不 bootout 以免强杀）+ 让 daemon 按原 5min 空闲策略自然退出（策略不改）**。
+- 登录项同步（`sync_daemon`）由 daemon 自身在 `serve()` 启动 + `on_config_changed` 幂等执行（宿主只管「立即起」）。
+- 提示文案：保活可让 IM 随时收消息，但持续占少量资源 + IM 通道；多设备同时用建议配不同 IM 机器人。
+- 触点：`config.rs`(DaemonLifecycleMode + general.daemonLifecycle + test) / `daemon/mod.rs`(idle 循环跳过 + `sync_daemon_login_item` 于 startup/on_config_changed) / `integrations/login_item.rs`(daemon 变体，file-only，+2 test) / `app/gui_host.rs`(HostState.daemon_lifecycle 跟踪 + apply_config 换挡即 ensure_running) / `types.ts` / `SettingsView.vue` / i18n zh+en。Unix only。
+- **未做（待你验收）**：未真机端到端——开保活看 daemon 是否立即起且不再空闲退出、`~/Library/LaunchAgents` 是否落 plist、关保活后 plist 消失且 daemon 自然退出。验收前需用新二进制重启 daemon。
+
 ## 待验收：弹窗头部显示「提问时间」（相对时间，满一天转绝对）
 
 `install.sh` 通过、vue-tsc 通过。在弹窗头部「Message from …（含胶囊）」之后加一枚灰色小字时间：

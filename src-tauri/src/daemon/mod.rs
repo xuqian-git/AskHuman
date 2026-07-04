@@ -376,6 +376,9 @@ mod unix_impl {
             }
         }
 
+        // 保活模式：让 daemon 登录项（下次登录自启）与配置一致（幂等，纯文件；exe 路径变化会刷新）。
+        sync_daemon_login_item();
+
         let state = Arc::new(ServerState {
             startup_fp,
             started_at,
@@ -406,6 +409,15 @@ mod unix_impl {
                 let timeout = idle_timeout();
                 loop {
                     tokio::time::sleep(Duration::from_secs(30)).await;
+                    // 保活模式（general.daemonLifecycle = keepalive）：永不因空闲退出（让 IM 随时可收）。
+                    // 每轮读一次配置（load_without_secrets：仅读 config.json，不碰钥匙串，开销可忽略）。
+                    if crate::config::AppConfig::load_without_secrets()
+                        .general
+                        .daemon_lifecycle
+                        == crate::config::DaemonLifecycleMode::KeepAlive
+                    {
+                        continue;
+                    }
                     // 空闲退出守卫（spec D18）：仅当无在途请求、无状态窗口订阅、**且**无「工作中」
                     // agent 时才计空闲。空闲 agent 不保活；版本更新 drain 由 begin_drain 独立处理、不受此影响。
                     if state.active.load(Ordering::SeqCst) == 0
@@ -2647,7 +2659,19 @@ mod unix_impl {
         } else {
             recycle_warm(state);
         }
+        // 保活开关热切换：同步 daemon 登录项（保活→写文件、否则→删文件）。关掉保活后不强杀本进程——
+        // 空闲循环会按原 5min 策略让其自然退出。
+        sync_daemon_login_item();
         log("config reloaded");
+    }
+
+    /// 让 daemon 登录项（开机自启）与 `general.daemonLifecycle` 一致。best-effort、幂等、纯文件操作。
+    fn sync_daemon_login_item() {
+        let keep_alive = crate::config::AppConfig::load_without_secrets()
+            .general
+            .daemon_lifecycle
+            == crate::config::DaemonLifecycleMode::KeepAlive;
+        let _ = crate::integrations::login_item::sync_daemon(keep_alive);
     }
 
     /// 比对新旧配置：凭据变更或渠道被禁用 → 丢弃对应缓存 Router（惰性失效，Q1）+ 停掉旧入站监听。

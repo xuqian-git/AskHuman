@@ -11,7 +11,7 @@
 #![cfg(unix)]
 
 use crate::app::tray_menu::{Node, TrayMenu};
-use crate::config::{AppConfig, MenuBarIconMode};
+use crate::config::{AppConfig, DaemonLifecycleMode, MenuBarIconMode};
 use crate::daemon::lifecycle::{self, Fingerprint, LockGuard};
 use crate::gui_host::{HostMsg, WindowKind};
 use crate::i18n::{self, Lang};
@@ -89,6 +89,9 @@ pub struct TrayData {
 
 pub struct HostState {
     pub mode: Mutex<MenuBarIconMode>,
+    /// 上次已应用的守护进程生命周期模式：用于在配置变更时检测「切到保活」的跃迁，
+    /// 从而立即拉起 daemon（打开开关即视为一次触发，见 spec）。
+    pub daemon_lifecycle: Mutex<DaemonLifecycleMode>,
     pub lang: Mutex<Lang>,
     pub data: Mutex<TrayData>,
     pub daemon_up: AtomicBool,
@@ -143,6 +146,7 @@ pub fn setup(app: &mut tauri::App, config: &AppConfig) -> tauri::Result<()> {
 
     app.manage(HostState {
         mode: Mutex::new(mode),
+        daemon_lifecycle: Mutex::new(config.general.daemon_lifecycle),
         lang: Mutex::new(lang),
         data: Mutex::new(TrayData::default()),
         daemon_up: AtomicBool::new(false),
@@ -976,6 +980,19 @@ fn apply_config(app: &AppHandle, cfg: &AppConfig) {
             }
         }
     }
+
+    // 守护进程生命周期换挡：切到「保活」即视为一次触发——立即拉起 daemon（若未运行）。
+    // 登录项（开机自启）由 daemon 自身在启动 / on_config_changed 时同步（见 daemon::sync_daemon_login_item），
+    // 宿主这里只负责「立即起」，避免开了开关却看不到效果。关掉保活不强杀：让 daemon 按原空闲策略自然退出。
+    let new_life = cfg.general.daemon_lifecycle;
+    let old_life = *state.daemon_lifecycle.lock().unwrap();
+    *state.daemon_lifecycle.lock().unwrap() = new_life;
+    if new_life != old_life && new_life == DaemonLifecycleMode::KeepAlive {
+        tauri::async_runtime::spawn(async {
+            let _ = crate::client::ensure_running().await;
+        });
+    }
+
     // 语言 / 状态变化即重建菜单。
     refresh_tray(app);
 }

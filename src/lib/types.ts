@@ -192,10 +192,15 @@ export interface GeneralConfig {
   menuBarIcon: MenuBarIconMode;
   /** Popup pre-warm (faster popups by keeping one mounted, hidden helper ready). Default true. */
   popupPrewarm: boolean;
+  /** Daemon lifecycle: activity（按需起+空闲退出）/ keepalive（常驻+开机自启）。 */
+  daemonLifecycle: DaemonLifecycleMode;
 }
 
 /** Menu bar / tray status icon mode (mirrors Rust `MenuBarIconMode`). */
 export type MenuBarIconMode = "off" | "active" | "always";
+
+/** Daemon lifecycle mode (mirrors Rust `DaemonLifecycleMode`). */
+export type DaemonLifecycleMode = "activity" | "keepalive";
 
 /** Popup sound support: kind="named" with names, "toggle", or "none". */
 export interface PopupSoundSupport {

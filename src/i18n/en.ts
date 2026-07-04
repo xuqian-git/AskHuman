@@ -123,6 +123,12 @@ export default {
       verticalQuestionsTitle: "Show multiple questions vertically",
       verticalQuestionsDesc:
         "When several questions are asked, list them all vertically at once (active question highlighted, switch by scroll/hover, keyboard navigation). When off, falls back to the classic one-question-at-a-time view with previous/next.",
+      daemonLifecycleTitle: "Daemon lifecycle",
+      daemonLifecycleLabel: "Mode",
+      daemonLifecycleActivity: "On activity",
+      daemonLifecycleKeepalive: "Keep alive",
+      daemonLifecycleHint:
+        "\"On activity\": the daemon starts only when an agent becomes active or asks a question, and exits after a period of idleness. \"Keep alive\": the daemon stays resident and starts at login so IM channels can receive messages anytime; this keeps using a small amount of system resources and holds the IM channel open. When using multiple devices at once, configure a distinct IM bot per device.",
     },
     appearance: {
       title: "Appearance",
