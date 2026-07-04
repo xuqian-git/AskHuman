@@ -191,18 +191,22 @@ const focusedQ = ref<number | null>(null);
 let pendingPickQ = 0;
 // 键盘/按钮 setActive 后短暂锁定，避免随即的滚动事件把 active 改回去。
 let activeLockUntil = 0;
+// 导航滚动锁时长：需覆盖「聚焦展开(双 rAF) + smooth 滚动动画」的整个过程，否则动画尾段的滚动事件会让
+// scroll-spy 把 current 抢到别题（露出题顶=对齐顶部定位时，阅读线并不落在目标题，故必须锁到动画结束）。
+const NAV_LOCK_MS = 700;
 let io: IntersectionObserver | null = null;
 const scrolled = ref(false);
+// 内容是否已滚到最顶（scrollTop<=0）：用于纵向模式判断「首题的『上一个』能否再往上露出 message」。
+const atTop = ref(true);
 // 按住 ⌘/Ctrl 时高亮右侧快捷键 Badge（提示「此刻按数字即可选项」）。
 const cmdHeld = ref(false);
-// 鼠标是否悬停在问题区内：悬停时以 hover 决定 active（滚轮滚动时光标下的题），
-// 暂停滚动 scroll-spy 回写，避免 hover 与滚动两套来源互相打架、active 跳来跳去。
-const hovering = ref(false);
 // 取消二次确认（已有部分回答时）。
 const showCancelConfirm = ref(false);
 
 function onScroll(e: Event) {
-  scrolled.value = (e.target as HTMLElement).scrollTop > 0;
+  const st = (e.target as HTMLElement).scrollTop;
+  scrolled.value = st > 0;
+  atTop.value = st <= 0;
   updateActiveFromScroll();
 }
 
@@ -235,8 +239,6 @@ function updateActiveFromScroll() {
   scrollRaf = requestAnimationFrame(() => {
     scrollRaf = 0;
     if (Date.now() < activeLockUntil) return;
-    // 悬停优先：光标在问题区内时由 hover（mouseenter）决定 active，滚动不回写。
-    if (hovering.value) return;
     const root = contentRef.value;
     if (!root) return;
     const next = activeForScroll(root);
@@ -442,6 +444,27 @@ const canSubmit = computed(() => {
 });
 // 是否处于最后一题：多题时 CMD+回车 仅在最后一题提交，否则前往下一题。
 const onLastQuestion = computed(() => current.value === total.value - 1);
+
+// 「上一个」是否可用：纵向模式下即使在首题，只要还没滚到最顶（上方 message 未露全）就可用（点它=露出 message）；
+// 旧版顺序模式仍是「非首题才可用」。
+const canGoPrev = computed(() =>
+  verticalMode.value ? !(current.value === 0 && atTop.value) : current.value > 0
+);
+
+// 纵向模式下 ⌘↵ 是否会「提交」：已看完全部 且 当前焦点之后再无未答题（含焦点在末题时恒真）。
+// 与 onCmdEnter 的分支完全一致——「谁挂 ⌘↵ = ⌘↵ 就干谁」，故 ⌘↵ 角标据此挂在提交按钮上。
+const cmdEnterWillSubmit = computed(
+  () => verticalMode.value && lastSeen.value && nextUnansweredAfter(current.value) < 0
+);
+// 提交按钮挂 ⌘↵ / 为主按钮：纵向按 cmdEnterWillSubmit，旧版顺序沿用 onLastQuestion。
+const submitShowsCmdEnter = computed(() =>
+  verticalMode.value ? cmdEnterWillSubmit.value : onLastQuestion.value
+);
+const submitPrimary = computed(() => submitShowsCmdEnter.value);
+// 下一个是否主按钮：末题从不主；否则在「提交尚未成为主按钮」时为主（读题引导）。
+const nextPrimary = computed(
+  () => !onLastQuestion.value && !submitPrimary.value
+);
 
 // CMD+数字 选项快捷键上限（1-9）；超出的选项不分配快捷键。
 const OPTION_HOTKEY_MAX = 9;
@@ -816,42 +839,61 @@ function onTextareaBlur(i: number) {
   nextTick(() => autoGrow(i));
 }
 
-// 鼠标进入某题卡片：标记悬停中（暂停滚动 scroll-spy）并把该题设为 active。
-// 滚轮滚动时光标下的卡片随内容变化会持续触发，从而「以 hover 为准」、不与滚动打架。
-function onCardHover(qIndex: number) {
-  if (!verticalMode.value) return;
-  hovering.value = true;
-  // 键盘/按钮导航的短锁期内，忽略「滚动把卡片移到光标下」引发的 mouseenter，避免劫持目标题。
-  if (Date.now() < activeLockUntil) return;
-  setActive(qIndex, false);
-}
-
 // ===== 多题导航（纵向列表：当前题指针 + 滚动定位） =====
 function markVisited(i: number) {
   if (i >= 0 && i < visited.value.length) visited.value[i] = true;
 }
 
-// 把第 i 题滚到「比例阅读线」正好落在其顶部的位置（与 updateActiveFromScroll 同一套数学：
-// 令 lineY == card_i.top 解出 scrollTop = offsetTop_i * (scrollHeight - clientHeight) / scrollHeight），
-// 故导航后 scroll-spy 会稳定地把 active 判为第 i 题，不会在锁过期后被回写到别的题。
+// 第 i 题是否已完整落在视口内（含上下 16px 呼吸位）；卡片比视口还高时永远返回 false（无法完整容纳）。
+function isCardFullyVisible(i: number): boolean {
+  const root = contentRef.value;
+  const el = cardRefs.value[i];
+  if (!root || !el) return true;
+  const margin = 16;
+  const rootRect = root.getBoundingClientRect();
+  const elRect = el.getBoundingClientRect();
+  return (
+    elRect.top >= rootRect.top + margin &&
+    elRect.bottom <= rootRect.top + root.clientHeight - margin
+  );
+}
+
+// 第 i 题是否**完全在屏外**（整卡在视口上方或下方，一点都看不到）。用于 reveal-first：刚打开时长 message
+// 把 Q1 顶到屏外，此时点「下一个」应先把 Q1 露出来而非跳到 Q2；而只是「底部被切一点」不算屏外，可正常推进。
+function isCardOffScreen(i: number): boolean {
+  const root = contentRef.value;
+  const el = cardRefs.value[i];
+  if (!root || !el) return false;
+  const rootRect = root.getBoundingClientRect();
+  const elRect = el.getBoundingClientRect();
+  return (
+    elRect.top >= rootRect.top + root.clientHeight || elRect.bottom <= rootRect.top
+  );
+}
+
+// 把内容滚到最顶（scrollTop=0）：纵向模式在首题按「上一个」时用来完整露出上方 message。
+function scrollContentToTop() {
+  const root = contentRef.value;
+  if (!root) return;
+  const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+  root.scrollTo({ top: 0, behavior: reduce ? "auto" : "smooth" });
+}
+
+// 把第 i 题滚到「顶部对齐 + 16px 呼吸位」——统一露出该题**顶部**（含末题：夹到 max 即贴底、也完整可见）。
+// 不再用比例定位（会把靠后的题只露出个顶、后续再切就卡住）。对齐顶部后阅读线不落在目标题 → 必须靠 NAV_LOCK_MS
+// 锁住 scroll-spy 到动画结束，避免 current 被抢；用户手动滚动时 scroll-spy 才重新接管。
 function scrollQuestionIntoView(i: number) {
   const root = contentRef.value;
   const el = cardRefs.value[i];
   if (!root || !el) return;
   const max = root.scrollHeight - root.clientHeight;
   if (max <= 0) return; // 内容未超视口：无可滚动空间（active 由 setActive 直接置位）
-  // 首/末题分别贴顶 / 贴底：末题用比例位置会「欠滚」，底部被 footer 上沿遮住一截 → 直接滚到底；
-  // 首题滚到顶。中间题用比例阅读线位置（与 scroll-spy 同一套数学，定位稳定不回跳）。
-  let top: number;
-  if (i <= 0) {
-    top = 0;
-  } else if (i >= total.value - 1) {
-    top = max;
-  } else {
-    const offsetTop =
-      el.getBoundingClientRect().top - root.getBoundingClientRect().top + root.scrollTop;
-    top = Math.max(0, Math.min(max, (offsetTop * max) / root.scrollHeight));
-  }
+  // 已完整可见（含上下 16px 呼吸位）就**不滚动**：避免「目标题本就在屏内还硬滚一段」（用户反馈）。
+  if (isCardFullyVisible(i)) return;
+  const rootRect = root.getBoundingClientRect();
+  const elRect = el.getBoundingClientRect();
+  const offsetTop = elRect.top - rootRect.top + root.scrollTop;
+  const top = Math.max(0, Math.min(max, offsetTop - 16));
   const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
   root.scrollTo({ top, behavior: reduce ? "auto" : "smooth" });
 }
@@ -862,22 +904,43 @@ function setActive(index: number, scroll: boolean) {
   current.value = i;
   markVisited(i);
   if (scroll) {
-    activeLockUntil = Date.now() + 450;
+    activeLockUntil = Date.now() + NAV_LOCK_MS;
     scrollQuestionIntoView(i);
   }
 }
 
-// 相对移动当前题（纵向模式：上一个/下一个 + ⌘[/⌘]）。若此刻焦点在某个输入框，则把焦点也带到
-// 目标题的输入框（用户预期「切到下一个输入框」而非只移动高亮）；纯滚动浏览（无焦点）则不抢焦点。
-function goRel(delta: number) {
+// 导航「整题闪一下渐隐」：提示焦点落点，上一个/下一个按钮与 ⌘[/⌘]/⌘↵ 都会触发。闪光区域为 `.q-card::before`
+// （圆角、accent 淡底，见 CSS），一次性 opacity 1→0 渐隐。
+// 用 class + 强制 reflow 重放（卡片无 :class 绑定，Vue 不会清掉）；prefers-reduced-motion 下不闪。
+function flashCard(i: number) {
+  const el = cardRefs.value[i];
+  if (!el) return;
+  el.classList.remove("flash");
+  void el.offsetWidth; // 强制 reflow，令同一题也能再次触发动画
+  el.classList.add("flash");
+}
+
+// 跳到第 i 题（绝对索引）：置当前题 + 标记看过 + **自动聚焦该题输入框**（用户要求「切到某题就激活它的输入框」）。
+// 聚焦会触发折叠输入框展开、改变高度，故**展开后再滚动**（双 nextTick），避免用旧高度定位。全程用 NAV_LOCK_MS
+// 锁住 scroll-spy 到滚动动画结束，避免 current 被滚动事件抢走。供上一个/下一个、⌘[/⌘]、⌘↵ 复用，行为一致。
+function goToIdx(target: number) {
   stopPreview();
   selectedFile.value = null;
-  const wasFocused = focusedQ.value !== null;
-  const target = Math.max(0, Math.min(current.value + delta, total.value - 1));
-  setActive(target, true);
-  if (wasFocused) {
-    nextTick(() => inputRefs.value[target]?.focus({ preventScroll: true }));
-  }
+  const i = Math.max(0, Math.min(target, total.value - 1));
+  setActive(i, false); // 先置当前题、不滚动（滚动放到展开之后）
+  activeLockUntil = Date.now() + NAV_LOCK_MS;
+  nextTick(() => {
+    inputRefs.value[i]?.focus({ preventScroll: true });
+    nextTick(() => {
+      activeLockUntil = Date.now() + NAV_LOCK_MS; // 展开后重置锁：确保覆盖此刻才开始的 smooth 滚动动画
+      scrollQuestionIntoView(i);
+    });
+  });
+}
+
+// 相对移动当前题（上一个/下一个 + ⌘[/⌘]）。委托 goToIdx（焦点携带 + 展开后滚动）。
+function goRel(delta: number) {
+  goToIdx(current.value + delta);
 }
 
 // 旧版顺序模式切题：仅一题可见，改 current 即换页（聚焦/滚动由 Transition after-enter 处理）。
@@ -906,9 +969,19 @@ function onQuestionEntered() {
   scrollHeaderIntoView();
 }
 
+// 纵向导航统一在此闪一下：无论来自「上一个/下一个」按钮还是 ⌘[/⌘]，落点题都整题闪一次（用户要求按钮也闪）。
 function goPrev() {
   if (verticalMode.value) {
+    // 已在首题：「上一个」= 把上方 message 完整露出（滚到最顶），而非无动作（用户预期两级：Q2→Q1 露出 Q1、
+    // 在 Q1 再上一个才露出 message）。
+    if (current.value === 0) {
+      activeLockUntil = Date.now() + NAV_LOCK_MS;
+      scrollContentToTop();
+      flashCard(0);
+      return;
+    }
     goRel(-1);
+    flashCard(current.value);
     return;
   }
   slideDir.value = "prev";
@@ -917,11 +990,58 @@ function goPrev() {
 
 function goNext() {
   if (verticalMode.value) {
+    // 当前题**完全在屏外**（如长 message 刚打开把 Q1 顶到屏外）→ 先把它露出来 + 聚焦 + 闪一下，而非直接跳下一题
+    // （用户反馈：刚打开点「下一个」直接跳到 Q2、Q1 从没露出）。仅「底部被切一点」不算屏外，可正常推进到下一题。
+    if (isCardOffScreen(current.value)) {
+      goToIdx(current.value);
+      flashCard(current.value);
+      return;
+    }
     goRel(1);
+    flashCard(current.value);
     return;
   }
   slideDir.value = "next";
   goToSeq(current.value + 1);
+}
+
+// 从 from 之后找第一个「未答」/「未看过」的题；无则 -1（供 ⌘↵ 智能推进）。
+function nextUnansweredAfter(from: number): number {
+  for (let i = from + 1; i < total.value; i++) if (!isAnswered(i)) return i;
+  return -1;
+}
+function nextUnseenAfter(from: number): number {
+  for (let i = from + 1; i < total.value; i++) if (!(visited.value[i] ?? false)) return i;
+  return -1;
+}
+
+// 纵向模式的 ⌘↵：从当前焦点向后找下一个未答题→跳过去（闪+滚入+置焦点）；后面没有未答了→已看完全部
+// 则提交，否则去下一个没看过的题继续读（推进「读完」门槛）。永不落到已答题（修「跳回已答」bug）。
+// 自由模式想留空提交：直接点底部「提交」按钮（阶段②/③ 可见）。
+function onCmdEnter() {
+  // 当前题**完全在屏外**（长 message 顶开首题等）→ 先把它露出来 + 聚焦 + 闪一下，而非直接跳到后面的未答题。
+  if (isCardOffScreen(current.value)) {
+    goToIdx(current.value);
+    flashCard(current.value);
+    return;
+  }
+  const u = nextUnansweredAfter(current.value);
+  if (u >= 0) {
+    goToIdx(u);
+    flashCard(u);
+    return;
+  }
+  if (lastSeen.value) {
+    submit();
+    return;
+  }
+  const s = nextUnseenAfter(current.value);
+  if (s >= 0) {
+    goToIdx(s);
+    flashCard(s);
+    return;
+  }
+  submit();
 }
 
 function collectAnswers(): QuestionAnswer[] {
@@ -1215,9 +1335,15 @@ function onKeydown(e: KeyboardEvent) {
   }
   if (mod && e.key === "Enter") {
     e.preventDefault();
-    // 多题：非最后一题始终前往下一题（即使提交按钮已出现），最后一题才提交。
-    if (isMulti.value && !onLastQuestion.value) goNext();
-    else submit();
+    // 纵向多题：⌘↵ 智能推进（下一未答→看完提交→否则去下一未看），永不回跳已答。
+    if (verticalMode.value) {
+      onCmdEnter();
+    } else if (isMulti.value && !onLastQuestion.value) {
+      // 旧版顺序多题：非最后一题始终前往下一题（即使提交按钮已出现），最后一题才提交。
+      goNext();
+    } else {
+      submit();
+    }
     return;
   }
   if (mod && (e.key === "w" || e.key === "W")) {
@@ -1235,7 +1361,7 @@ function onKeydown(e: KeyboardEvent) {
     toggleSpeech();
     return;
   }
-  // 多题：CMD+] 下一题，CMD+[ 上一题（不影响 CMD+回车）。
+  // 多题：CMD+] 下一题，CMD+[ 上一题（不影响 CMD+回车）。闪一下由 goNext/goPrev 内部统一处理（按钮/键盘一致）。
   if (isMulti.value && mod && e.key === "]") {
     e.preventDefault();
     goNext();
@@ -1742,7 +1868,6 @@ onBeforeUnmount(() => {
       ref="contentRef"
       class="content"
       @scroll="onScroll"
-      @mouseleave="hovering = false"
     >
       <!-- 共享 Message 区（描述 + 附件），仅在有内容时展示，顶部常驻 -->
       <template v-if="showDescription">
@@ -1825,9 +1950,7 @@ onBeforeUnmount(() => {
         :key="qi"
         :ref="(el) => setCardRef(el as HTMLElement | null, qi)"
         class="q-card"
-        :class="{ active: qi === current }"
         :data-q-index="qi"
-        @mouseenter="onCardHover(qi)"
         @mousedown="setActive(qi, false)"
       >
         <!-- 问题头部：问号图标 + 「Question i/n」。每题上方加分割线（与 Message/上一题区隔）。 -->
@@ -2114,30 +2237,31 @@ onBeforeUnmount(() => {
       <button
         class="btn"
         type="button"
-        :disabled="submitting || current === 0"
+        :disabled="submitting || !canGoPrev"
         @click="goPrev"
       >
-        {{ t("popup.prev") }} <kbd v-if="current > 0" class="sc">⌘[</kbd>
+        {{ t("popup.prev") }} <kbd v-if="canGoPrev" class="sc">⌘[</kbd>
       </button>
       <button
         class="btn"
-        :class="{ 'btn-primary': !onLastQuestion }"
+        :class="{ 'btn-primary': nextPrimary }"
         type="button"
         :disabled="submitting || current === total - 1"
         @click="goNext"
       >
-        {{ t("popup.next") }} <kbd v-if="!onLastQuestion" class="sc">⌘↵</kbd>
+        {{ t("popup.next") }}
+        <kbd v-if="!onLastQuestion && !submitShowsCmdEnter" class="sc">⌘↵</kbd>
       </button>
       <button
         v-if="verticalMode ? lastSeen : allViewed"
         class="btn"
-        :class="{ 'btn-primary': onLastQuestion }"
+        :class="{ 'btn-primary': submitPrimary }"
         type="button"
         :disabled="submitting || !canSubmit"
         @click="submit"
       >
         {{ t("common.submit") }}
-        <kbd v-if="onLastQuestion" class="sc">⌘↵</kbd>
+        <kbd v-if="submitShowsCmdEnter" class="sc">⌘↵</kbd>
       </button>
     </div>
 
@@ -2674,43 +2798,41 @@ onBeforeUnmount(() => {
   scroll-margin-top: 16px;
   scroll-margin-bottom: 12px;
 }
-/* 当前题高亮：柔和底色覆盖（无描边，圆角）+ 左侧 accent 竖条（带透明度，不那么实）。
-   覆盖层 / 竖条对**所有卡片常驻、默认透明**，靠 opacity 过渡实现切题时的淡入淡出（不生硬）；
-   起点落在分割线之下（top 正偏移）不糊住分割线；左侧留更大余量（与竖条拉开）、右侧收窄。
-   `--q-active-tint` 控底色深浅，便于微调。 */
-.q-card {
-  --q-active-tint: 5%;
-}
-.q-card::before,
-.q-card::after {
+/* 焦点无常驻高亮：当前题（⌘1–9 角标落点）由**滚动**（scroll-spy）+ 点选/键盘导航决定，**已去掉 hover 改焦点**
+   （hover 会随滚轮把卡片移到光标下而乱跳）；也**不再有常驻**底色块/竖条（旧版常驻大色块 + 左侧蓝条会随焦点搬家）。
+   上一个/下一个/⌘[/⌘]/⌘↵ 跳转时用 `.q-card::before` 给整题「闪一下」（圆角、accent 淡底），一次性 opacity
+   1→0 渐隐（加 `.flash` 类触发，见 script flashCard）。 */
+.q-card::before {
   content: "";
   position: absolute;
+  /* 上/右/下维持不变（勿覆盖题间分割线）；只把**左边**外扩到 -9px：比 -6px 多一点蓝、又不贴窗口边框（留 ~7px 呼吸位）。 */
+  inset: 8px -6px -6px -9px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
   pointer-events: none;
   z-index: 0;
-  opacity: 0;
-  transition: opacity 0.18s ease;
+  opacity: 0; /* 平时不可见；仅 .flash 动画期间短暂显现后渐隐 */
 }
-.q-card::before {
-  inset: 8px -12px -6px -12px;
-  background: color-mix(in srgb, var(--accent) var(--q-active-tint), transparent);
-  border-radius: 8px;
-}
-.q-card::after {
-  left: -12px;
-  top: 8px;
-  bottom: -6px;
-  width: 3px;
-  border-radius: 2px;
-  background: color-mix(in srgb, var(--accent) 55%, transparent);
-}
-.q-card.active::before,
-.q-card.active::after {
-  opacity: 1;
-}
-/* 内容压在覆盖层之上，保证可点击/可读 */
+/* 内容压在闪光层之上，保证可点击/可读 */
 .q-card > * {
   position: relative;
   z-index: 1;
+}
+.q-card.flash::before {
+  animation: q-flash 0.55s ease-out;
+}
+@keyframes q-flash {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .q-card.flash::before {
+    animation: none;
+  }
 }
 /* 底部哨兵：零高度标记，进视口即判该题「已看到」 */
 .q-sentinel {
