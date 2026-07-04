@@ -223,6 +223,56 @@ fn unwrap_tag(text: &str, tag: &str) -> Option<String> {
     Some(text[start..end].to_string())
 }
 
+// ── transcript 文件定位（供 activity.rs 复用）──
+
+/// 按 `session_id` 定位某家 agent 的 transcript（jsonl）文件路径。取不到返回 `None`。
+/// 与 `resolve_title` 的取标题不同，这里定位的是**对话流水**文件（供解析尾部「当前活动」）。
+pub(super) fn transcript_path(kind: AgentKind, session_id: &str) -> Option<PathBuf> {
+    if session_id.is_empty() {
+        return None;
+    }
+    match kind {
+        // ~/.cursor/projects/*/agent-transcripts/<sid>/<sid>.jsonl
+        AgentKind::Cursor => {
+            let projects = paths::cursor_dir().join("projects");
+            let entries = fs::read_dir(&projects).ok()?;
+            for e in entries.flatten() {
+                let f = e
+                    .path()
+                    .join("agent-transcripts")
+                    .join(session_id)
+                    .join(format!("{session_id}.jsonl"));
+                if f.is_file() {
+                    return Some(f);
+                }
+            }
+            None
+        }
+        // ~/.codex/sessions/**/rollout-*-<sid>.jsonl
+        AgentKind::Codex => {
+            let sessions = paths::codex_dir().join("sessions");
+            find_file_recursive(&sessions, &format!("-{session_id}.jsonl"), 4)
+        }
+        // ~/.claude/projects/*/<sid>.jsonl
+        AgentKind::Claude => {
+            let projects = paths::claude_dir().join("projects");
+            find_file_recursive(&projects, &format!("{session_id}.jsonl"), 3)
+        }
+        // ~/.grok/sessions/<url编码 cwd>/<sid>/chat_history.jsonl
+        AgentKind::Grok => {
+            let sessions = paths::grok_sessions_dir();
+            let entries = fs::read_dir(&sessions).ok()?;
+            for e in entries.flatten() {
+                let f = e.path().join(session_id).join("chat_history.jsonl");
+                if f.is_file() {
+                    return Some(f);
+                }
+            }
+            None
+        }
+    }
+}
+
 // ── 通用 jsonl 解析 ──
 
 /// 读 JSON 文件取顶层字符串字段。
@@ -361,7 +411,7 @@ fn content_to_text(c: &Value) -> Option<String> {
 }
 
 /// 在目录下递归（限深度）查找文件名以 `suffix` 结尾的第一个文件。
-fn find_file_recursive(root: &Path, suffix: &str, max_depth: usize) -> Option<PathBuf> {
+pub(super) fn find_file_recursive(root: &Path, suffix: &str, max_depth: usize) -> Option<PathBuf> {
     fn walk(dir: &Path, suffix: &str, depth: usize, max_depth: usize) -> Option<PathBuf> {
         let entries = fs::read_dir(dir).ok()?;
         let mut subdirs = Vec::new();

@@ -352,15 +352,18 @@ impl MessagingChannel for FeishuSession {
                     if event_open_id(&event) == open_id {
                         let lang = ctx.lang;
                         // 即时回执 / 引导（spec R2/R3）：spawn 不阻塞事件循环（保证卡片提交即时处理）。
-                        let reply = super::conversation::answer_inbound_reply(
+                        // 斜线命令交 handle_inbound 独占响应，会话层不回引导（避免重复）。
+                        if let Some(reply) = super::conversation::answer_inbound_reply(
                             ack_kind(&event),
                             crate::autochannel::AckMode::Card,
+                            &message_text(&event),
                             lang,
-                        );
-                        let ack_client = client.clone();
-                        tauri::async_runtime::spawn(async move {
-                            let _ = ack_client.send_text(&reply).await;
-                        });
+                        ) {
+                            let ack_client = client.clone();
+                            tauri::async_runtime::spawn(async move {
+                                let _ = ack_client.send_text(&reply).await;
+                            });
+                        }
                         // 并发下载：spawn 后立刻回到循环收事件，避免大文件下载卡住提交处理。
                         let client = client.clone();
                         let images = images.clone();
@@ -444,29 +447,32 @@ async fn ask_question_text(
                     continue;
                 }
                 let kind = ack_kind(&event).or(Some(crate::autochannel::AckKind::Text));
+                let text = message_text(&event);
                 if let Some(answer) =
                     message_to_answer(client, &event, &option_texts, ctx.select_only, ctx.single)
                         .await
                 {
                     // 接受 → 确认（spec R2 文本兜底）。
-                    let _ = client
-                        .send_text(&super::conversation::answer_inbound_reply(
-                            kind,
-                            crate::autochannel::AckMode::Fallback,
-                            ctx.lang,
-                        ))
-                        .await;
+                    if let Some(reply) = super::conversation::answer_inbound_reply(
+                        kind,
+                        crate::autochannel::AckMode::Fallback,
+                        &text,
+                        ctx.lang,
+                    ) {
+                        let _ = client.send_text(&reply).await;
+                    }
                     events.clear_active(None, open_id);
                     return Some(answer);
                 } else {
-                    // 未接受 → 引导（spec R3）。
-                    let _ = client
-                        .send_text(&super::conversation::answer_inbound_reply(
-                            None,
-                            crate::autochannel::AckMode::Fallback,
-                            ctx.lang,
-                        ))
-                        .await;
+                    // 未接受 → 引导（spec R3）；斜线命令交 handle_inbound，不回引导。
+                    if let Some(reply) = super::conversation::answer_inbound_reply(
+                        None,
+                        crate::autochannel::AckMode::Fallback,
+                        &text,
+                        ctx.lang,
+                    ) {
+                        let _ = client.send_text(&reply).await;
+                    }
                 }
             }
             // 文本兜底路径未登记卡片路由，不会收到卡片回调；忽略（回空 ACK 以防万一）。
@@ -709,6 +715,18 @@ fn event_open_id(event: &Value) -> &str {
         .and_then(|i| i.get("open_id"))
         .and_then(|v| v.as_str())
         .unwrap_or("")
+}
+
+/// 取聊天消息的纯文本内容（仅 `text` 类型有；其它类型返回空串）。用于判断是否斜线命令。
+fn message_text(event: &Value) -> String {
+    match parse_message(event) {
+        Some((t, _, content)) if t == "text" => content
+            .get("text")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        _ => String::new(),
+    }
 }
 
 /// 解析 `event.message`：返回 (message_type, message_id, 解析后的 content)。

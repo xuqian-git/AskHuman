@@ -528,18 +528,15 @@ async fn handle_event(
         // message：卡片之后用户发的文字 → 累积为补充输入；严格模式下忽略（不并入答案）。
         TgInbound::Text { text, message_id } => {
             if select_only {
-                // 严格模式忽略自由文字 → 引导（spec R3）。
-                let _ = client
-                    .send_message(
-                        &super::conversation::answer_inbound_reply(
-                            None,
-                            crate::autochannel::AckMode::Card,
-                            lang,
-                        ),
-                        None,
-                        None,
-                    )
-                    .await;
+                // 严格模式忽略自由文字 → 引导（spec R3）；斜线命令交 handle_inbound，不回引导。
+                if let Some(reply) = super::conversation::answer_inbound_reply(
+                    None,
+                    crate::autochannel::AckMode::Card,
+                    &text,
+                    lang,
+                ) {
+                    let _ = client.send_message(&reply, None, None).await;
+                }
                 return false;
             }
             if message_id <= card_message_id {
@@ -550,17 +547,14 @@ async fn handle_event(
             }
             user_input.push_str(&text);
             // 已并入补充输入 → 确认（spec R2）。
-            let _ = client
-                .send_message(
-                    &super::conversation::answer_inbound_reply(
-                        Some(crate::autochannel::AckKind::Text),
-                        crate::autochannel::AckMode::Card,
-                        lang,
-                    ),
-                    None,
-                    None,
-                )
-                .await;
+            if let Some(reply) = super::conversation::answer_inbound_reply(
+                Some(crate::autochannel::AckKind::Text),
+                crate::autochannel::AckMode::Card,
+                &text,
+                lang,
+            ) {
+                let _ = client.send_message(&reply, None, None).await;
+            }
             false
         }
     }

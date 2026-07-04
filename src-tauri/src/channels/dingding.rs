@@ -336,15 +336,18 @@ impl MessagingChannel for DingTalkSession {
                     if bot_message_belongs(&data, &user_id) {
                         let lang = ctx.lang;
                         // 即时回执 / 引导（spec R2/R3）：spawn 不阻塞事件循环（保证卡片提交即时处理）。
-                        let reply = super::conversation::answer_inbound_reply(
+                        // 斜线命令交 handle_inbound 独占响应，会话层不回引导（避免重复）。
+                        if let Some(reply) = super::conversation::answer_inbound_reply(
                             ack_kind(&data),
                             crate::autochannel::AckMode::Card,
+                            &bot_text(&data),
                             lang,
-                        );
-                        let ack_client = client.clone();
-                        tauri::async_runtime::spawn(async move {
-                            let _ = ack_client.send_oto_text(&reply).await;
-                        });
+                        ) {
+                            let ack_client = client.clone();
+                            tauri::async_runtime::spawn(async move {
+                                let _ = ack_client.send_oto_text(&reply).await;
+                            });
+                        }
                         // 并发下载：spawn 后立刻回到循环收事件，避免大文件下载卡住提交处理。
                         let client = client.clone();
                         let images = images.clone();
@@ -430,29 +433,32 @@ async fn ask_question_text(
                     continue;
                 }
                 let kind = ack_kind(&data).or(Some(crate::autochannel::AckKind::Text));
+                let text = bot_text(&data);
                 if let Some(answer) =
                     message_to_answer(client, &data, &option_texts, ctx.select_only, ctx.single)
                         .await
                 {
                     // 接受 → 确认（spec R2 文本兜底）。
-                    let _ = client
-                        .send_oto_text(&super::conversation::answer_inbound_reply(
-                            kind,
-                            crate::autochannel::AckMode::Fallback,
-                            ctx.lang,
-                        ))
-                        .await;
+                    if let Some(reply) = super::conversation::answer_inbound_reply(
+                        kind,
+                        crate::autochannel::AckMode::Fallback,
+                        &text,
+                        ctx.lang,
+                    ) {
+                        let _ = client.send_oto_text(&reply).await;
+                    }
                     events.clear_active(None, user_id);
                     return Some(answer);
                 } else {
-                    // 未接受 → 引导（spec R3）。
-                    let _ = client
-                        .send_oto_text(&super::conversation::answer_inbound_reply(
-                            None,
-                            crate::autochannel::AckMode::Fallback,
-                            ctx.lang,
-                        ))
-                        .await;
+                    // 未接受 → 引导（spec R3）；斜线命令交 handle_inbound，不回引导。
+                    if let Some(reply) = super::conversation::answer_inbound_reply(
+                        None,
+                        crate::autochannel::AckMode::Fallback,
+                        &text,
+                        ctx.lang,
+                    ) {
+                        let _ = client.send_oto_text(&reply).await;
+                    }
                 }
             }
             // 文本兜底路径未登记卡片路由，不会收到卡片提交回调；忽略（回空包以防万一）。
@@ -517,6 +523,15 @@ async fn accumulate_attachment(
         }
         _ => {} // 文字 / 贴纸等：卡片模式下忽略（请用卡片输入框）。
     }
+}
+
+/// 取钉钉 bot 文本消息内容（仅 `text` 类型有；其它类型返回空串）。用于判断是否斜线命令。
+fn bot_text(data: &Value) -> String {
+    data.get("text")
+        .and_then(|t| t.get("content"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("")
+        .to_string()
 }
 
 /// 钉钉聊天消息 msgtype → 回执内容种类：图片/文件是可累积进答案的附件；其余（文字等）非附件→ None。

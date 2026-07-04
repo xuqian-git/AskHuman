@@ -355,10 +355,27 @@ pub fn tr(lang: Lang, key: &'static str) -> &'static str {
             "No working or idle agents right now.\n(Agent status relies on the experimental Lifecycle Tracking feature; if it is off, enable tracking for the relevant agent under Settings → Experimental.)",
             "当前没有工作中或空闲的 agent。\n（agent 状态依赖「生命周期追踪」实验功能；如未开启，请在 设置 → 实验 中开启对应 Agent 的追踪。）",
         ),
+        // /status <编号> 详情：未找到该编号。
+        "autoChannel.statusDetailNotFound" => pick(
+            lang,
+            "No agent numbered {id}. Send /status to see the list.",
+            "没有编号 {id} 的 agent。发送 /status 查看列表。",
+        ),
+        // /status <编号> 详情：解析不到当前活动。
+        "autoChannel.statusNoActivity" => pick(lang, "(no activity yet)", "（暂无可解析的活动）"),
+        "autoChannel.activityHeading" => pick(lang, "Latest activity", "最近动态"),
+        // /status <编号> 详情头部的状态词（单行用，区别于分组标题）。
+        "autoChannel.stateWorking" => pick(lang, "working", "工作中"),
+        "autoChannel.stateIdle" => pick(lang, "idle", "空闲"),
+        "autoChannel.stateEnded" => pick(lang, "ended", "已结束"),
+        // 当前活动里的工具类别词（仅归一化常见工具：读/写/运行命令）。
+        "autoChannel.activityRun" => pick(lang, "Run", "运行命令"),
+        "autoChannel.activityRead" => pick(lang, "Read", "读取文件"),
+        "autoChannel.activityWrite" => pick(lang, "Edit", "写入文件"),
 
         // —— 动态引导 / /help 文案（spec R3）：按开关拼装；不含「已收到」。 ——
         "autoChannel.helpTitle" => pick(lang, "AskHuman is running. You can:", "AskHuman 正在运行，你可以："),
-        "autoChannel.helpCmdStatus" => pick(lang, "• /status — show agent working/idle status", "• /status — 查看 agent 工作中/空闲状态"),
+        "autoChannel.helpCmdStatus" => pick(lang, "• /status — list agents (working/idle)\n• /status <n> — what agent n is doing now", "• /status — 列出 agent（工作中/空闲）\n• /status <编号> — 查看该 agent 当前在做什么"),
         "autoChannel.helpCmdHelp" => pick(lang, "• /help — show this help", "• /help — 显示此帮助"),
         "autoChannel.helpCmdHere" => pick(lang, "• /here — route questions to this channel", "• /here — 把提问切到此渠道接收"),
         // 有在途提问时的作答指引。

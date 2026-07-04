@@ -9,6 +9,7 @@
 //! 设计与决策见 `docs/specs/agent-lifecycle-tracking.md`，调研见
 //! `demo/agent-lifecycle/FINDINGS.md`。
 
+pub mod activity;
 pub mod detect;
 pub mod registry;
 #[cfg(unix)]

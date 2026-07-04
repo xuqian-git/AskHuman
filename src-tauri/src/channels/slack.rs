@@ -324,16 +324,19 @@ impl MessagingChannel for SlackSession {
                     if event_user(&event) == user_id {
                         let lang = ctx.lang;
                         // 即时回执 / 引导（spec R2/R3）：spawn 不阻塞事件循环（保证卡片提交即时处理）。
-                        let reply = super::conversation::answer_inbound_reply(
+                        // 斜线命令交 handle_inbound 独占响应，会话层不回引导（避免重复）。
+                        if let Some(reply) = super::conversation::answer_inbound_reply(
                             ack_kind(&event),
                             crate::autochannel::AckMode::Card,
+                            event.get("text").and_then(|v| v.as_str()).unwrap_or(""),
                             lang,
-                        );
-                        let ack_client = client.clone();
-                        let ack_dm = dm.to_string();
-                        tauri::async_runtime::spawn(async move {
-                            let _ = ack_client.post_text(&ack_dm, &reply).await;
-                        });
+                        ) {
+                            let ack_client = client.clone();
+                            let ack_dm = dm.to_string();
+                            tauri::async_runtime::spawn(async move {
+                                let _ = ack_client.post_text(&ack_dm, &reply).await;
+                            });
+                        }
                         let client = client.clone();
                         let images = images.clone();
                         let files = files.clone();
@@ -411,6 +414,11 @@ async fn ask_question_text(
                     continue;
                 }
                 let kind = ack_kind(&event).or(Some(crate::autochannel::AckKind::Text));
+                let text = event
+                    .get("text")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 if let Some(answer) = message_to_answer(
                     client,
                     &event,
@@ -422,30 +430,26 @@ async fn ask_question_text(
                 .await
                 {
                     // 接受 → 确认（spec R2 文本兜底）。
-                    let _ = client
-                        .post_text(
-                            dm,
-                            &super::conversation::answer_inbound_reply(
-                                kind,
-                                crate::autochannel::AckMode::Fallback,
-                                ctx.lang,
-                            ),
-                        )
-                        .await;
+                    if let Some(reply) = super::conversation::answer_inbound_reply(
+                        kind,
+                        crate::autochannel::AckMode::Fallback,
+                        &text,
+                        ctx.lang,
+                    ) {
+                        let _ = client.post_text(dm, &reply).await;
+                    }
                     events.clear_active(None, user_id);
                     return Some(answer);
                 } else {
-                    // 未接受 → 引导（spec R3）。
-                    let _ = client
-                        .post_text(
-                            dm,
-                            &super::conversation::answer_inbound_reply(
-                                None,
-                                crate::autochannel::AckMode::Fallback,
-                                ctx.lang,
-                            ),
-                        )
-                        .await;
+                    // 未接受 → 引导（spec R3）；斜线命令交 handle_inbound，不回引导。
+                    if let Some(reply) = super::conversation::answer_inbound_reply(
+                        None,
+                        crate::autochannel::AckMode::Fallback,
+                        &text,
+                        ctx.lang,
+                    ) {
+                        let _ = client.post_text(dm, &reply).await;
+                    }
                 }
             }
             // 文本兜底路径未登记卡片路由，不应收到交互回调；忽略。

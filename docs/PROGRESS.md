@@ -2,7 +2,43 @@
 
 按具体任务 / 需求记录待办与当前进展。任务 / 需求完成后删除其 section（历史留在 git）。
 
-## 进行中：Grok 集成（仅 MCP）—— 实现已落地并 live 验证，待用户验收
+## 待验收：/status 当前活动（一期 transcript 尾部 + 二期 hook 实时工具 + 会话层斜线修复）
+
+一期 `docs/plans/im-status-activity.md`、二期 `docs/plans/im-status-realtime-hook.md` 均已全量落地，
+372 单测通过、`install.sh` 通过：
+
+**一期（transcript 尾部）**：
+- `registry`：`AgentRecord.seq` 稳定数字编号（daemon 生命周期内单调不复用、`load()` 重排），snapshot 暴露。
+- `title.rs`：`transcript_path`/`find_file_recursive` 提为 `pub(super)` 供复用。
+- `agents/activity.rs`（新）：尾部读取（256KiB）+ 四家解析 + 「永远给最后一段助手文字、末尾是工具调用再附工具」
+  规则 + 工具归一化（仅 读/写/运行命令，其余原名+参数前段）+ 500 字截断 + `Activity.at`（transcript mtime）。
+- `autochannel`：`Command::Status(Option<u64>)`；全局行 `[编号] 类型 — 标题（项目）`；`status_detail_text`
+  头部 + 空行 +「最近动态（相对时间）」分区标签 + 文字 + `▸` 工具行；i18n。
+- `daemon`：`handle_inbound` 按 `sel` 分派全局/详情。
+
+**二期（hook 实时当前工具）**：Pre/PostToolUse hook 经 `report.rs`（解析 stdin 判 pre/post + `classify_tool`
+归一化）随 `AgentEvent.tool` 上报；`registry.set/clear_current_tool` 存 `AgentRecord.current_tool`
+（`serde(skip)` 不落盘、`snapshot()` 注入 `currentTool`；回合/会话结束清除）；`status_detail_text` 融合
+「实时工具 vs transcript 尾部工具」取较新者、相对时间随之取实际展示事件时间——解决 Cursor「工具跑完才落盘」
+滞后、覆盖编译等 in-flight 场景。
+
+**会话层斜线修复**：作答期（armed 卡片）收到斜线命令时会话层不再回引导（`answer_inbound_reply` 返回
+`Option`），统一交 `handle_inbound`（已注册→命令输出、未注册→help），四家 11 处调用点同步；`helpCmdStatus`
+拆两行。
+
+- **未做**：未 live 端到端实测（需真机发 IM `/status`/`/status <编号>` + 触发一次工具看实时工具）——待你验收。
+  注意：IM 处理与 hook 上报都跑在 daemon，验收前需**重启 daemon** 用上新二进制。
+
+## 待办：`/watch` 实时推送 agent 进度（在 /status 当前活动之上）
+
+`/status <编号>` 需用户反复手查；后续可做「订阅式」实时推送。已讨论过的设计草案（待做时再定案）：
+`/watch <编号>` 订阅 / `/unwatch [编号]` 退订 / `/watch` 列出（中文别名 `/关注`、`/取消关注`）；
+复用 daemon 周期 tick 对**被订阅的少数 agent**轮询 transcript 尾部、算「活动签名」（最后助手文字 +
+末尾工具 + 状态），签名变化才推、加最短推送间隔防刷、状态切换即时推；订阅按 session_id 记录（编号会随
+daemon 重启重排），agent 结束自动退订并推一条收尾；有活跃订阅时阻止 daemon 空闲退出（清空后恢复）。
+依赖第一期 `docs/plans/im-status-activity.md`（活动解析 + 编号）先落地。
+
+## 待验收：Grok 集成（仅 MCP）—— 实现已落地并 live 验证
 
 grok skill「不被模型主动加载」已修复并 install 落盘：根因是 skill 懒加载 + 自指悖论（按「需要提问时加载」写，
 模型在最需要时意识不到需要它）。处置：把 skill 从「AskHuman 提问技能」重定位为「**无条件必读的交互协议**」——

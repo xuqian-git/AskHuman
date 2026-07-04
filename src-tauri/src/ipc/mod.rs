@@ -237,6 +237,10 @@ pub enum ClientMsg {
         /// 事件时间（unix 秒，0 表示由 daemon 取当前时间）。
         #[serde(default)]
         ts: u64,
+        /// 工具实时信息（仅 activity 事件、且能从 hook stdin 解析出工具时携带）。
+        /// 旧 daemon 忽略此字段（`default`）；旧 report 不带 → `None`。用于 `/status <编号>` 实时「当前工具」。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool: Option<ToolReport>,
     },
     /// 状态窗口订阅 agent 快照（握手后发；之后 daemon 持续推 `AgentsState`，spec D20）。
     AgentsSubscribe,
@@ -250,6 +254,27 @@ pub enum ClientMsg {
     /// 手动把某 agent 置为「空闲」（状态窗口→daemon，即发即走）：用户发现某 agent 因漏 hook
     /// （如 Claude 被打断）卡在「工作中」时，可在状态窗口手动纠正。仅改状态、不结束会话。
     AgentForceIdle { session_id: String },
+}
+
+/// 一次工具调用的实时上报（随 `AgentEvent` 的 activity 事件携带）。跨进程只传**原始工具名**与
+/// **已归一化截断的短对象**（文件名 / 命令首段 / 参数前段），绝不传工具输入/结果正文。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolReport {
+    /// 原始工具名（渲染侧据此复得类别标签）。
+    pub name: String,
+    /// 简短对象（可空，如询问类工具无对象）。
+    #[serde(default)]
+    pub object: Option<String>,
+    /// 阶段：pre = 开始（置「当前工具」）；post = 结束（清除）。
+    pub phase: ToolPhase,
+}
+
+/// 工具调用阶段。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ToolPhase {
+    Pre,
+    Post,
 }
 
 /// Daemon → 客户端（CLI / GUI Helper）的消息。

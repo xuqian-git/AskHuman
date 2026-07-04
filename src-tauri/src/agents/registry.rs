@@ -43,6 +43,10 @@ pub enum AgentState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentRecord {
+    /// 稳定数字编号：**当前 daemon 生命周期内**单调递增、不复用、从 1 起，供 IM `/status <编号>` 寻址。
+    /// 不跨 daemon 重启保留（`load()` 会对还原记录按序重排），故盘上旧值忽略（`serde(default)`）。
+    #[serde(default)]
+    pub seq: u64,
     pub kind: AgentKind,
     pub session_id: String,
     #[serde(default)]
@@ -60,6 +64,19 @@ pub struct AgentRecord {
     /// 供状态窗口「聚焦终端」按钮按支持度显隐。无 pid / 未解析时为 None。
     #[serde(default)]
     pub terminal: Option<String>,
+    /// 实时「当前工具」（PreToolUse 上报置位、PostToolUse/回合结束/会话结束清除）。**不落盘**
+    /// （`serde(skip)`：既不入 `agents.json` 也不入默认 snapshot）；由 `snapshot()` 手动注入 `currentTool`，
+    /// daemon 重启自然消失。供 `/status <编号>` 无滞后地反映「此刻在跑什么」。
+    #[serde(skip)]
+    pub current_tool: Option<CurrentTool>,
+}
+
+/// 实时「当前工具」快照：跨进程只存原始工具名 + 已归一化的短对象 + 上报时间（秒）。
+#[derive(Debug, Clone)]
+pub struct CurrentTool {
+    pub name: String,
+    pub object: Option<String>,
+    pub at: u64,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -76,6 +93,20 @@ struct Inner {
     active: Vec<AgentRecord>,
     /// 最近结束（最多 MAX_ENDED，队尾最新）。
     ended: VecDeque<AgentRecord>,
+    /// 下一个待分配的稳定编号（`seq`）。单调递增、不复用；`Default` 起始 0，`alloc_seq` 兜底从 1 起。
+    next_seq: u64,
+}
+
+impl Inner {
+    /// 分配一个稳定编号（从 1 起、单调、不复用）。
+    fn alloc_seq(&mut self) -> u64 {
+        if self.next_seq < 1 {
+            self.next_seq = 1;
+        }
+        let s = self.next_seq;
+        self.next_seq += 1;
+        s
+    }
 }
 
 /// daemon 内唯一的 agent 注册表（线程安全）。
@@ -123,6 +154,17 @@ impl AgentRegistry {
         for rec in parsed.ended {
             push_ended(&mut inner.ended, rec);
         }
+        // 盘上旧 seq 一律忽略：按序（活动在前、已结束在后）重排，保证「当前 daemon 生命周期内」稳定、从 1 起。
+        let mut seq = 1u64;
+        for r in inner.active.iter_mut() {
+            r.seq = seq;
+            seq += 1;
+        }
+        for r in inner.ended.iter_mut() {
+            r.seq = seq;
+            seq += 1;
+        }
+        inner.next_seq = seq;
         drop(inner);
         reg
     }
@@ -172,7 +214,9 @@ impl AgentRegistry {
                 (i, false)
             }
             None => {
+                let seq = inner.alloc_seq();
                 inner.active.push(AgentRecord {
+                    seq,
                     kind,
                     session_id: session_id.to_string(),
                     pid,
@@ -183,6 +227,7 @@ impl AgentRegistry {
                     state: AgentState::Idle,
                     ended_at: None,
                     terminal: None,
+                    current_tool: None,
                 });
                 (inner.active.len() - 1, true)
             }
@@ -201,12 +246,14 @@ impl AgentRegistry {
             }
             LifecycleEvent::TurnEnd => {
                 inner.active[idx].state = AgentState::Idle;
+                inner.active[idx].current_tool = None; // 回合结束不应残留在跑工具
                 changed |= prev != AgentState::Idle;
             }
             LifecycleEvent::SessionEnd => {
                 let mut r = inner.active.remove(idx);
                 r.state = AgentState::Ended;
                 r.ended_at = Some(now);
+                r.current_tool = None; // 会话结束清除
                 push_ended(&mut inner.ended, r);
                 changed = true;
             }
@@ -258,6 +305,51 @@ impl AgentRegistry {
         hit
     }
 
+    /// PreToolUse 实时上报：置「当前工具」。命中已存在的同家族 session（daemon 已先 `apply_event` 登记）；
+    /// 顺带置工作中 + 刷新活动 + 补 pid。**不落盘、不广播**（current_tool 仅内存 + snapshot，IM `/status`
+    /// 拉取时现取；避免每次工具调用都持久化/广播）。找不到记录则 no-op。
+    pub fn set_current_tool(
+        &self,
+        kind: AgentKind,
+        session_id: &str,
+        pid: Option<u32>,
+        name: String,
+        object: Option<String>,
+    ) {
+        if session_id.is_empty() {
+            return;
+        }
+        let now = now_secs();
+        let mut inner = self.inner.lock().unwrap();
+        if let Some(r) = inner
+            .active
+            .iter_mut()
+            .find(|r| r.session_id == session_id && r.kind == kind)
+        {
+            r.state = AgentState::Working;
+            r.last_activity = now;
+            if r.pid.is_none() && pid.is_some() {
+                r.pid = pid;
+            }
+            r.current_tool = Some(CurrentTool { name, object, at: now });
+        }
+    }
+
+    /// PostToolUse 实时上报：清除「当前工具」（工具已跑完）。找不到记录则 no-op。
+    pub fn clear_current_tool(&self, kind: AgentKind, session_id: &str) {
+        if session_id.is_empty() {
+            return;
+        }
+        let mut inner = self.inner.lock().unwrap();
+        if let Some(r) = inner
+            .active
+            .iter_mut()
+            .find(|r| r.session_id == session_id && r.kind == kind)
+        {
+            r.current_tool = None;
+        }
+    }
+
     /// 「IM 会话期自动激活」无 hook 兜底：提问时把对应 session 标记为「工作中」。
     /// 不存在则新建；已存在则置为 Working 并刷新活动 / 补 pid（在途提问必然处于「工作中」turn 内）。
     /// 返回是否有状态变化（供广播）。
@@ -289,7 +381,9 @@ impl AgentRegistry {
             }
             !was_working
         } else {
+            let seq = inner.alloc_seq();
             inner.active.push(AgentRecord {
+                seq,
                 kind,
                 session_id: session_id.to_string(),
                 pid,
@@ -300,6 +394,7 @@ impl AgentRegistry {
                 state: AgentState::Working,
                 ended_at: None,
                 terminal: None,
+                current_tool: None,
             });
             true
         }
@@ -439,7 +534,21 @@ impl AgentRegistry {
         for r in inner.ended.iter() {
             list.push(r.clone());
         }
-        serde_json::to_value(&list).unwrap_or(Value::Array(vec![]))
+        // current_tool 标了 serde(skip)，默认序列化不含它 → 手动注入 `currentTool`（仅进 snapshot，不落盘）。
+        let arr: Vec<Value> = list
+            .iter()
+            .map(|r| {
+                let mut v = serde_json::to_value(r).unwrap_or(Value::Null);
+                if let (Some(ct), Some(obj)) = (&r.current_tool, v.as_object_mut()) {
+                    obj.insert(
+                        "currentTool".to_string(),
+                        serde_json::json!({ "name": ct.name, "object": ct.object, "at": ct.at }),
+                    );
+                }
+                v
+            })
+            .collect();
+        Value::Array(arr)
     }
 
     /// 持久化到 `~/.askhuman/agents.json`（原子写）。best-effort，失败静默。
@@ -803,5 +912,90 @@ mod tests {
         // 只刷新、不新建 session。
         let arr = r.snapshot();
         assert_eq!(arr.as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn seq_is_monotonic_and_exposed_in_snapshot() {
+        let r = reg();
+        r.apply_event(AgentKind::Cursor, LifecycleEvent::TurnStart, "s1", None, None, 1);
+        r.apply_event(AgentKind::Claude, LifecycleEvent::TurnStart, "s2", None, None, 2);
+        let arr = r.snapshot();
+        let arr = arr.as_array().unwrap();
+        let s1 = arr.iter().find(|x| x["sessionId"] == "s1").unwrap();
+        let s2 = arr.iter().find(|x| x["sessionId"] == "s2").unwrap();
+        assert_eq!(s1["seq"], 1);
+        assert_eq!(s2["seq"], 2);
+        // 结束一个再新建：编号不复用（单调）。
+        r.apply_event(AgentKind::Codex, LifecycleEvent::SessionEnd, "s1", None, None, 3);
+        r.apply_event(AgentKind::Codex, LifecycleEvent::TurnStart, "s3", None, None, 4);
+        let arr = r.snapshot();
+        let arr = arr.as_array().unwrap();
+        let s3 = arr.iter().find(|x| x["sessionId"] == "s3").unwrap();
+        assert_eq!(s3["seq"], 3);
+    }
+
+    #[test]
+    fn current_tool_set_clear_and_snapshot_injection() {
+        let r = reg();
+        r.apply_event(AgentKind::Cursor, LifecycleEvent::TurnStart, "s1", None, None, 1);
+        // set：snapshot 注入 currentTool。
+        r.set_current_tool(
+            AgentKind::Cursor,
+            "s1",
+            None,
+            "Shell".into(),
+            Some("cargo test".into()),
+        );
+        let snap = r.snapshot();
+        let s1 = snap
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|x| x["sessionId"] == "s1")
+            .unwrap()
+            .clone();
+        assert_eq!(s1["currentTool"]["name"], "Shell");
+        assert_eq!(s1["currentTool"]["object"], "cargo test");
+        assert!(s1["currentTool"]["at"].as_u64().is_some());
+        // clear：currentTool 消失。
+        r.clear_current_tool(AgentKind::Cursor, "s1");
+        let snap = r.snapshot();
+        let s1 = snap
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|x| x["sessionId"] == "s1")
+            .unwrap()
+            .clone();
+        assert!(s1.get("currentTool").is_none());
+    }
+
+    #[test]
+    fn current_tool_cleared_on_turn_end_and_not_persisted() {
+        let r = reg();
+        r.apply_event(AgentKind::Claude, LifecycleEvent::TurnStart, "s1", None, None, 1);
+        r.set_current_tool(AgentKind::Claude, "s1", None, "Read".into(), Some("a.rs".into()));
+        // 回合结束清除。
+        r.apply_event(AgentKind::Claude, LifecycleEvent::TurnEnd, "s1", None, None, 2);
+        let snap = r.snapshot();
+        let s1 = snap
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|x| x["sessionId"] == "s1")
+            .unwrap()
+            .clone();
+        assert!(s1.get("currentTool").is_none());
+        // 不落盘：Persisted 序列化不含 current_tool。
+        r.set_current_tool(AgentKind::Claude, "s1", None, "Write".into(), None);
+        let inner = r.inner.lock().unwrap();
+        let data = Persisted {
+            active: inner.active.clone(),
+            ended: inner.ended.iter().cloned().collect(),
+        };
+        drop(inner);
+        let json = serde_json::to_string(&data).unwrap();
+        assert!(!json.contains("currentTool"));
+        assert!(!json.contains("current_tool"));
     }
 }

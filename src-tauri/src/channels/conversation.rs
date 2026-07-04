@@ -50,17 +50,27 @@ pub fn auto_activation() -> bool {
 
 /// 作答期间对一条聊天消息的即时回复文案（spec R2/R3）：
 /// - `Some(kind)`：该内容被接受进答案 → 按种类（文字/图片/文件）与模式（卡片/文本兜底）回**确认**；
-/// - `None`：未被当作答案（卡片模式下的纯文字、未接受的兜底消息等）→ 回**动态引导**（含可用命令）。
+/// - `None` 且该消息**不是**斜线命令：未被当作答案（卡片模式的纯文字、未接受的兜底消息等）→ 回**动态引导**；
+/// - `None` 且该消息**是**斜线命令（无论已注册与否）：返回 `None`（**不回**）——命令统一交由观察者
+///   `handle_inbound` 独占响应（已注册回命令输出、未注册回 help），避免作答期收到 `/status` 等命令时
+///   出现「引导 + 命令输出」两条重复回复。
 ///
 /// 引导带 `has_active_question=true`（会话进行中），并按当前自动激活开关裁剪命令/提示。
 pub fn answer_inbound_reply(
     kind: Option<crate::autochannel::AckKind>,
     mode: crate::autochannel::AckMode,
+    text: &str,
     lang: Lang,
-) -> String {
+) -> Option<String> {
     match kind {
-        Some(k) => crate::autochannel::answer_ack_text(k, mode, lang),
-        None => crate::autochannel::help_text(auto_activation(), true, lang),
+        Some(k) => Some(crate::autochannel::answer_ack_text(k, mode, lang)),
+        None => {
+            if crate::autochannel::classify(text) != crate::autochannel::Parsed::Text {
+                None
+            } else {
+                Some(crate::autochannel::help_text(auto_activation(), true, lang))
+            }
+        }
     }
 }
 

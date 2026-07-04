@@ -697,6 +697,7 @@ mod unix_impl {
                     pid,
                     cwd,
                     ts,
+                    tool,
                 } => {
                     if let (Some(kind), Some(ev)) =
                         (AgentKind::parse(&agent), LifecycleEvent::parse(&event))
@@ -707,6 +708,21 @@ mod unix_impl {
                         if changed {
                             state.agents.persist();
                             broadcast_agents_state(state);
+                        }
+                        // 实时「当前工具」（不落盘、不广播；IM /status 拉取时现取）。
+                        match tool {
+                            Some(crate::ipc::ToolReport {
+                                phase: crate::ipc::ToolPhase::Pre,
+                                name,
+                                object,
+                            }) => state
+                                .agents
+                                .set_current_tool(kind, &session_id, pid, name, object),
+                            Some(crate::ipc::ToolReport {
+                                phase: crate::ipc::ToolPhase::Post,
+                                ..
+                            }) => state.agents.clear_current_tool(kind, &session_id),
+                            None => {}
                         }
                         // turn-start 经此即时上线 IM 入站消费（与开关无关，使 /here、/status 在 agent
                         // 工作期间随时可用）；幂等。连接随守护进程退出而释放，无需在 turn-end 主动断。
@@ -1854,7 +1870,7 @@ mod unix_impl {
         };
 
         match classify(text) {
-            Parsed::Command(Command::Status) => {
+            Parsed::Command(Command::Status(sel)) => {
                 // 状态查询是独立功能：始终响应。仅当开关开、且本次因 /status 切了活跃槽时附激活回执。
                 let (switched, n) = if auto {
                     set_active_channel(state, channel_id).await
@@ -1866,10 +1882,15 @@ mod unix_impl {
                     body.push_str(&crate::autochannel::activated_receipt(n, lang));
                     body.push_str("\n\n");
                 }
-                body.push_str(&crate::autochannel::status_text(
-                    &state.agents.snapshot(),
-                    lang,
-                ));
+                let snapshot = state.agents.snapshot();
+                match sel {
+                    // /status <编号>：单个 agent 的当前活动详情。
+                    Some(id) => body.push_str(&crate::autochannel::status_detail_text(
+                        &snapshot, id, lang,
+                    )),
+                    // /status：工作中/空闲列表。
+                    None => body.push_str(&crate::autochannel::status_text(&snapshot, lang)),
+                }
                 let _ = reply_channel_text(channel_id, &config, &body).await;
             }
             Parsed::Command(Command::Here) => {

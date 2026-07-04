@@ -152,6 +152,8 @@ export type AgentRunState = "working" | "idle" | "ended";
 
 /** 单个被追踪 agent（一条 session）的快照记录。 */
 export interface AgentRecord {
+  /** 稳定数字编号（当前 daemon 生命周期内单调、不复用）；供 IM `/status <编号>` 寻址。 */
+  seq?: number;
   kind: AgentKind;
   sessionId: string;
   pid?: number | null;
@@ -163,6 +165,8 @@ export interface AgentRecord {
   endedAt?: number | null;
   /** 所在终端类型（apple-terminal/iterm2/vscode/…/other）；用于「聚焦终端」按钮显隐。 */
   terminal?: string | null;
+  /** 实时「当前工具」（hook 上报，仅 snapshot、不落盘）：`{name, object?, at}`。GUI 暂不消费。 */
+  currentTool?: { name: string; object?: string | null; at: number } | null;
 }
 
 export type UiLanguage = "auto" | "en" | "zh";
