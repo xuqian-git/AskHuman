@@ -303,6 +303,199 @@ fn body_text(text: &str, is_markdown: bool) -> Value {
     }
 }
 
+// ===== /watch 实时状态卡（spec docs/specs/im-watch.md）=====
+
+/// watch 卡按钮回调 value 的键 / 值（`{"watch":"unwatch"|"refresh"}`）。
+const WATCH_ACTION_KEY: &str = "watch";
+
+/// watch 卡的一次按钮动作。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WatchAction {
+    /// 取消关注（卡片定格 + 退订）。
+    Unwatch,
+    /// 立即刷新（按当前状态重算一帧）。
+    Refresh,
+}
+
+/// watch 卡片视图（纯字符串，本地化由 `watch::card_view` 完成）。
+pub struct WatchCardView {
+    /// 样式化头部：`实时关注 [3] Cursor — HumanInLoop`。
+    pub header: String,
+    /// 状态行（emoji 编码）：`🟢 工作中` / `🙋 正在等待你的回答` / …
+    pub state_line: String,
+    /// 会话标题行 `「…」`（无标题则 None）。
+    pub title_line: Option<String>,
+    /// 「最近动态（14:32:05）：」（绝对时刻）。
+    pub activity_heading: String,
+    /// 最后一段助手文字。
+    pub text: Option<String>,
+    /// 已渲染足迹时间线（≤3 行，旧→新；`<font color='green'>●</font> **运行命令**: *cargo test*`）。
+    pub step_lines: Vec<String>,
+    /// TODO 清单摘要（折叠面板标题：`📋 清单 4/7 · 当前：xxx`；无清单则 None，不出面板）。
+    pub todo_summary: Option<String>,
+    /// 已渲染 TODO 清单全行（折叠面板内容）。
+    pub todo_lines: Vec<String>,
+    /// text/steps 均无时的占位（`（暂无可解析的活动）`）。
+    pub no_activity: Option<String>,
+    /// 底部灰色小字：`最后更新 14:32:07`。
+    pub updated_line: String,
+    pub buttons: WatchButtons,
+}
+
+/// watch 卡按钮区：活动态（取消关注 + 立即刷新，可点）或终态（单个禁用按钮）。
+pub enum WatchButtons {
+    Active { unwatch: String, refresh: String },
+    Final { label: String },
+}
+
+/// 组装 watch 实时状态卡（卡片 JSON 2.0，`update_multi` 开启供后续 PATCH）。
+/// 布局：样式化头部行（eye icon + 蓝色小字）+ hr + 状态/标题 markdown + 活动 markdown
+/// （助手文字与足迹时间线之间空一行——用户定案：不用分隔线，太割裂）+ TODO 折叠面板
+/// （标题即摘要行，默认收起不占高度；无清单不出）+ hr + 灰色更新时刻 +
+/// 按钮行（column_set 两列 / 终态单禁用按钮）。
+pub fn build_watch_card(v: &WatchCardView) -> Value {
+    let mut elements: Vec<Value> = Vec::new();
+
+    // 状态 + 标题。
+    let mut head_md = format!("**{}**", v.state_line);
+    if let Some(t) = &v.title_line {
+        head_md.push('\n');
+        head_md.push_str(t);
+    }
+    elements.push(json!({ "tag": "markdown", "content": head_md }));
+
+    // 最近动态：标签 + 助手文字 + 空行 + 足迹时间线（彩色圆点步行）。
+    let mut act_md = v.activity_heading.clone();
+    if let Some(na) = &v.no_activity {
+        act_md.push('\n');
+        act_md.push_str(na);
+    } else if let Some(t) = &v.text {
+        act_md.push('\n');
+        act_md.push_str(t);
+    }
+    if !v.step_lines.is_empty() {
+        act_md.push_str("\n\n");
+        act_md.push_str(&v.step_lines.join("\n"));
+    }
+    elements.push(json!({ "tag": "markdown", "content": act_md }));
+
+    // TODO 清单：折叠面板（标题即摘要行「📋 TODO 4/7 · 当前：xxx」，展开见全清单）。
+    // 默认收起不占高度（用户定案 A+B：摘要常显 + 想看再展开）。PATCH 会重置收起态，可接受。
+    // 上外边距 12px 与足迹时间线拉开距离（用户定案：贴太近）。
+    if let (Some(summary), false) = (&v.todo_summary, v.todo_lines.is_empty()) {
+        elements.push(json!({
+            "tag": "collapsible_panel",
+            "expanded": false,
+            "margin": "12px 0px 0px 0px",
+            "header": {
+                "title": { "tag": "markdown", "content": summary },
+                "width": "auto_when_fold",
+                "vertical_align": "center",
+                "icon": { "tag": "standard_icon", "token": "down-small-ccm_outlined", "color": "grey", "size": "16px 16px" },
+                "icon_position": "follow_text",
+                "icon_expanded_angle": -180,
+            },
+            "vertical_spacing": "8px",
+            "elements": [ { "tag": "markdown", "content": v.todo_lines.join("\n") } ],
+        }));
+    }
+
+    // 底部：分隔线 + 灰色更新时刻 + 按钮。
+    elements.push(json!({ "tag": "hr", "margin": "0px 0px 0px 0px" }));
+    elements.push(json!({
+        "tag": "div",
+        "text": {
+            "tag": "plain_text",
+            "content": v.updated_line,
+            "text_size": "notation",
+            "text_align": "left",
+            "text_color": "grey",
+        },
+        "margin": "0px 0px 0px 0px",
+    }));
+    elements.push(watch_buttons_element(&v.buttons));
+
+    // 样式化头部行：眼睛 icon + 蓝色小字（与提问卡「icon + 小标题」同风格、不同 icon）。
+    let header_row = json!({
+        "tag": "div",
+        "text": {
+            "tag": "plain_text",
+            "content": v.header,
+            "text_size": "notation",
+            "text_align": "left",
+            "text_color": "blue",
+        },
+        "icon": { "tag": "standard_icon", "token": "eye_outlined", "color": "blue" },
+        "margin": "0px 0px 0px 0px",
+    });
+    let mut body = vec![
+        header_row,
+        json!({ "tag": "hr", "margin": "0px 0px 0px 0px" }),
+    ];
+    body.extend(elements);
+    json!({
+        "schema": "2.0",
+        "config": { "update_multi": true },
+        "body": { "elements": body },
+    })
+}
+
+/// 按钮区元素：活动态 = column_set 两列（取消关注 danger + 立即刷新 default，均挂 callback）；
+/// 终态 = 单个禁用按钮（文案标示 已结束/已取消/已接替）。
+fn watch_buttons_element(buttons: &WatchButtons) -> Value {
+    match buttons {
+        WatchButtons::Active { unwatch, refresh } => {
+            let btn = |label: &str, kind: &str, action: &str| -> Value {
+                json!({
+                    "tag": "button",
+                    "text": { "tag": "plain_text", "content": label },
+                    "type": kind,
+                    "behaviors": [ { "type": "callback", "value": { WATCH_ACTION_KEY: action } } ],
+                })
+            };
+            json!({
+                "tag": "column_set",
+                "horizontal_spacing": "8px",
+                "columns": [
+                    { "tag": "column", "width": "auto",
+                      "elements": [ btn(unwatch, "danger", "unwatch") ] },
+                    { "tag": "column", "width": "auto",
+                      "elements": [ btn(refresh, "default", "refresh") ] },
+                ],
+            })
+        }
+        WatchButtons::Final { label } => json!({
+            "tag": "button",
+            "text": { "tag": "plain_text", "content": label },
+            "type": "default",
+            "disabled": true,
+        }),
+    }
+}
+
+/// 把一条 `card.action.trigger` 解析为 watch 卡按钮动作；非 watch 卡回调返回 None。
+/// 返回 `(open_message_id, 动作)`。
+pub fn parse_watch_action(event: &Value) -> Option<(String, WatchAction)> {
+    let action = event.get("action")?;
+    let value = action.get("value")?;
+    let obj: Value = match value {
+        Value::String(s) => serde_json::from_str(s).ok()?,
+        v => v.clone(),
+    };
+    let act = match obj.get(WATCH_ACTION_KEY).and_then(|a| a.as_str()) {
+        Some("unwatch") => WatchAction::Unwatch,
+        Some("refresh") => WatchAction::Refresh,
+        _ => return None,
+    };
+    let message_id = event
+        .get("context")
+        .and_then(|c| c.get("open_message_id"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    Some((message_id, act))
+}
+
 /// 把一条 `card.action.trigger` 的 `event` 解析为「提交」结果；非提交回调返回 None。
 /// `options` 用于把 `opt_{i}` 还原为选项文本。
 ///
@@ -709,5 +902,157 @@ mod tests {
             "action": { "tag": "button", "value": { "action": "noop" } }
         });
         assert!(parse_card_submit(&event, &[]).is_none());
+    }
+
+    // ===== /watch 实时状态卡 =====
+
+    fn watch_view(buttons: WatchButtons) -> WatchCardView {
+        WatchCardView {
+            header: "实时关注 [3] Cursor — HumanInLoop".into(),
+            state_line: "🟢 工作中 · 已 6 分钟".into(),
+            title_line: Some("「重构空闲退出」".into()),
+            activity_heading: "最近动态（14:32:05）：".into(),
+            text: Some("正在跑单测".into()),
+            step_lines: vec![
+                "<font color='grey'>●</font> **读取**: *registry.rs*".into(),
+                "<font color='green'>●</font> **运行命令**: *cargo test*".into(),
+            ],
+            todo_summary: None,
+            todo_lines: Vec::new(),
+            no_activity: None,
+            updated_line: "最后更新 14:32:07".into(),
+            buttons,
+        }
+    }
+
+    #[test]
+    fn watch_card_layout_and_active_buttons() {
+        let card = build_watch_card(&watch_view(WatchButtons::Active {
+            unwatch: "取消关注".into(),
+            refresh: "立即刷新".into(),
+        }));
+        assert_eq!(card["schema"], "2.0");
+        assert_eq!(card["config"]["update_multi"], true);
+        let elements = card["body"]["elements"].as_array().unwrap();
+        // 样式化头部行（eye icon + 蓝色小字）+ 分隔线。
+        assert_eq!(elements[0]["icon"]["token"], "eye_outlined");
+        assert_eq!(elements[0]["text"]["content"], "实时关注 [3] Cursor — HumanInLoop");
+        assert_eq!(elements[1]["tag"], "hr");
+        // 状态行加粗（含回合统计）+ 标题；活动区带绝对时刻标签、文字 + 空行 + 彩色圆点足迹时间线。
+        let head_md = elements[2]["content"].as_str().unwrap();
+        assert!(head_md.contains("**🟢 工作中 · 已 6 分钟**"));
+        assert!(head_md.contains("「重构空闲退出」"));
+        let act_md = elements[3]["content"].as_str().unwrap();
+        assert!(act_md.contains("最近动态（14:32:05）："));
+        assert!(act_md.contains(
+            "正在跑单测\n\n<font color='grey'>●</font> **读取**: *registry.rs*\n<font color='green'>●</font> **运行命令**: *cargo test*"
+        ));
+        // 底部：hr + 灰色更新时刻 + column_set 两按钮。
+        assert_eq!(elements[4]["tag"], "hr");
+        assert_eq!(elements[5]["text"]["content"], "最后更新 14:32:07");
+        assert_eq!(elements[5]["text"]["text_color"], "grey");
+        let cols = elements[6]["columns"].as_array().unwrap();
+        assert_eq!(cols.len(), 2);
+        let b0 = &cols[0]["elements"][0];
+        assert_eq!(b0["type"], "danger");
+        assert_eq!(b0["behaviors"][0]["value"]["watch"], "unwatch");
+        let b1 = &cols[1]["elements"][0];
+        assert_eq!(b1["behaviors"][0]["value"]["watch"], "refresh");
+    }
+
+    #[test]
+    fn watch_card_final_disables_button() {
+        let card = build_watch_card(&watch_view(WatchButtons::Final {
+            label: "已结束 · 已自动取消关注".into(),
+        }));
+        let elements = card["body"]["elements"].as_array().unwrap();
+        let btn = elements.last().unwrap();
+        assert_eq!(btn["tag"], "button");
+        assert_eq!(btn["disabled"], true);
+        assert_eq!(btn["text"]["content"], "已结束 · 已自动取消关注");
+        assert!(btn.get("behaviors").is_none());
+    }
+
+    #[test]
+    fn watch_card_no_activity_placeholder() {
+        let mut view = watch_view(WatchButtons::Final { label: "x".into() });
+        view.text = None;
+        view.step_lines = Vec::new();
+        view.no_activity = Some("（暂无可解析的活动）".into());
+        let card = build_watch_card(&view);
+        let elements = card["body"]["elements"].as_array().unwrap();
+        let act_md = elements[3]["content"].as_str().unwrap();
+        assert!(act_md.contains("（暂无可解析的活动）"));
+        assert!(!act_md.contains("cargo"));
+        assert!(!act_md.contains("●"));
+    }
+
+    #[test]
+    fn watch_card_todo_collapsible_panel() {
+        // 有清单 → 活动区之后插入默认收起的折叠面板：标题即摘要行，内容为全清单 markdown。
+        let mut view = watch_view(WatchButtons::Active {
+            unwatch: "取消关注".into(),
+            refresh: "立即刷新".into(),
+        });
+        view.todo_summary = Some("📋 TODO 1/3 · 当前：跑单测".into());
+        view.todo_lines = vec![
+            "<font color='grey'>●</font> ~~改 registry~~".into(),
+            "<font color='green'>●</font> **跑单测**".into(),
+            "○ 更新文档".into(),
+        ];
+        let card = build_watch_card(&view);
+        let elements = card["body"]["elements"].as_array().unwrap();
+        let panel = &elements[4];
+        assert_eq!(panel["tag"], "collapsible_panel");
+        assert_eq!(panel["expanded"], false);
+        assert_eq!(
+            panel["header"]["title"]["content"],
+            "📋 TODO 1/3 · 当前：跑单测"
+        );
+        let inner = panel["elements"][0]["content"].as_str().unwrap();
+        assert!(inner.contains("~~改 registry~~"));
+        assert!(inner.contains("**跑单测**"));
+        assert!(inner.contains("○ 更新文档"));
+        // 面板之后仍是 hr + 更新时刻 + 按钮。
+        assert_eq!(elements[5]["tag"], "hr");
+        assert_eq!(elements[6]["text"]["content"], "最后更新 14:32:07");
+        // 无清单 → 不出面板。
+        let card2 = build_watch_card(&watch_view(WatchButtons::Final { label: "x".into() }));
+        let els2 = card2["body"]["elements"].as_array().unwrap();
+        assert!(els2.iter().all(|e| e["tag"] != "collapsible_panel"));
+    }
+
+    #[test]
+    fn parse_watch_action_maps_value() {
+        let ev = |action: &str| {
+            json!({
+                "operator": { "open_id": "ou_1" },
+                "context": { "open_message_id": "om_w" },
+                "action": { "tag": "button", "value": { "watch": action } }
+            })
+        };
+        assert_eq!(
+            parse_watch_action(&ev("unwatch")),
+            Some(("om_w".to_string(), WatchAction::Unwatch))
+        );
+        assert_eq!(
+            parse_watch_action(&ev("refresh")),
+            Some(("om_w".to_string(), WatchAction::Refresh))
+        );
+        // value 为 JSON 字符串（飞书部分回调形态）。
+        let ev_str = json!({
+            "context": { "open_message_id": "om_w" },
+            "action": { "value": "{\"watch\":\"refresh\"}" }
+        });
+        assert_eq!(
+            parse_watch_action(&ev_str),
+            Some(("om_w".to_string(), WatchAction::Refresh))
+        );
+        // 非 watch 卡回调 → None。
+        let other = json!({
+            "context": { "open_message_id": "om_q" },
+            "action": { "value": { "action": "submit" } }
+        });
+        assert!(parse_watch_action(&other).is_none());
     }
 }

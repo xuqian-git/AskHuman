@@ -357,6 +357,7 @@ impl MessagingChannel for FeishuSession {
                             ack_kind(&event),
                             crate::autochannel::AckMode::Card,
                             &message_text(&event),
+                            true,
                             lang,
                         ) {
                             let ack_client = client.clone();
@@ -457,6 +458,7 @@ async fn ask_question_text(
                         kind,
                         crate::autochannel::AckMode::Fallback,
                         &text,
+                        true,
                         ctx.lang,
                     ) {
                         let _ = client.send_text(&reply).await;
@@ -469,6 +471,7 @@ async fn ask_question_text(
                         None,
                         crate::autochannel::AckMode::Fallback,
                         &text,
+                        true,
                         ctx.lang,
                     ) {
                         let _ = client.send_text(&reply).await;

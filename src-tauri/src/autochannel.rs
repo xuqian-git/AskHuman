@@ -54,8 +54,23 @@ pub enum Command {
     Here,
     /// `/status`、`/状态`：`None` 返回工作中/空闲 agent 列表；`Some(编号)` 返回该 agent 的当前活动详情。
     Status(Option<u64>),
+    /// `/watch`、`/关注`：`Some(编号)` 关注该 agent（发实时状态卡）；`None` 列出当前关注。
+    Watch(Option<u64>),
+    /// `/unwatch`、`/取消关注`：取消关注（编号 / 全部 / 缺省自动）。
+    Unwatch(WatchSel),
     /// `/help`、`/帮助`、`/?`：返回动态引导文案（可发什么、可用命令）。
     Help,
+}
+
+/// `/unwatch` 的目标选择。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WatchSel {
+    /// 指定编号。
+    One(u64),
+    /// 全部（`all` / `全部`）。
+    All,
+    /// 未指定：恰一个关注则取消它，多个则回列表让用户指定。
+    Auto,
 }
 
 /// 一条入站文本的分类（供 `handle_inbound` 分派）。
@@ -83,6 +98,21 @@ pub fn classify(text: &str) -> Parsed {
         "/status" | "/状态" => {
             let sel = tokens.next().and_then(|s| s.parse::<u64>().ok());
             Parsed::Command(Command::Status(sel))
+        }
+        "/watch" | "/关注" => {
+            let sel = tokens.next().and_then(|s| s.parse::<u64>().ok());
+            Parsed::Command(Command::Watch(sel))
+        }
+        "/unwatch" | "/取消关注" => {
+            let sel = match tokens.next() {
+                Some(t) if t.eq_ignore_ascii_case("all") || t == "全部" => WatchSel::All,
+                Some(t) => match t.parse::<u64>() {
+                    Ok(n) => WatchSel::One(n),
+                    Err(_) => WatchSel::Auto,
+                },
+                None => WatchSel::Auto,
+            };
+            Parsed::Command(Command::Unwatch(sel))
         }
         "/help" | "/帮助" | "/?" | "/？" => Parsed::Command(Command::Help),
         _ => Parsed::UnknownCommand,
@@ -127,11 +157,16 @@ pub fn detect_ack_text(field_label: &str, lang: Lang) -> String {
 /// **不含「已收到」**——能回复本身即代表收到且在运行。
 /// - `auto`：自动激活是否开启（决定是否列 `/here` 与切槽提示）。
 /// - `has_active_question`：该渠道当前是否有在途提问（决定「如何作答」vs「暂无提问」）。
-pub fn help_text(auto: bool, has_active_question: bool, lang: Lang) -> String {
+/// - `watch`：该渠道是否支持 `/watch` 实时关注（P1 仅飞书，见 `docs/specs/im-watch.md`）。
+pub fn help_text(auto: bool, has_active_question: bool, watch: bool, lang: Lang) -> String {
     let mut out = String::new();
     out.push_str(i18n::tr(lang, "autoChannel.helpTitle"));
     out.push('\n');
     out.push_str(i18n::tr(lang, "autoChannel.helpCmdStatus"));
+    if watch {
+        out.push('\n');
+        out.push_str(i18n::tr(lang, "autoChannel.helpCmdWatch"));
+    }
     out.push('\n');
     out.push_str(i18n::tr(lang, "autoChannel.helpCmdHelp"));
     if auto {
@@ -224,8 +259,8 @@ fn format_line(rec: &Value, lang: Lang) -> String {
     format!("[{}] {}", seq, kind_title_project(rec, lang))
 }
 
-/// `类型 — 标题（项目）`（全局行与详情头部共用）。
-fn kind_title_project(rec: &Value, lang: Lang) -> String {
+/// `类型 — 标题（项目）`（全局行与详情头部共用；watch 列表也复用）。
+pub(crate) fn kind_title_project(rec: &Value, lang: Lang) -> String {
     let kind = rec.get("kind").and_then(|v| v.as_str()).unwrap_or("");
     let kind_label = crate::agents::AgentKind::parse(kind)
         .map(|k| k.label())
@@ -275,52 +310,150 @@ pub fn status_detail_text(snapshot: &Value, id: u64, lang: Lang) -> String {
     }
 
     // 当前活动：融合 transcript 尾部与 hook 实时「当前工具」。空行 + 分区标签，明确「agent 输出从这里开始」。
+    let parts = activity_parts(rec);
+
+    out.push_str("\n\n");
+    if parts.text.is_none() && parts.steps.is_empty() {
+        out.push_str(i18n::tr(lang, "autoChannel.statusNoActivity"));
+    } else {
+        out.push_str(&activity_heading(parts.at, lang));
+        if let Some(t) = parts.text {
+            out.push('\n');
+            out.push_str(&t);
+        }
+        // 「省略 N 步」标注：文字与展示的 ≤3 步之间还有更早调用时提示。
+        if parts.steps_omitted > 0 {
+            out.push('\n');
+            out.push_str(
+                &i18n::tr(lang, "watch.stepsOmitted")
+                    .replace("{n}", &parts.steps_omitted.to_string()),
+            );
+        }
+        for step in &parts.steps {
+            out.push('\n');
+            out.push_str(&render_step(step, lang));
+        }
+    }
+    // TODO 清单摘要（纯文本渠道只给一行；完整清单是飞书 watch 卡折叠面板的能力）。
+    if let Some(s) = todo_summary(&parts.todos, lang) {
+        out.push('\n');
+        out.push_str(&s);
+    }
+    out
+}
+
+/// TODO 清单摘要行：`📋 清单 4/7 · 当前：xxx`（无进行中条目省略「当前」段；空清单 → None）。
+/// `/status` 纯文本与飞书 watch 卡折叠面板标题共用。
+pub(crate) fn todo_summary(
+    todos: &[crate::agents::activity::TodoItem],
+    lang: Lang,
+) -> Option<String> {
+    use crate::agents::activity::TodoState;
+    if todos.is_empty() {
+        return None;
+    }
+    let done = todos
+        .iter()
+        .filter(|t| t.state == TodoState::Completed)
+        .count();
+    let current = todos
+        .iter()
+        .find(|t| t.state == TodoState::InProgress)
+        .map(|t| t.content.as_str());
+    let key = if current.is_some() {
+        "watch.todoSummary"
+    } else {
+        "watch.todoSummaryBare"
+    };
+    Some(
+        i18n::tr(lang, key)
+            .replace("{done}", &done.to_string())
+            .replace("{total}", &todos.len().to_string())
+            .replace("{current}", current.unwrap_or("")),
+    )
+}
+
+/// 一条注册表快照记录的「当前活动」组成部分（transcript 尾部 × hook 实时工具融合结果）。
+/// `/status <编号>` 与 `/watch` 实时卡共用同一份融合逻辑。
+pub(crate) struct ActivityParts {
+    /// 最后一段助手文字（transcript 侧）。
+    pub text: Option<String>,
+    /// 最后一段文字之后的足迹时间线（≤3 步，旧→新；实时工具严格更新时并入为进行中的末步）。
+    pub steps: Vec<crate::agents::activity::ToolStep>,
+    /// 文字之后被挤出时间线的更早调用数（「省略 N 步」标注）。
+    pub steps_omitted: usize,
+    /// 当前 TODO 清单（TodoWrite / update_plan 重放；agent 未用 todo 功能则为空）。
+    pub todos: Vec<crate::agents::activity::TodoItem>,
+    /// 实际展示事件的时间（Unix 秒）。
+    pub at: Option<u64>,
+}
+
+/// 由注册表快照记录计算「当前活动」：读该 session transcript 尾部得到文字 + 足迹时间线，再并入
+/// snapshot 注入的实时 `currentTool`（PreToolUse 上报、in-flight 时 transcript 尚未落盘）——
+/// 实时工具严格更新时作为「进行中」末步（解决 Cursor「工具跑完才落盘」的滞后）。
+pub(crate) fn activity_parts(rec: &Value) -> ActivityParts {
+    use crate::agents::activity::ToolStep;
     let kind = rec.get("kind").and_then(|v| v.as_str()).unwrap_or("");
     let sid = rec.get("sessionId").and_then(|v| v.as_str()).unwrap_or("");
     let activity = crate::agents::AgentKind::parse(kind)
         .filter(|_| !sid.is_empty())
         .and_then(|k| crate::agents::activity::resolve_activity(k, sid));
 
-    // transcript 侧：助手文字永远取此；工具与时间用于与实时工具比较。
+    // transcript 侧：助手文字永远取此；足迹与时间用于与实时工具比较。
     let ts_text = activity.as_ref().and_then(|a| a.text.clone());
-    let ts_tool = activity.as_ref().and_then(|a| a.tool.clone());
+    let mut steps = activity.as_ref().map(|a| a.steps.clone()).unwrap_or_default();
+    let mut omitted = activity.as_ref().map(|a| a.steps_omitted).unwrap_or(0);
+    let todos = activity.as_ref().map(|a| a.todos.clone()).unwrap_or_default();
     let ts_at = activity.as_ref().and_then(|a| a.at);
 
-    // 实时侧：snapshot 注入的 currentTool（PreToolUse 上报、in-flight 时 transcript 尚未落盘）。
+    // 实时侧：snapshot 注入的 currentTool。
     let rt = rec.get("currentTool");
     let rt_at = rt.and_then(|t| t.get("at")).and_then(|v| v.as_u64());
     let rt_tool = rt.and_then(build_rt_tool);
 
-    // 融合：实时工具严格更新（transcript 尚未追上）→ 用实时工具 + 其开始时间；否则用 transcript。
+    // 融合：实时工具严格更新（transcript 尚未追上）→ 并入为进行中末步；与末步同一工具则只改其
+    // 状态，否则更早的进行中步先收敛为已完成（新调用开始 = 前一步已结束，保持「只有末步在跑」）。
     let use_rt = rt_tool.is_some() && realtime_newer(rt_at, ts_at);
-    let (show_tool, display_at) = if use_rt {
-        (rt_tool, rt_at)
+    let at = if use_rt {
+        if let Some(td) = rt_tool {
+            use crate::agents::activity::StepState;
+            match steps.last_mut() {
+                Some(last) if last.tool == td => last.state = StepState::Running,
+                _ => {
+                    for s in steps.iter_mut() {
+                        if s.state == StepState::Running {
+                            s.state = StepState::Done;
+                        }
+                    }
+                    steps.push(ToolStep {
+                        tool: td,
+                        state: StepState::Running,
+                    });
+                    if steps.len() > crate::agents::activity::MAX_STEPS {
+                        steps.remove(0);
+                        omitted += 1;
+                    }
+                }
+            }
+        }
+        rt_at
     } else {
-        (ts_tool, ts_at)
+        ts_at
     };
-
-    out.push_str("\n\n");
-    if ts_text.is_none() && show_tool.is_none() {
-        out.push_str(i18n::tr(lang, "autoChannel.statusNoActivity"));
-    } else {
-        out.push_str(&activity_heading(display_at, lang));
-        if let Some(t) = ts_text {
-            out.push('\n');
-            out.push_str(&t);
-        }
-        if let Some(tool) = show_tool {
-            out.push('\n');
-            out.push_str(&render_tool(&tool, lang));
-        }
+    ActivityParts {
+        text: ts_text,
+        steps,
+        steps_omitted: omitted,
+        todos,
+        at,
     }
-    out
 }
 
 /// 由 snapshot 的 `currentTool`（`{name, object, at}`）构造工具展示。类别标签按原始工具名复得，
-/// 对象用已归一化的存量值。无有效工具名 → None。
+/// 对象用已归一化的存量值。无有效工具名 / TODO 类工具（不入时间线）→ None。
 fn build_rt_tool(rt: &Value) -> Option<crate::agents::activity::ToolDisplay> {
     let name = rt.get("name").and_then(|v| v.as_str()).unwrap_or("").trim();
-    if name.is_empty() {
+    if name.is_empty() || crate::agents::activity::is_todo_tool(name) {
         return None;
     }
     let object = rt
@@ -387,18 +520,35 @@ fn rel_time(now: u64, ts: u64, lang: Lang) -> String {
     }
 }
 
-/// 渲染一条工具调用：`▸ <类别词/原始工具名>: <对象>`。前缀 `▸` 标示「这是一次工具调用」。
-fn render_tool(tool: &crate::agents::activity::ToolDisplay, lang: Lang) -> String {
+/// 足迹时间线一步的类别词与对象（用户定案：不再用类别 emoji，只保留状态圆点；类别词由
+/// 渲染侧决定加粗与否）。返回 `(类别词/原始工具名, 对象)`。
+pub(crate) fn step_label_object(
+    step: &crate::agents::activity::ToolStep,
+    lang: Lang,
+) -> (String, Option<String>) {
     use crate::agents::activity::ToolLabel;
-    let label = match &tool.label {
+    let label = match &step.tool.label {
         ToolLabel::Run => i18n::tr(lang, "autoChannel.activityRun").to_string(),
         ToolLabel::Read => i18n::tr(lang, "autoChannel.activityRead").to_string(),
         ToolLabel::Write => i18n::tr(lang, "autoChannel.activityWrite").to_string(),
         ToolLabel::Other(name) => name.clone(),
     };
-    match &tool.object {
-        Some(o) => format!("▸ {}: {}", label, o),
-        None => format!("▸ {}", label),
+    (label, step.tool.object.clone())
+}
+
+/// `/status` 用纯文本步行：状态圆点（进行中 🟢 / 已完成 ⚪ / 失败 🔴）+ `类别词: 对象`。
+/// （飞书 watch 卡走 `watch::` 侧的彩色 `<font>` 圆点 + 粗体/斜体渲染，不经此函数。）
+pub(crate) fn render_step(step: &crate::agents::activity::ToolStep, lang: Lang) -> String {
+    use crate::agents::activity::StepState;
+    let dot = match step.state {
+        StepState::Running => "🟢",
+        StepState::Done => "⚪",
+        StepState::Failed => "🔴",
+    };
+    let (label, object) = step_label_object(step, lang);
+    match object {
+        Some(o) => format!("{} {}: {}", dot, label, o),
+        None => format!("{} {}", dot, label),
     }
 }
 
@@ -425,6 +575,36 @@ fn now_secs() -> u64 {
 mod tests {
     use super::*;
     use crate::i18n::Lang;
+
+    #[test]
+    fn todo_summary_counts_and_current() {
+        use crate::agents::activity::{TodoItem, TodoState};
+        let item = |content: &str, state: TodoState| TodoItem {
+            content: content.into(),
+            state,
+        };
+        // 空清单 → None。
+        assert!(todo_summary(&[], Lang::Zh).is_none());
+        // 完成计数 + 当前进行中条目。
+        let todos = vec![
+            item("改 registry", TodoState::Completed),
+            item("跑单测", TodoState::InProgress),
+            item("更新文档", TodoState::Pending),
+        ];
+        assert_eq!(
+            todo_summary(&todos, Lang::Zh).as_deref(),
+            Some("📋 TODO 1/3 · 当前：跑单测")
+        );
+        // 无进行中条目 → 省略「当前」段。
+        let done = vec![
+            item("改 registry", TodoState::Completed),
+            item("跑单测", TodoState::Completed),
+        ];
+        assert_eq!(
+            todo_summary(&done, Lang::Zh).as_deref(),
+            Some("📋 TODO 2/2")
+        );
+    }
 
     #[test]
     fn classify_commands_and_synonyms() {
@@ -467,11 +647,11 @@ mod tests {
         let here = i18n::tr(Lang::En, "autoChannel.helpCmdHere");
         let switch = i18n::tr(Lang::En, "autoChannel.helpSwitchHint");
         // auto on → lists /here + switch hint.
-        let on = help_text(true, false, Lang::En);
+        let on = help_text(true, false, false, Lang::En);
         assert!(on.contains(here));
         assert!(on.contains(switch));
         // auto off → neither /here nor switch hint.
-        let off = help_text(false, false, Lang::En);
+        let off = help_text(false, false, false, Lang::En);
         assert!(!off.contains(here));
         assert!(!off.contains(switch));
     }
@@ -480,12 +660,51 @@ mod tests {
     fn help_text_gates_on_active_question() {
         let answering = i18n::tr(Lang::En, "autoChannel.helpAnswering");
         let none = i18n::tr(Lang::En, "autoChannel.helpNoQuestion");
-        let with_q = help_text(false, true, Lang::En);
+        let with_q = help_text(false, true, false, Lang::En);
         assert!(with_q.contains(answering));
         assert!(!with_q.contains(none));
-        let without_q = help_text(false, false, Lang::En);
+        let without_q = help_text(false, false, false, Lang::En);
         assert!(without_q.contains(none));
         assert!(!without_q.contains(answering));
+    }
+
+    #[test]
+    fn help_text_gates_on_watch_support() {
+        let watch = i18n::tr(Lang::En, "autoChannel.helpCmdWatch");
+        assert!(help_text(false, false, true, Lang::En).contains(watch));
+        assert!(!help_text(false, false, false, Lang::En).contains(watch));
+    }
+
+    #[test]
+    fn classify_watch_and_unwatch() {
+        assert_eq!(classify("/watch"), Parsed::Command(Command::Watch(None)));
+        assert_eq!(classify("/关注 3"), Parsed::Command(Command::Watch(Some(3))));
+        assert_eq!(
+            classify("/watch 12"),
+            Parsed::Command(Command::Watch(Some(12)))
+        );
+        // 非数字参数 → 列表（同 /status 的宽松处理）。
+        assert_eq!(classify("/watch abc"), Parsed::Command(Command::Watch(None)));
+        assert_eq!(
+            classify("/unwatch"),
+            Parsed::Command(Command::Unwatch(WatchSel::Auto))
+        );
+        assert_eq!(
+            classify("/unwatch 5"),
+            Parsed::Command(Command::Unwatch(WatchSel::One(5)))
+        );
+        assert_eq!(
+            classify("/unwatch all"),
+            Parsed::Command(Command::Unwatch(WatchSel::All))
+        );
+        assert_eq!(
+            classify("/取消关注 全部"),
+            Parsed::Command(Command::Unwatch(WatchSel::All))
+        );
+        assert_eq!(
+            classify("/UNWATCH ALL"),
+            Parsed::Command(Command::Unwatch(WatchSel::All))
+        );
     }
 
     #[test]

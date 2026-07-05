@@ -329,6 +329,7 @@ impl MessagingChannel for SlackSession {
                             ack_kind(&event),
                             crate::autochannel::AckMode::Card,
                             event.get("text").and_then(|v| v.as_str()).unwrap_or(""),
+                            false,
                             lang,
                         ) {
                             let ack_client = client.clone();
@@ -434,6 +435,7 @@ async fn ask_question_text(
                         kind,
                         crate::autochannel::AckMode::Fallback,
                         &text,
+                        false,
                         ctx.lang,
                     ) {
                         let _ = client.post_text(dm, &reply).await;
@@ -446,6 +448,7 @@ async fn ask_question_text(
                         None,
                         crate::autochannel::AckMode::Fallback,
                         &text,
+                        false,
                         ctx.lang,
                     ) {
                         let _ = client.post_text(dm, &reply).await;

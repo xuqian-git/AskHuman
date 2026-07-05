@@ -2,6 +2,15 @@
 
 按具体任务 / 需求记录待办与当前进展。任务 / 需求完成后删除其 section（历史留在 git）。
 
+## 【进行中】/watch 实时关注：其它渠道（Telegram / Slack / 钉钉）开发计划
+
+P1 飞书已完成并经多轮真机验收（设计 `docs/specs/im-watch.md`、实现见 `watch.rs` +
+`daemon/mod.rs::WatchState` + `feishu/card.rs::build_watch_card`；含跟底重发、足迹时间线、
+TODO 折叠面板、回合时长等全部定案细节），已随 feat 提交入库。
+
+**当前任务**：为其余渠道产出开发计划（能力矩阵：Telegram editMessageText / Slack chat.update /
+钉钉专用模板或重发策略），写入 `docs/plans/`，经 AskHuman 评审后排期。
+
 ## 待验收：守护进程「保活模式」（实验 Tab）
 
 在「实验」Tab 加**分段控件**（与状态栏图标一致）选 daemon 生命周期：`activity`（默认＝当前行为：按需拉起、5min 空闲退出）/ `keepalive`（保活）。已全量落地：
@@ -52,15 +61,6 @@
 
 - **未做**：未 live 端到端实测（需真机发 IM `/status`/`/status <编号>` + 触发一次工具看实时工具）——待你验收。
   注意：IM 处理与 hook 上报都跑在 daemon，验收前需**重启 daemon** 用上新二进制。
-
-## 待办：`/watch` 实时推送 agent 进度（在 /status 当前活动之上）
-
-`/status <编号>` 需用户反复手查；后续可做「订阅式」实时推送。已讨论过的设计草案（待做时再定案）：
-`/watch <编号>` 订阅 / `/unwatch [编号]` 退订 / `/watch` 列出（中文别名 `/关注`、`/取消关注`）；
-复用 daemon 周期 tick 对**被订阅的少数 agent**轮询 transcript 尾部、算「活动签名」（最后助手文字 +
-末尾工具 + 状态），签名变化才推、加最短推送间隔防刷、状态切换即时推；订阅按 session_id 记录（编号会随
-daemon 重启重排），agent 结束自动退订并推一条收尾；有活跃订阅时阻止 daemon 空闲退出（清空后恢复）。
-依赖第一期 `docs/plans/im-status-activity.md`（活动解析 + 编号）先落地。
 
 ## 待验收：Grok 集成（仅 MCP）—— 实现已落地并 live 验证
 

@@ -63,6 +63,12 @@ pub fn auto_channel_file() -> PathBuf {
     state_dir().join("auto-channel.json")
 }
 
+/// `/watch` 实时关注订阅持久化文件 `~/.askhuman/state/watch.json`（跨 daemon 重启恢复，
+/// 恢复后继续编辑同一张卡，见 `docs/specs/im-watch.md`）。
+pub fn watch_file() -> PathBuf {
+    state_dir().join("watch.json")
+}
+
 /// GUI 宿主进程的 IPC socket `~/.askhuman/gui-host.sock`（与 daemon socket 解耦，
 /// 使 daemon 未运行时也能打开设置/历史窗口，spec D13）。
 pub fn gui_host_sock() -> PathBuf {

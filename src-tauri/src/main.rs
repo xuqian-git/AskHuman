@@ -46,6 +46,7 @@ mod sound;
 mod speech;
 mod telegram;
 mod update;
+mod watch;
 
 fn main() {
     // Capture process birth ASAP so the `cli.start` perf milestone is accurate.

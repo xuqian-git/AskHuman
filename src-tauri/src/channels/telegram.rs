@@ -533,6 +533,7 @@ async fn handle_event(
                     None,
                     crate::autochannel::AckMode::Card,
                     &text,
+                    false,
                     lang,
                 ) {
                     let _ = client.send_message(&reply, None, None).await;
@@ -551,6 +552,7 @@ async fn handle_event(
                 Some(crate::autochannel::AckKind::Text),
                 crate::autochannel::AckMode::Card,
                 &text,
+                false,
                 lang,
             ) {
                 let _ = client.send_message(&reply, None, None).await;

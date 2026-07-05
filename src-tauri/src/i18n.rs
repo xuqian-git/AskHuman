@@ -376,6 +376,11 @@ pub fn tr(lang: Lang, key: &'static str) -> &'static str {
         // —— 动态引导 / /help 文案（spec R3）：按开关拼装；不含「已收到」。 ——
         "autoChannel.helpTitle" => pick(lang, "AskHuman is running. You can:", "AskHuman 正在运行，你可以："),
         "autoChannel.helpCmdStatus" => pick(lang, "• /status — list agents (working/idle)\n• /status <n> — what agent n is doing now", "• /status — 列出 agent（工作中/空闲）\n• /status <编号> — 查看该 agent 当前在做什么"),
+        "autoChannel.helpCmdWatch" => pick(
+            lang,
+            "• /watch <n> — follow agent n with a live status card (/unwatch to stop)",
+            "• /watch <编号> — 用一张实时状态卡关注该 agent（/unwatch 取消）",
+        ),
         "autoChannel.helpCmdHelp" => pick(lang, "• /help — show this help", "• /help — 显示此帮助"),
         "autoChannel.helpCmdHere" => pick(lang, "• /here — route questions to this channel", "• /here — 把提问切到此渠道接收"),
         // 有在途提问时的作答指引。
@@ -433,6 +438,72 @@ pub fn tr(lang: Lang, key: &'static str) -> &'static str {
         ),
         "autoChannel.detectFieldUserId" => pick(lang, "User ID", "用户 ID"),
         "autoChannel.detectFieldOpenId" => pick(lang, "OpenID", "用户 OpenID"),
+
+        // —— /watch 实时关注（spec docs/specs/im-watch.md，P1 仅飞书）——
+        // 渠道门控：非飞书渠道收到 watch 命令。
+        "watch.unsupported" => pick(
+            lang,
+            "Live watch is currently only available on Feishu.",
+            "「实时关注」目前仅支持飞书渠道。",
+        ),
+        // 关注上限。
+        "watch.limit" => pick(
+            lang,
+            "Watch limit reached ({n}). Send /unwatch <n> to stop one first.",
+            "关注数已达上限（{n} 个）。请先 /unwatch <编号> 取消部分关注。",
+        ),
+        // /watch 无参：agent 列表（同 /status）+ 选择提示 + 已关注段标题。
+        "watch.pickHint" => pick(
+            lang,
+            "Send /watch <n> to follow one with a live status card.",
+            "发送 /watch <编号> 即可用一张实时状态卡关注该 agent。",
+        ),
+        "watch.listTitle" => pick(lang, "Watching:", "正在关注："),
+        // /unwatch：确认与提示。
+        "watch.unwatchDone" => pick(lang, "Stopped watching [{id}].", "已取消关注 [{id}]。"),
+        "watch.unwatchAllDone" => pick(lang, "Stopped watching all ({n}).", "已取消全部关注（{n} 个）。"),
+        "watch.unwatchNone" => pick(lang, "Not watching any agent.", "当前没有关注任何 agent。"),
+        "watch.unwatchWhich" => pick(
+            lang,
+            "Watching more than one agent — send /unwatch <n> to pick one, or /unwatch all:",
+            "正在关注多个 agent，请用 /unwatch <编号> 指定，或 /unwatch all 全部取消：",
+        ),
+        "watch.notWatching" => pick(
+            lang,
+            "Not watching agent [{id}]. Send /watch to list current watches.",
+            "没有关注编号为 {id} 的 agent。发送 /watch 查看当前关注。",
+        ),
+        // 发卡失败（飞书配置/网络问题）。
+        "watch.sendFailed" => pick(lang, "Failed to send the watch card: {e}", "发送关注卡片失败：{e}"),
+        // 卡片：样式化头部（{id} 编号、{agent} 家族名、{project} 项目名）。
+        "watch.cardHeader" => pick(lang, "Watching [{id}] {agent} — {project}", "实时关注 [{id}] {agent} — {project}"),
+        // 卡片状态行回合时长（`· 已 {t}`；依赖生命周期 hook，缺省不显示。步数不显示——用户定案）。
+        "watch.statsElapsed" => pick(lang, "{t} in", "已 {t}"),
+        // TODO 摘要（`/status` 尾行 / watch 卡折叠面板标题；agent 未用 todo 功能不显示）。
+        // 「TODO」不翻译（用户定案）。
+        "watch.todoSummary" => pick(
+            lang,
+            "📋 TODO {done}/{total} · now: {current}",
+            "📋 TODO {done}/{total} · 当前：{current}",
+        ),
+        "watch.todoSummaryBare" => pick(lang, "📋 TODO {done}/{total}", "📋 TODO {done}/{total}"),
+        // 足迹时间线「省略 N 步」标注（文字与展示的 ≤3 步之间还有更早调用时）。
+        "watch.stepsOmitted" => pick(lang, "… {n} earlier steps omitted", "… 已省略 {n} 步"),
+        // 卡片状态行（emoji 编码四态；waiting 覆盖 working）。
+        "watch.stateWorking" => pick(lang, "🟢 Working", "🟢 工作中"),
+        "watch.stateIdle" => pick(lang, "⚪ Idle", "⚪ 空闲"),
+        "watch.stateWaiting" => pick(lang, "🙋 Waiting for your answer", "🙋 正在等待你的回答"),
+        "watch.stateEnded" => pick(lang, "⏹ Ended", "⏹ 已结束"),
+        // 卡片底部更新时刻（{time} 本地绝对时刻）。
+        "watch.updatedAt" => pick(lang, "Updated {time}", "最后更新 {time}"),
+        // 卡片按钮。
+        "watch.btnUnwatch" => pick(lang, "Unwatch", "取消关注"),
+        "watch.btnRefresh" => pick(lang, "Refresh", "立即刷新"),
+        // 终态按钮（禁用）。
+        "watch.btnEnded" => pick(lang, "Ended · auto-unwatched", "已结束 · 已自动取消关注"),
+        "watch.btnCancelled" => pick(lang, "Unwatched", "已取消关注"),
+        "watch.btnReplaced" => pick(lang, "Replaced by a newer card", "已由新卡片接替"),
+        "watch.btnMoved" => pick(lang, "Moved to the latest card ⬇", "已移至最新卡片 ⬇"),
 
         // —— Slack 渠道：发给用户的文案 + 本地诊断 ——
         // 静态终态卡片状态行（无 emoji 前缀，与飞书/钉钉一致）。

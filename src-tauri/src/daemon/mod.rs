@@ -90,6 +90,13 @@ mod unix_impl {
             .unwrap_or(0)
     }
 
+    fn now_ms() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0)
+    }
+
     fn log(msg: &str) {
         // `daemon run` 经 spawn 时 stderr 已重定向到 daemon.log；前台运行则打到终端。
         eprintln!("[askhuman-daemon {}] {}", now_secs(), msg);
@@ -189,6 +196,58 @@ mod unix_impl {
         warm_pool: Mutex<Option<WarmSlot>>,
         /// 正在补热中（去重，避免并发 spawn 多个热实例）。
         warm_spawning: AtomicBool,
+        /// `/watch` 实时关注子系统（spec docs/specs/im-watch.md，P1 仅飞书）。
+        watch: WatchState,
+    }
+
+    /// 「跟底」重发节流：同一订阅两次跟底之间的最短间隔（用户定案 30s）。
+    const WATCH_MOVE_THROTTLE_MS: u64 = 30_000;
+
+    /// `/watch` 实时关注子系统的 daemon 侧状态。
+    #[derive(Default)]
+    struct WatchState {
+        /// 活动订阅（agent 结束 / 用户取消即移除；上限 `watch::MAX_WATCHES`）。
+        subs: Mutex<Vec<WatchEntry>>,
+        /// 引擎唤醒信号（AgentEvent / 提问创建、完结 / 订阅变化）。
+        notify: tokio::sync::Notify,
+        /// 卡片按钮回调路由任务句柄（随 FsRouter 生命周期 / 订阅集合变化整体重建）。
+        route: Mutex<Option<WatchRouteHandle>>,
+        /// 渠道「最后一条非 watch 消息」时刻（Unix 毫秒）——跟底判定的**淹没信号**（P1 仅飞书）。
+        /// 只有非 watch 消息才算淹没：watch 卡之间互不影响（用户定案）。
+        disturb_ms: std::sync::atomic::AtomicU64,
+    }
+
+    /// 一条活动的 watch 订阅（引擎工作台账；持久化时压成 `watch::PersistedWatch`）。
+    #[derive(Clone)]
+    struct WatchEntry {
+        /// 被关注 agent 的 session_id（身份键）。
+        session_id: String,
+        /// 实时状态卡的飞书 open_message_id（PATCH 编辑目标；跟底重发后换新）。
+        message_id: String,
+        /// 展示编号（同 `/status`；daemon 生命周期内稳定，重启恢复时按 session 重解析）。
+        seq: u64,
+        created_at: u64,
+        /// 上一帧签名：内容不变不编辑（防无谓 PATCH）。
+        last_sig: String,
+        /// 上次成功编辑时刻（Unix 毫秒）：每卡最短编辑间隔 1s。
+        last_edit_ms: u64,
+        /// 连续编辑失败次数（≥5 自动退订：超 14 天不可改 / 卡被删等）。
+        fails: u32,
+        /// 上一帧是否「工作中」（引擎自适应 tick：有工作中 2s，否则 10s）。
+        working: bool,
+        /// 当前卡发出时刻（Unix 毫秒）：与 `disturb_ms` 比较判定卡是否已被淹没。
+        sent_at_ms: u64,
+        /// 上次跟底重发时刻（Unix 毫秒）：30s 节流；提问答复完结时清零（下次更新立即跟底）。
+        last_move_ms: u64,
+    }
+
+    /// watch 卡片回调路由任务的句柄：绑定特定 Router 实例与注册的卡片集合，
+    /// 任一变化（Router 重建 / 订阅增减）都停旧任务整体重建。
+    struct WatchRouteHandle {
+        stop: Arc<tokio::sync::Notify>,
+        router: std::sync::Weak<FsRouter>,
+        /// 任务注册路由时的卡片 message_id 集合（已排序，用于变更比较）。
+        mids: Vec<String>,
     }
 
     /// 热池中一个待命热实例的句柄：`assign` 用于把领用的请求 entry 交给其 holder 任务（`handle_gui_warm`）；
@@ -400,6 +459,7 @@ mod unix_impl {
             inbound_listeners: InboundRegistry::default(),
             warm_pool: Mutex::new(None),
             warm_spawning: AtomicBool::new(false),
+            watch: WatchState::default(),
         });
 
         // 空闲退出检查。
@@ -420,9 +480,11 @@ mod unix_impl {
                     }
                     // 空闲退出守卫（spec D18）：仅当无在途请求、无状态窗口订阅、**且**无「工作中」
                     // agent 时才计空闲。空闲 agent 不保活；版本更新 drain 由 begin_drain 独立处理、不受此影响。
+                    // 另：有活跃 /watch 订阅时不退（卡片要持续就地刷新；订阅随 agent 结束而消亡，有界）。
                     if state.active.load(Ordering::SeqCst) == 0
                         && state.agents.working_count() == 0
                         && !has_agent_subs(&state)
+                        && state.watch.subs.lock().unwrap().is_empty()
                     {
                         let idle = state
                             .last_active
@@ -530,6 +592,13 @@ mod unix_impl {
         {
             let st = state.clone();
             tokio::spawn(async move { ensure_inbound_listeners(&st).await; });
+        }
+
+        // `/watch` 实时关注引擎（spec docs/specs/im-watch.md）：先恢复持久化订阅（重启后继续
+        // 编辑同一张卡），再进入 Notify / 自适应 tick 循环。
+        {
+            let st = state.clone();
+            tokio::spawn(async move { watch_restore_and_run(st).await; });
         }
 
         loop {
@@ -744,6 +813,8 @@ mod unix_impl {
                         // turn-start 经此即时上线 IM 入站消费（与开关无关，使 /here、/status 在 agent
                         // 工作期间随时可用）；幂等。连接随守护进程退出而释放，无需在 turn-end 主动断。
                         ensure_inbound_listeners(state).await;
+                        // /watch 引擎即时唤醒：turn / 工具 / 会话结束事件立刻反映到实时状态卡。
+                        state.watch.notify.notify_one();
                     }
                 }
                 // 状态窗口订阅：接管连接持续推送。
@@ -887,6 +958,8 @@ mod unix_impl {
         crate::perf::mark(&perf_id, "dmn.accepted");
         // 在途请求数 +1：刷新菜单栏状态（待答数 / 图标圆点）。
         broadcast_tray_state(state);
+        // /watch：提问创建 → 被关注 agent 可能进入「正在等待你的回答」，即时进卡。
+        state.watch.notify.notify_one();
 
         // 方案3（spec §6.1）：尽早 spawn GUI Helper（独立短命进程，带一次性 token），让其 WebView
         // 初始化与下面的「入站监听 + IM 建连」并行——token 在 `registry.create()` 即登记，helper 可
@@ -923,6 +996,11 @@ mod unix_impl {
         // 挂接可用的 IM 渠道（钉钉/…）到本请求的协调器，与弹窗并行抢答。
         let im_attached = attach_im_channels(&entry, state, &mut w, lang).await;
         crate::perf::mark(&perf_id, "dmn.im_done");
+        // /watch 跟底：提问卡即将出现在飞书会话里，是一次「非 watch」扰动（提问期间跟底被抑制，
+        // 这里先记水位线，供答复完结后立即跟底）。
+        if entry.coordinator.has_channel("feishu") {
+            mark_watch_disturbed(state);
+        }
         // IM 长连接可能在此刚建立，刷新菜单栏「已连 IM」。
         broadcast_tray_state(state);
 
@@ -957,6 +1035,8 @@ mod unix_impl {
                 entry.coordinator.cancel_request(caller);
                 entry.cancel.notify_waiters();
                 state.registry.remove(&request_id);
+                // 不标记扰动：取消只是就地 PATCH 提问卡定格，不产生新消息（不淹没 watch 卡）。
+                state.watch.notify.notify_one();
                 return;
             }
         };
@@ -998,6 +1078,17 @@ mod unix_impl {
         state.registry.remove(&request_id);
         // 在途请求数 -1：刷新菜单栏状态。
         broadcast_tray_state(state);
+        // /watch：答复完结 → 「正在等待你的回答」状态解除，即时进卡。若飞书参与了本次问答，
+        // 清零全部订阅的跟底节流：**已被提问卡淹没**的卡在下一次内容变化时立即跟底重发
+        // （用户定案：答完能马上在底部看到自己的回答产生的更新）。**不**标记扰动——作答本身
+        // 只是就地 PATCH 提问卡、不产生新消息；提问期间新发的 watch 卡仍在底部，重发只会造出
+        // 连续两张卡（验收反馈修正）。淹没判定完全依据提问卡发出时刻（attach 处已标记）。
+        if entry.coordinator.has_channel("feishu") {
+            for s in state.watch.subs.lock().unwrap().iter_mut() {
+                s.last_move_ms = 0;
+            }
+        }
+        state.watch.notify.notify_one();
         log(&format!("request {} done", request_id));
     }
 
@@ -1864,6 +1955,646 @@ mod unix_impl {
             .any(|e| e.coordinator.has_channel(channel_id))
     }
 
+    // ===== /watch 实时关注引擎（spec docs/specs/im-watch.md，P1 仅飞书）=====
+
+    /// 从注册表快照数组中按 session_id 找记录。
+    fn find_agent_by_session<'a>(
+        snapshot: &'a serde_json::Value,
+        session_id: &str,
+    ) -> Option<&'a serde_json::Value> {
+        snapshot
+            .as_array()?
+            .iter()
+            .find(|r| r.get("sessionId").and_then(|v| v.as_str()) == Some(session_id))
+    }
+
+    /// 标记飞书渠道出现一条「非 watch」消息（用户入站消息 / 机器人文本回执 / 提问会话）。
+    /// 这是跟底判定的**淹没信号**：发出时刻早于该时刻的 watch 卡已被顶上去，下一次内容变化时
+    /// 跟底重发（watch 卡自身的发送/编辑不经此处，watch 卡之间互不影响、无级联）。
+    fn mark_watch_disturbed(state: &Arc<ServerState>) {
+        state
+            .watch
+            .disturb_ms
+            .store(now_ms(), std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// 把当前订阅持久化到 `~/.askhuman/state/watch.json`（daemon 重启后恢复、继续编辑同卡）。
+    fn persist_watch_subs(state: &Arc<ServerState>) {
+        let items: Vec<crate::watch::PersistedWatch> = state
+            .watch
+            .subs
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|s| crate::watch::PersistedWatch {
+                channel: "feishu".to_string(),
+                session_id: s.session_id.clone(),
+                message_id: s.message_id.clone(),
+                created_at: s.created_at,
+            })
+            .collect();
+        crate::watch::save(&items);
+    }
+
+    /// watch 引擎入口：恢复持久化订阅（按 session 重解析展示编号——`seq` 不跨重启保留），
+    /// 然后进入「Notify 即醒 / 自适应 tick」循环：有「工作中」订阅 2s 一拍、只有空闲订阅 10s
+    /// 一拍、无订阅纯等 Notify（零空转）。
+    async fn watch_restore_and_run(state: Arc<ServerState>) {
+        let persisted = crate::watch::load();
+        if !persisted.is_empty() {
+            let snapshot = state.agents.snapshot();
+            let mut subs: Vec<WatchEntry> = Vec::new();
+            for p in persisted {
+                if p.channel != "feishu" || p.message_id.is_empty() {
+                    continue;
+                }
+                // 记录已彻底消失 → seq=0 占位；首拍会渲染终态并自动退订。
+                let seq = find_agent_by_session(&snapshot, &p.session_id)
+                    .and_then(|r| r.get("seq").and_then(|v| v.as_u64()))
+                    .unwrap_or(0);
+                subs.push(WatchEntry {
+                    session_id: p.session_id,
+                    message_id: p.message_id,
+                    seq,
+                    created_at: p.created_at,
+                    last_sig: String::new(),
+                    last_edit_ms: 0,
+                    fails: 0,
+                    working: false,
+                    // 重启后 disturb 从 0 起算，恢复的卡先视为未淹没；一有新扰动即可跟底（不节流）。
+                    sent_at_ms: p.created_at.saturating_mul(1000),
+                    last_move_ms: 0,
+                });
+            }
+            if !subs.is_empty() {
+                log(&format!("watch: restored {} subscription(s)", subs.len()));
+                *state.watch.subs.lock().unwrap() = subs;
+            }
+        }
+        loop {
+            let wait = {
+                let subs = state.watch.subs.lock().unwrap();
+                if subs.is_empty() {
+                    None
+                } else if subs.iter().any(|s| s.working) {
+                    Some(Duration::from_secs(2))
+                } else {
+                    Some(Duration::from_secs(10))
+                }
+            };
+            match wait {
+                None => state.watch.notify.notified().await,
+                Some(d) => {
+                    tokio::select! {
+                        _ = state.watch.notify.notified() => {}
+                        _ = tokio::time::sleep(d) => {}
+                    }
+                }
+            }
+            watch_tick(&state).await;
+        }
+    }
+
+    /// 引擎一拍：对每个订阅重算帧，**签名变化才** PATCH 卡片（帧是全量的，丢帧无损）；
+    /// agent 结束 → 终态定格 + 自动退订；连续失败 ≥5 退订。末尾幂等确保回调路由在位。
+    async fn watch_tick(state: &Arc<ServerState>) {
+        let entries: Vec<WatchEntry> = state.watch.subs.lock().unwrap().clone();
+        if entries.is_empty() {
+            ensure_watch_routes(state).await; // 撤掉遗留路由任务。
+            return;
+        }
+        let config = AppConfig::load();
+        let Ok(client) = crate::feishu::client::FeishuClient::new(&config.channels.feishu) else {
+            return;
+        };
+        let lang = Lang::current();
+        let now = now_secs();
+        let snapshot = state.agents.snapshot();
+        let waiting = state.registry.in_flight_agent_session_ids();
+        // 跟底判定的两个全局量：淹没水位线 + 渠道是否有在途提问（提问期间抑制跟底，只就地 PATCH，
+        // 不打断问答会话；答复完结时 last_move_ms 已被清零，下一次内容变化立即跟底）。
+        let disturb = state
+            .watch
+            .disturb_ms
+            .load(std::sync::atomic::Ordering::SeqCst);
+        let ask_active = has_active_question_on(state, "feishu");
+        let mut changed = false;
+        for e in entries {
+            let rec = find_agent_by_session(&snapshot, &e.session_id);
+            let frame =
+                crate::watch::build_frame(e.seq, rec, waiting.contains(&e.session_id), lang);
+            let ended = frame.phase == crate::watch::WatchPhase::Ended;
+            let sig = crate::watch::signature(&frame);
+            if !ended && sig == e.last_sig {
+                continue; // 内容没变，不编辑。
+            }
+            // 每卡最短编辑间隔 1s（终态豁免：定格必须落地）；漏掉的变化下一拍补上。
+            if !ended && now_ms().saturating_sub(e.last_edit_ms) < 1000 {
+                continue;
+            }
+            let mode = if ended {
+                crate::watch::CardMode::Final(crate::watch::FinalKind::Ended)
+            } else {
+                crate::watch::CardMode::Active
+            };
+            let card = crate::feishu::card::build_watch_card(&crate::watch::card_view(
+                &frame, mode, now, lang,
+            ));
+            // 跟底：卡已被非 watch 消息淹没 + 无在途提问 + 30s 节流（`last_move_ms == 0` 豁免：
+            // 答复完结 / 重启恢复）→ 发新卡到会话底部，旧卡定格「已移至最新卡片」。
+            let buried = disturb > e.sent_at_ms;
+            let move_ok = buried
+                && !ask_active
+                && (e.last_move_ms == 0
+                    || now_ms().saturating_sub(e.last_move_ms) >= WATCH_MOVE_THROTTLE_MS);
+            if move_ok {
+                match client.send_card(&card).await {
+                    Ok(new_mid) => {
+                        // 旧卡定格（best-effort：失败只记日志，新卡已接管）。
+                        let old_card =
+                            crate::feishu::card::build_watch_card(&crate::watch::card_view(
+                                &frame,
+                                crate::watch::CardMode::Final(crate::watch::FinalKind::Moved),
+                                now,
+                                lang,
+                            ));
+                        if let Err(err) = client.patch_card(&e.message_id, &old_card).await {
+                            log(&format!("watch: finalize moved card failed: {}", err));
+                        }
+                        let mut subs = state.watch.subs.lock().unwrap();
+                        if ended {
+                            // 新卡即终态卡：定格已随发送完成 → 退订。
+                            subs.retain(|s| s.message_id != e.message_id);
+                        } else if let Some(s) =
+                            subs.iter_mut().find(|s| s.message_id == e.message_id)
+                        {
+                            s.message_id = new_mid;
+                            s.sent_at_ms = now_ms();
+                            s.last_move_ms = now_ms();
+                            s.last_sig = sig;
+                            s.last_edit_ms = now_ms();
+                            s.fails = 0;
+                            s.working = frame.phase == crate::watch::WatchPhase::Working;
+                        }
+                        changed = true; // message_id 变了：持久化 + 路由重建。
+                    }
+                    Err(err) => {
+                        // 发送失败与编辑失败同流：计失败数、下一拍重试（帧全量，丢帧无损）。
+                        log(&format!("watch: move card failed: {}", err));
+                        let mut subs = state.watch.subs.lock().unwrap();
+                        let mut drop_it = false;
+                        if let Some(s) = subs.iter_mut().find(|s| s.message_id == e.message_id) {
+                            s.fails += 1;
+                            drop_it = s.fails >= 5;
+                        }
+                        if drop_it {
+                            log("watch: too many consecutive failures; unsubscribed");
+                            subs.retain(|s| s.message_id != e.message_id);
+                            changed = true;
+                        }
+                    }
+                }
+                continue;
+            }
+            match client.patch_card(&e.message_id, &card).await {
+                Ok(()) => {
+                    let mut subs = state.watch.subs.lock().unwrap();
+                    if ended {
+                        // 定格成功 → 自动退订。
+                        subs.retain(|s| s.message_id != e.message_id);
+                        changed = true;
+                    } else if let Some(s) =
+                        subs.iter_mut().find(|s| s.message_id == e.message_id)
+                    {
+                        s.last_sig = sig;
+                        s.last_edit_ms = now_ms();
+                        s.fails = 0;
+                        s.working = frame.phase == crate::watch::WatchPhase::Working;
+                    }
+                }
+                Err(err) => {
+                    log(&format!("watch: patch card failed: {}", err));
+                    let mut subs = state.watch.subs.lock().unwrap();
+                    let mut drop_it = false;
+                    if let Some(s) = subs.iter_mut().find(|s| s.message_id == e.message_id) {
+                        s.fails += 1;
+                        drop_it = s.fails >= 5;
+                    }
+                    if drop_it {
+                        log("watch: too many consecutive failures; unsubscribed");
+                        subs.retain(|s| s.message_id != e.message_id);
+                        changed = true;
+                    }
+                }
+            }
+        }
+        if changed {
+            persist_watch_subs(state);
+        }
+        ensure_watch_routes(state).await;
+    }
+
+    /// 幂等确保 watch 卡按钮回调路由在位：在飞书 Router 上注册一条专用 `RoutedFs` 并认领所有
+    /// 卡片 message_id。绑定的 Router 失活 / 订阅集合变化 → 停旧任务整体重建；无订阅则撤路由。
+    async fn ensure_watch_routes(state: &Arc<ServerState>) {
+        let desired: Vec<String> = {
+            let subs = state.watch.subs.lock().unwrap();
+            let mut mids: Vec<String> = subs.iter().map(|s| s.message_id.clone()).collect();
+            mids.sort();
+            mids
+        };
+        if desired.is_empty() {
+            if let Some(h) = state.watch.route.lock().unwrap().take() {
+                h.stop.notify_waiters();
+            }
+            return;
+        }
+        let config = AppConfig::load();
+        if !crate::app::is_feishu_active(&config) {
+            return;
+        }
+        let Some(router) = ensure_fs_router(state, &config.channels.feishu).await else {
+            return;
+        };
+        // 现任务仍绑定同一存活 Router 且卡集合未变 → 无事可做。
+        {
+            let guard = state.watch.route.lock().unwrap();
+            if let Some(h) = guard.as_ref() {
+                let same_router = h
+                    .router
+                    .upgrade()
+                    .map(|r| Arc::ptr_eq(&r, &router) && r.is_alive())
+                    .unwrap_or(false);
+                if same_router && h.mids == desired {
+                    return;
+                }
+            }
+        }
+        // 重建：注册新 RoutedFs 认领全部卡，替换句柄并停旧任务（其 RoutedFs Drop 时自清路由表）。
+        let stop = Arc::new(tokio::sync::Notify::new());
+        let mut routed = router.register();
+        for mid in &desired {
+            routed.set_active(Some(mid), "");
+        }
+        if let Some(old) = state.watch.route.lock().unwrap().replace(WatchRouteHandle {
+            stop: stop.clone(),
+            router: Arc::downgrade(&router),
+            mids: desired,
+        }) {
+            old.stop.notify_waiters();
+        }
+        let st = state.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = stop.notified() => break,
+                    ev = routed.recv() => match ev {
+                        Some(crate::feishu::router::FsInbound::Card { data, ack }) => {
+                            handle_watch_card_action(&st, &data, ack);
+                        }
+                        Some(_) => {} // 未认领聊天消息，不会到达；防御性忽略。
+                        None => break, // Router 断开：下一拍 ensure 重建。
+                    },
+                }
+            }
+        });
+    }
+
+    /// 处理 watch 卡按钮回调（取消关注 / 立即刷新）：经 oneshot **同步回新卡**——
+    /// 按钮 Loading 直接变新帧 / 终态，无闪烁（复用提问卡的 callback_update_card 机制）。
+    fn handle_watch_card_action(
+        state: &Arc<ServerState>,
+        data: &serde_json::Value,
+        ack: tokio::sync::oneshot::Sender<Option<serde_json::Value>>,
+    ) {
+        use crate::feishu::card::{build_watch_card, callback_update_card, WatchAction};
+        let Some((mid, action)) = crate::feishu::card::parse_watch_action(data) else {
+            let _ = ack.send(None);
+            return;
+        };
+        let entry = {
+            let subs = state.watch.subs.lock().unwrap();
+            subs.iter().find(|s| s.message_id == mid).cloned()
+        };
+        let Some(entry) = entry else {
+            let _ = ack.send(None); // 已退订的卡（终态按钮本应禁用）：空 ACK。
+            return;
+        };
+        let lang = Lang::current();
+        let now = now_secs();
+        let snapshot = state.agents.snapshot();
+        let waiting = state
+            .registry
+            .in_flight_agent_session_ids()
+            .contains(&entry.session_id);
+        let rec = find_agent_by_session(&snapshot, &entry.session_id);
+        let frame = crate::watch::build_frame(entry.seq, rec, waiting, lang);
+        let ended = frame.phase == crate::watch::WatchPhase::Ended;
+        match action {
+            WatchAction::Unwatch => {
+                let card = build_watch_card(&crate::watch::card_view(
+                    &frame,
+                    crate::watch::CardMode::Final(crate::watch::FinalKind::Cancelled),
+                    now,
+                    lang,
+                ));
+                let _ = ack.send(Some(callback_update_card(card)));
+                state
+                    .watch
+                    .subs
+                    .lock()
+                    .unwrap()
+                    .retain(|s| s.message_id != mid);
+                persist_watch_subs(state);
+                state.watch.notify.notify_one();
+            }
+            WatchAction::Refresh => {
+                let mode = if ended {
+                    crate::watch::CardMode::Final(crate::watch::FinalKind::Ended)
+                } else {
+                    crate::watch::CardMode::Active
+                };
+                let card = build_watch_card(&crate::watch::card_view(&frame, mode, now, lang));
+                let _ = ack.send(Some(callback_update_card(card)));
+                {
+                    let mut subs = state.watch.subs.lock().unwrap();
+                    if ended {
+                        subs.retain(|s| s.message_id != mid);
+                    } else if let Some(s) = subs.iter_mut().find(|s| s.message_id == mid) {
+                        s.last_sig = crate::watch::signature(&frame);
+                        s.last_edit_ms = now_ms();
+                        s.fails = 0;
+                        s.working = frame.phase == crate::watch::WatchPhase::Working;
+                    }
+                }
+                if ended {
+                    persist_watch_subs(state);
+                }
+                state.watch.notify.notify_one();
+            }
+        }
+    }
+
+    /// watch 列表一行：`[编号] 类型 — 标题（项目）· 状态`。记录已消失按已结束显示。
+    fn watch_line(snapshot: &serde_json::Value, e: &WatchEntry, lang: Lang) -> String {
+        let rec = find_agent_by_session(snapshot, &e.session_id);
+        let head = rec
+            .map(|r| crate::autochannel::kind_title_project(r, lang))
+            .unwrap_or_else(|| crate::i18n::tr(lang, "autoChannel.noTitle").to_string());
+        let state_key = match rec.and_then(|r| r.get("state")).and_then(|v| v.as_str()) {
+            Some("working") => "autoChannel.stateWorking",
+            Some("idle") => "autoChannel.stateIdle",
+            _ => "autoChannel.stateEnded",
+        };
+        format!("[{}] {} · {}", e.seq, head, crate::i18n::tr(lang, state_key))
+    }
+
+    /// `/watch` 命令：`Some(编号)` 关注该 agent（发实时状态卡，成功回执就是卡片本身）；
+    /// `None` 列出当前关注。渠道门控：P1 仅飞书。
+    async fn handle_watch_cmd(
+        state: &Arc<ServerState>,
+        channel_id: &str,
+        sel: Option<u64>,
+        config: &AppConfig,
+        lang: Lang,
+    ) {
+        if channel_id != "feishu" {
+            let _ =
+                reply_channel_text(channel_id, config, crate::i18n::tr(lang, "watch.unsupported"))
+                    .await;
+            return;
+        }
+        let Some(id) = sel else {
+            // `/watch` 无参：首行「发 /watch <编号> 关注」提示 + 与 `/status` 相同的 agent 列表；
+            // 已有关注时附加「正在关注」段。无 agent 时列表部分与 /status 同样给空提示。
+            let snapshot = state.agents.snapshot();
+            let has_agents = snapshot
+                .as_array()
+                .map(|l| {
+                    l.iter().any(|r| {
+                        matches!(
+                            r.get("state").and_then(|v| v.as_str()),
+                            Some("working") | Some("idle")
+                        )
+                    })
+                })
+                .unwrap_or(false);
+            let mut out = String::new();
+            if has_agents {
+                out.push_str(crate::i18n::tr(lang, "watch.pickHint"));
+                out.push_str("\n\n");
+            }
+            out.push_str(&crate::autochannel::status_text(&snapshot, lang));
+            let entries: Vec<WatchEntry> = state.watch.subs.lock().unwrap().clone();
+            if !entries.is_empty() {
+                out.push_str("\n\n");
+                out.push_str(crate::i18n::tr(lang, "watch.listTitle"));
+                for e in &entries {
+                    out.push('\n');
+                    out.push_str(&watch_line(&snapshot, e, lang));
+                }
+            }
+            let _ = reply_channel_text(channel_id, config, &out).await;
+            return;
+        };
+        let snapshot = state.agents.snapshot();
+        let Some(rec) = snapshot
+            .as_array()
+            .and_then(|l| l.iter().find(|r| r.get("seq").and_then(|v| v.as_u64()) == Some(id)))
+        else {
+            let text = crate::i18n::tr(lang, "autoChannel.statusDetailNotFound")
+                .replace("{id}", &id.to_string());
+            let _ = reply_channel_text(channel_id, config, &text).await;
+            return;
+        };
+        let session_id = rec
+            .get("sessionId")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        // 重复 watch 同一 agent＝换新卡：旧卡稍后定格「已由新卡片接替」（把卡拉到会话底部）。
+        let replaced = {
+            let subs = state.watch.subs.lock().unwrap();
+            subs.iter().find(|s| s.session_id == session_id).cloned()
+        };
+        // 关注上限（换新卡不算新增）。
+        if replaced.is_none()
+            && state.watch.subs.lock().unwrap().len() >= crate::watch::MAX_WATCHES
+        {
+            let text = crate::i18n::tr(lang, "watch.limit")
+                .replace("{n}", &crate::watch::MAX_WATCHES.to_string());
+            let _ = reply_channel_text(channel_id, config, &text).await;
+            return;
+        }
+        let Ok(client) = crate::feishu::client::FeishuClient::new(&config.channels.feishu) else {
+            return;
+        };
+        let waiting = state
+            .registry
+            .in_flight_agent_session_ids()
+            .contains(&session_id);
+        let now = now_secs();
+        let frame = crate::watch::build_frame(id, Some(rec), waiting, lang);
+        // 已结束的 agent 也可 watch：直接发一张定格终态卡（不订阅）。
+        let ended = frame.phase == crate::watch::WatchPhase::Ended;
+        let mode = if ended {
+            crate::watch::CardMode::Final(crate::watch::FinalKind::Ended)
+        } else {
+            crate::watch::CardMode::Active
+        };
+        let card = crate::feishu::card::build_watch_card(&crate::watch::card_view(
+            &frame, mode, now, lang,
+        ));
+        let message_id = match client.send_card(&card).await {
+            Ok(mid) => mid,
+            Err(e) => {
+                let text =
+                    crate::i18n::tr(lang, "watch.sendFailed").replace("{e}", &e.to_string());
+                let _ = reply_channel_text(channel_id, config, &text).await;
+                return;
+            }
+        };
+        // 新卡已发成功 → 旧卡定格 + 退订（失败仅记日志，不影响新订阅）。
+        if let Some(old) = replaced {
+            let old_frame = crate::watch::build_frame(old.seq, Some(rec), waiting, lang);
+            let old_card = crate::feishu::card::build_watch_card(&crate::watch::card_view(
+                &old_frame,
+                crate::watch::CardMode::Final(crate::watch::FinalKind::Replaced),
+                now,
+                lang,
+            ));
+            if let Err(err) = client.patch_card(&old.message_id, &old_card).await {
+                log(&format!("watch: finalize replaced card failed: {}", err));
+            }
+            state
+                .watch
+                .subs
+                .lock()
+                .unwrap()
+                .retain(|s| s.message_id != old.message_id);
+        }
+        if !ended {
+            state.watch.subs.lock().unwrap().push(WatchEntry {
+                session_id,
+                message_id,
+                seq: id,
+                created_at: now,
+                last_sig: crate::watch::signature(&frame),
+                last_edit_ms: now_ms(),
+                fails: 0,
+                working: frame.phase == crate::watch::WatchPhase::Working,
+                sent_at_ms: now_ms(),
+                // 从创建起算 30s 节流（新卡本就在底部，避免刚发就跟底重发）。
+                last_move_ms: now_ms(),
+            });
+        }
+        persist_watch_subs(state);
+        // 引擎即醒：重算 tick 间隔 + 挂卡片回调路由（按钮立即可用）。
+        state.watch.notify.notify_one();
+    }
+
+    /// `/unwatch` 命令：取消关注（编号 / 全部 / 缺省自动），旧卡定格「已取消关注」+ 回确认文本。
+    async fn handle_unwatch_cmd(
+        state: &Arc<ServerState>,
+        channel_id: &str,
+        sel: crate::autochannel::WatchSel,
+        config: &AppConfig,
+        lang: Lang,
+    ) {
+        use crate::autochannel::WatchSel;
+        if channel_id != "feishu" {
+            let _ =
+                reply_channel_text(channel_id, config, crate::i18n::tr(lang, "watch.unsupported"))
+                    .await;
+            return;
+        }
+        let entries: Vec<WatchEntry> = state.watch.subs.lock().unwrap().clone();
+        let targets: Vec<WatchEntry> = match sel {
+            WatchSel::One(id) => {
+                let found: Vec<WatchEntry> =
+                    entries.iter().filter(|e| e.seq == id).cloned().collect();
+                if found.is_empty() {
+                    let text = crate::i18n::tr(lang, "watch.notWatching")
+                        .replace("{id}", &id.to_string());
+                    let _ = reply_channel_text(channel_id, config, &text).await;
+                    return;
+                }
+                found
+            }
+            WatchSel::All => {
+                if entries.is_empty() {
+                    let _ = reply_channel_text(
+                        channel_id,
+                        config,
+                        crate::i18n::tr(lang, "watch.unwatchNone"),
+                    )
+                    .await;
+                    return;
+                }
+                entries.clone()
+            }
+            WatchSel::Auto => match entries.len() {
+                0 => {
+                    let _ = reply_channel_text(
+                        channel_id,
+                        config,
+                        crate::i18n::tr(lang, "watch.unwatchNone"),
+                    )
+                    .await;
+                    return;
+                }
+                1 => entries.clone(),
+                // 多个：回列表让用户指定编号。
+                _ => {
+                    let snapshot = state.agents.snapshot();
+                    let mut out = crate::i18n::tr(lang, "watch.unwatchWhich").to_string();
+                    for e in &entries {
+                        out.push('\n');
+                        out.push_str(&watch_line(&snapshot, e, lang));
+                    }
+                    let _ = reply_channel_text(channel_id, config, &out).await;
+                    return;
+                }
+            },
+        };
+        // 旧卡定格（失败仅记日志）→ 移除订阅 → 回确认。
+        let Ok(client) = crate::feishu::client::FeishuClient::new(&config.channels.feishu) else {
+            return;
+        };
+        let snapshot = state.agents.snapshot();
+        let waiting = state.registry.in_flight_agent_session_ids();
+        let now = now_secs();
+        for e in &targets {
+            let rec = find_agent_by_session(&snapshot, &e.session_id);
+            let frame =
+                crate::watch::build_frame(e.seq, rec, waiting.contains(&e.session_id), lang);
+            let card = crate::feishu::card::build_watch_card(&crate::watch::card_view(
+                &frame,
+                crate::watch::CardMode::Final(crate::watch::FinalKind::Cancelled),
+                now,
+                lang,
+            ));
+            if let Err(err) = client.patch_card(&e.message_id, &card).await {
+                log(&format!("watch: finalize cancelled card failed: {}", err));
+            }
+        }
+        state
+            .watch
+            .subs
+            .lock()
+            .unwrap()
+            .retain(|s| !targets.iter().any(|t| t.message_id == s.message_id));
+        persist_watch_subs(state);
+        state.watch.notify.notify_one();
+        let text = if targets.len() == 1 {
+            crate::i18n::tr(lang, "watch.unwatchDone").replace("{id}", &targets[0].seq.to_string())
+        } else {
+            crate::i18n::tr(lang, "watch.unwatchAllDone")
+                .replace("{n}", &targets.len().to_string())
+        };
+        let _ = reply_channel_text(channel_id, config, &text).await;
+    }
+
     /// 统一入站分派（与渠道无关），spec R3/R4：
     /// - `/status`：始终回状态文本（开关开且因此切槽时附激活回执）。
     /// - `/here`：开关开时激活+补推+回执；开关关时改回**引导文案**（不再静默忽略）。
@@ -1876,12 +2607,19 @@ mod unix_impl {
         let lang = Lang::current();
         let config = AppConfig::load();
         let auto = config.channels.auto_activation;
+        // `/watch` 渠道门控（P1 仅飞书，spec docs/specs/im-watch.md）：决定 help 是否列 watch 命令。
+        let watch_cmd = channel_id == "feishu";
+        // 任何用户入站消息都会把 watch 卡顶上去（机器人的文本回执紧随其后，同属一次扰动）。
+        if channel_id == "feishu" {
+            mark_watch_disturbed(state);
+        }
 
         let Some(text) = text else {
             // 非文本消息（图片/文件）：有活动提问 → 交渠道会话确认；否则回引导（liveness）。
             if !has_active_question_on(state, channel_id) {
                 let _ =
-                    reply_channel_text(channel_id, &config, &help_text(auto, false, lang)).await;
+                    reply_channel_text(channel_id, &config, &help_text(auto, false, watch_cmd, lang))
+                        .await;
             }
             return;
         };
@@ -1914,8 +2652,12 @@ mod unix_impl {
                 if !auto {
                     // 关态无「活跃槽」概念：回引导（替代旧的静默忽略）。
                     let has_q = has_active_question_on(state, channel_id);
-                    let _ =
-                        reply_channel_text(channel_id, &config, &help_text(auto, has_q, lang)).await;
+                    let _ = reply_channel_text(
+                        channel_id,
+                        &config,
+                        &help_text(auto, has_q, watch_cmd, lang),
+                    )
+                    .await;
                     return;
                 }
                 // 激活 + 补推（在 set_active_channel 内完成）；/here 始终回执（即便已是当前槽，n=0）。
@@ -1927,9 +2669,18 @@ mod unix_impl {
                 )
                 .await;
             }
+            // /watch、/unwatch：实时关注（P1 仅飞书；其余渠道回「暂仅支持飞书」提示）。
+            Parsed::Command(Command::Watch(sel)) => {
+                handle_watch_cmd(state, channel_id, sel, &config, lang).await;
+            }
+            Parsed::Command(Command::Unwatch(sel)) => {
+                handle_unwatch_cmd(state, channel_id, sel, &config, lang).await;
+            }
             Parsed::Command(Command::Help) | Parsed::UnknownCommand => {
                 let has_q = has_active_question_on(state, channel_id);
-                let _ = reply_channel_text(channel_id, &config, &help_text(auto, has_q, lang)).await;
+                let _ =
+                    reply_channel_text(channel_id, &config, &help_text(auto, has_q, watch_cmd, lang))
+                        .await;
             }
             Parsed::Text => {
                 // 普通文本：该渠道有活动在途提问 → 退避（交渠道会话确认/引导，避免重复回复）。
@@ -1949,7 +2700,9 @@ mod unix_impl {
                         return;
                     }
                 }
-                let _ = reply_channel_text(channel_id, &config, &help_text(auto, false, lang)).await;
+                let _ =
+                    reply_channel_text(channel_id, &config, &help_text(auto, false, watch_cmd, lang))
+                        .await;
             }
         }
     }
@@ -1980,6 +2733,10 @@ mod unix_impl {
                     &crate::autochannel::deactivated_receipt(new_id, Lang::current()),
                 )
                 .await;
+                // 反激活提示可在无飞书入站时发出（如在别的渠道作答切槽）→ 单独记扰动。
+                if old == "feishu" {
+                    mark_watch_disturbed(state);
+                }
             }
         }
         // 激活即补推在途（仅真实 IM；弹窗无卡片概念）。
@@ -1988,6 +2745,9 @@ mod unix_impl {
         } else {
             0
         };
+        if new_id == "feishu" && backfilled > 0 {
+            mark_watch_disturbed(state); // 补推的提问卡也是「非 watch」消息。
+        }
         (true, backfilled)
     }
 

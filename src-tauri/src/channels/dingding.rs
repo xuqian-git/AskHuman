@@ -341,6 +341,7 @@ impl MessagingChannel for DingTalkSession {
                             ack_kind(&data),
                             crate::autochannel::AckMode::Card,
                             &bot_text(&data),
+                            false,
                             lang,
                         ) {
                             let ack_client = client.clone();
@@ -443,6 +444,7 @@ async fn ask_question_text(
                         kind,
                         crate::autochannel::AckMode::Fallback,
                         &text,
+                        false,
                         ctx.lang,
                     ) {
                         let _ = client.send_oto_text(&reply).await;
@@ -455,6 +457,7 @@ async fn ask_question_text(
                         None,
                         crate::autochannel::AckMode::Fallback,
                         &text,
+                        false,
                         ctx.lang,
                     ) {
                         let _ = client.send_oto_text(&reply).await;

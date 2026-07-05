@@ -56,10 +56,12 @@ pub fn auto_activation() -> bool {
 ///   出现「引导 + 命令输出」两条重复回复。
 ///
 /// 引导带 `has_active_question=true`（会话进行中），并按当前自动激活开关裁剪命令/提示。
+/// `watch`：该渠道是否支持 `/watch`（P1 仅飞书），决定引导是否列 watch 命令。
 pub fn answer_inbound_reply(
     kind: Option<crate::autochannel::AckKind>,
     mode: crate::autochannel::AckMode,
     text: &str,
+    watch: bool,
     lang: Lang,
 ) -> Option<String> {
     match kind {
@@ -68,7 +70,12 @@ pub fn answer_inbound_reply(
             if crate::autochannel::classify(text) != crate::autochannel::Parsed::Text {
                 None
             } else {
-                Some(crate::autochannel::help_text(auto_activation(), true, lang))
+                Some(crate::autochannel::help_text(
+                    auto_activation(),
+                    true,
+                    watch,
+                    lang,
+                ))
             }
         }
     }

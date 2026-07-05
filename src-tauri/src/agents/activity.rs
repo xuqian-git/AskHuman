@@ -1,8 +1,13 @@
-//! 解析各家 agent 会话 transcript 的**尾部**，得到「当前在做什么」：最后一段助手文字 +（若末尾是
-//! 工具调用则附）该次工具调用。供 IM `/status <编号>` 展示（设计见 `docs/plans/im-status-activity.md`）。
+//! 解析各家 agent 会话 transcript 的**尾部**，得到「当前在做什么」：最后一段助手文字 + 最近的
+//! 工具**足迹时间线**（≤3 步，含每步完成/进行中标志）。供 IM `/status <编号>` 与 `/watch` 实时卡
+//! 展示（设计见 `docs/plans/im-status-activity.md` 与 `docs/specs/im-watch.md`）。
 //!
-//! 规则：只要助手在会话里输出过文字，就**永远**带上「最后一段助手文字」；若 transcript 末尾是工具调用
-//! （含「工具刚跑完、助手尚未回话」）则再附该次工具调用；若末尾是文字则只给文字。
+//! 规则：只要助手在会话里输出过文字，就**永远**带上「最后一段助手文字」；足迹时间线只含
+//! **最后一段文字之后**的工具调用（用户定案：最新事件是文字时不显示任何工具行；文字之前的
+//! 调用属于「上一段叙述」，不再罗列），超出 3 步的部分计入 `steps_omitted` 供「省略 N 步」标注。
+//! 仅当尾部停在未完的工具调用时，末步标「进行中」——但 **Cursor 例外**：其 transcript 在工具
+//! 跑完后才落盘该次调用，落盘即已结束，故 Cursor 的 transcript 步一律「已完成」，「进行中」
+//! 只能由实时 hook 的 `currentTool` 并入（`autochannel`）。
 //!
 //! 全部 best-effort：文件不存在 / 正在写 / 巨大 / 解析失败都尽量降级；尾部读取有字节上限，不拖慢 daemon。
 
@@ -20,18 +25,60 @@ const MAX_TAIL_BYTES: u64 = 256 * 1024;
 const MAX_ACTIVITY_TEXT_CHARS: usize = 500;
 /// 工具对象（文件名 / 命令首段 / 参数前段）最大展示字符数。
 const MAX_TOOL_OBJECT_CHARS: usize = 60;
+/// 足迹时间线保留的最近步数。
+pub const MAX_STEPS: usize = 3;
+/// TODO 清单条目内容最大展示字符数。
+const MAX_TODO_CHARS: usize = 60;
 
-/// 一次「当前活动」解析结果。`text`/`tool` 至少一个为 `Some` 时才会返回（否则 `resolve_activity` 返回 `None`）。
+/// 一次「当前活动」解析结果。`text`/`steps`/`todos` 至少一个非空时才会返回（否则 `resolve_activity` 返回 `None`）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Activity {
     /// 最后一段助手自然语言文字（已截断）。
     pub text: Option<String>,
-    /// 末尾工具调用（仅当 transcript 末尾是工具调用 / 工具结果时）。
-    pub tool: Option<ToolDisplay>,
+    /// 最后一段文字**之后**的工具足迹（≤`MAX_STEPS` 步，旧→新；文字出现即清空重计）。
+    pub steps: Vec<ToolStep>,
+    /// 文字之后被挤出时间线的更早调用数（「省略 N 步」标注；TODO 更新不计）。
+    pub steps_omitted: usize,
+    /// 当前 TODO 清单（TodoWrite / update_plan 解析重放结果；已剔除 cancelled 条目）。
+    pub todos: Vec<TodoItem>,
     /// 最后活动时间（transcript 文件 mtime 的 Unix 秒；取不到为 `None`）。
     /// 用文件写入时间作「最近一次事件」的通用代理：各家 transcript 每次事件都会追加写盘，
     /// 无需逐家解析事件时间戳；对 Cursor「工具跑完才落盘」也与展示内容（最后完成事件）一致。
     pub at: Option<u64>,
+}
+
+/// TODO 清单一条（agent 自报计划：Cursor/Claude 的 TodoWrite、Codex 的 update_plan）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct TodoItem {
+    /// 条目文字（已截断）。
+    pub content: String,
+    pub state: TodoState,
+}
+
+/// TODO 条目状态。`Cancelled` 仅在合并重放期间存在（merge 更新可取消既有条目），
+/// 最终结果（`Activity::todos`）已剔除。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TodoState {
+    Pending,
+    InProgress,
+    Completed,
+    Cancelled,
+}
+
+/// 足迹时间线中的一步：一次工具调用 + 状态。
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolStep {
+    pub tool: ToolDisplay,
+    pub state: StepState,
+}
+
+/// 一步的状态。**只有末步可能是 Running**：Cursor 等家族的 transcript 不一定写工具结果事件，
+/// 「后面又发生了别的调用/文字」即视为前面的步已完成；带 `is_error` 的工具结果 → Failed。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepState {
+    Running,
+    Done,
+    Failed,
 }
 
 /// 一次工具调用的展示信息。类别词与前缀符号的本地化渲染在 `autochannel`（`object` 是内容，不本地化）。
@@ -105,8 +152,14 @@ enum Ev {
     Text(String),
     /// 工具调用。
     Tool(ToolDisplay),
-    /// 工具结果（表示「刚跑完一次工具」，末尾若停在此仍算正在进行对应工具调用）。
-    ToolResult,
+    /// 工具结果（bool = 是否失败，取 `is_error` 显式标志；无标志视为成功）。
+    ToolResult(bool),
+    /// TODO 清单更新（TodoWrite / update_plan；不入足迹时间线，单独重放）。
+    /// `replace`：整表替换（Claude / Codex / Cursor merge=false）；否则按 id 合并（Cursor merge=true）。
+    Todos {
+        replace: bool,
+        items: Vec<(Option<String>, TodoItem)>,
+    },
 }
 
 /// 从尾部行序列计算「当前活动」。抽出便于单测（不触盘）。
@@ -124,35 +177,98 @@ fn analyze(kind: AgentKind, lines: &[String]) -> Option<Activity> {
     }
 
     let mut last_text: Option<String> = None;
-    let mut last_tool: Option<ToolDisplay> = None;
-    // 最后一条「有意义事件」种类：决定末尾是否算工具调用。
-    let mut tail_is_tool = false;
+    let mut steps: Vec<ToolStep> = Vec::new();
+    // 文字之后被挤出时间线的调用数（「省略 N 步」标注）。
+    let mut omitted: usize = 0;
+    // TODO 清单重放台账：`(id, item)`，id 供 Cursor merge=true 按条合并。
+    let mut todo_list: Vec<(Option<String>, TodoItem)> = Vec::new();
+    // 把所有仍在跑的步收敛为已完成（后续事件的出现即证明其已结束）。
+    fn settle_running(steps: &mut [ToolStep]) {
+        for s in steps {
+            if s.state == StepState::Running {
+                s.state = StepState::Done;
+            }
+        }
+    }
     for ev in &evs {
         match ev {
             Ev::Text(t) => {
                 last_text = Some(t.clone());
-                tail_is_tool = false;
+                // 时间线只含最后一段文字**之后**的调用：文字出现即清空重计（用户定案——
+                // 最新事件是文字时不显示工具行；此前的调用属于上一段叙述）。
+                steps.clear();
+                omitted = 0;
             }
             Ev::Tool(td) => {
-                last_tool = Some(td.clone());
-                tail_is_tool = true;
+                // 新调用开始 → 更早的步视为已完成（Cursor 等家族不一定写工具结果事件，
+                // 「后面又发生了事」是唯一可靠的完成信号）。故**只有末步可能是进行中**。
+                settle_running(&mut steps);
+                steps.push(ToolStep {
+                    tool: td.clone(),
+                    state: StepState::Running,
+                });
+                if steps.len() > MAX_STEPS {
+                    steps.remove(0);
+                    omitted += 1;
+                }
             }
-            Ev::ToolResult => {
-                // 工具刚跑完、助手尚未回话：仍视为「正在做该工具」。
-                tail_is_tool = true;
+            Ev::ToolResult(failed) => {
+                // 结果闭合最早仍在跑的步；带失败标志（is_error）→ 记失败。
+                if let Some(s) = steps.iter_mut().find(|s| s.state == StepState::Running) {
+                    s.state = if *failed {
+                        StepState::Failed
+                    } else {
+                        StepState::Done
+                    };
+                }
+            }
+            Ev::Todos { replace, items } => {
+                // TODO 更新本身也是一次工具调用（不入时间线）：证明此前的步已结束。
+                // 其后续 tool_result（Claude 会写）落到无 Running 步上自然 no-op。
+                settle_running(&mut steps);
+                if *replace {
+                    todo_list = items.clone();
+                } else {
+                    // Cursor merge=true：按 id 就地更新，未知 id 追加（保持原有顺序）。
+                    for (id, item) in items {
+                        let hit = id.as_deref().and_then(|id| {
+                            todo_list
+                                .iter_mut()
+                                .find(|(eid, _)| eid.as_deref() == Some(id))
+                        });
+                        match hit {
+                            Some((_, existing)) => *existing = item.clone(),
+                            None => todo_list.push((id.clone(), item.clone())),
+                        }
+                    }
+                }
             }
         }
     }
 
+    // Cursor 的 transcript 只在工具**跑完后**才落盘该次调用（实测 in-flight 探针不可见），
+    // 且从不写 tool_result 事件：出现在 transcript 里的步必已结束 → 全部收敛为已完成。
+    // 「进行中」只能来自实时 hook（`activity_parts` 并入的 `currentTool` 末步）。
+    // Claude / Codex / Grok 则在调用**开始**时即写盘 → 末步无结果 = 真在跑，维持进行中。
+    if kind == AgentKind::Cursor {
+        settle_running(&mut steps);
+    }
+
+    let todos: Vec<TodoItem> = todo_list
+        .into_iter()
+        .map(|(_, t)| t)
+        .filter(|t| t.state != TodoState::Cancelled)
+        .collect();
     let text = last_text.map(|t| truncate(&t, MAX_ACTIVITY_TEXT_CHARS));
-    let tool = if tail_is_tool { last_tool } else { None };
-    if text.is_none() && tool.is_none() {
+    if text.is_none() && steps.is_empty() && todos.is_empty() {
         return None;
     }
     // `at` 由 `resolve_activity` 从文件 mtime 填充；`analyze` 是纯函数不触盘。
     Some(Activity {
         text,
-        tool,
+        steps,
+        steps_omitted: omitted,
+        todos,
         at: None,
     })
 }
@@ -189,9 +305,18 @@ fn push_events_msg(v: &Value, out: &mut Vec<Ev>) {
             }
             "tool_use" => {
                 let name = item.get("name").and_then(|x| x.as_str()).unwrap_or("");
-                out.push(Ev::Tool(classify_tool(name, item.get("input"))));
+                if is_todo_tool(name) {
+                    // TODO 清单更新不入足迹时间线，单独重放（Cursor/Claude 的 TodoWrite）。
+                    if let Some(ev) = parse_todos(item.get("input")) {
+                        out.push(ev);
+                    }
+                } else {
+                    out.push(Ev::Tool(classify_tool(name, item.get("input"))));
+                }
             }
-            "tool_result" => out.push(Ev::ToolResult),
+            "tool_result" => out.push(Ev::ToolResult(
+                item.get("is_error").and_then(|x| x.as_bool()).unwrap_or(false),
+            )),
             _ => {}
         }
     }
@@ -218,10 +343,18 @@ fn push_events_codex(v: &Value, out: &mut Vec<Ev>) {
         }
         ("response_item", "function_call") => {
             let name = payload.get("name").and_then(|x| x.as_str()).unwrap_or("");
-            let args = parse_args(payload.get("arguments"));
-            out.push(Ev::Tool(classify_tool(name, args.as_ref())));
+            if is_todo_tool(name) {
+                // Codex 的 update_plan：整表计划更新，不入足迹时间线。
+                if let Some(ev) = parse_todos(payload.get("arguments")) {
+                    out.push(ev);
+                }
+            } else {
+                let args = parse_args(payload.get("arguments"));
+                out.push(Ev::Tool(classify_tool(name, args.as_ref())));
+            }
         }
-        ("response_item", "function_call_output") => out.push(Ev::ToolResult),
+        // Codex 的 output 是纯字符串（无结构化成败标志）→ 一律视为成功。
+        ("response_item", "function_call_output") => out.push(Ev::ToolResult(false)),
         ("event_msg", "agent_message") => {
             if let Some(t) = payload.get("message").and_then(|m| m.as_str()) {
                 let t = t.trim();
@@ -261,9 +394,61 @@ fn push_events_grok(v: &Value, out: &mut Vec<Ev>) {
                 }
             }
         }
-        "tool_result" => out.push(Ev::ToolResult),
+        "tool_result" => out.push(Ev::ToolResult(
+            v.get("is_error").and_then(|x| x.as_bool()).unwrap_or(false),
+        )),
         _ => {}
     }
+}
+
+// ── TODO 清单解析 ──
+
+/// TODO 类工具名判定（这些调用不入足迹时间线，单独作清单重放；实时 hook 侧同样过滤）。
+pub(crate) fn is_todo_tool(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "todowrite" | "todo_write" | "update_plan"
+    )
+}
+
+/// 解析 TodoWrite / update_plan 参数为 TODO 更新事件。
+/// Cursor：`{merge, todos:[{id,content,status}]}`（merge=true 按 id 增量合并）；
+/// Claude：`{todos:[{content,status}]}`（恒整表）；Codex：`{plan:[{step,status}]}`（恒整表）。
+/// 空列表 / 无法解析 → None（忽略，不清空既有清单）。
+fn parse_todos(args: Option<&Value>) -> Option<Ev> {
+    let o = parse_args(args)?;
+    let arr = o.get("todos").or_else(|| o.get("plan"))?.as_array()?;
+    let replace = !o.get("merge").and_then(|v| v.as_bool()).unwrap_or(false);
+    let mut items = Vec::new();
+    for it in arr {
+        let Some(content) = it
+            .get("content")
+            .or_else(|| it.get("step"))
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        else {
+            continue;
+        };
+        let state = match it.get("status").and_then(|v| v.as_str()).unwrap_or("") {
+            "in_progress" => TodoState::InProgress,
+            "completed" => TodoState::Completed,
+            "cancelled" => TodoState::Cancelled,
+            _ => TodoState::Pending,
+        };
+        let id = it.get("id").and_then(|v| v.as_str()).map(|s| s.to_string());
+        items.push((
+            id,
+            TodoItem {
+                content: truncate(content, MAX_TODO_CHARS),
+                state,
+            },
+        ));
+    }
+    if items.is_empty() {
+        return None;
+    }
+    Some(Ev::Todos { replace, items })
 }
 
 // ── 工具归一化 ──
@@ -318,20 +503,29 @@ fn is_write(n: &str) -> bool {
     )
 }
 
-/// 从参数取命令首段（`command` / `cmd`，数组则 join）。
+/// 从参数取命令展示：优先「人话描述 (命令首段)」——Cursor / Claude 的 Shell 调用自带一句
+/// `description`（如 `Rebuild after reverting`），比原始命令更直观；无描述则退回命令本身。
 fn arg_command(args: Option<&Value>) -> Option<String> {
     let o = args?;
-    for k in ["command", "cmd"] {
-        if let Some(s) = o.get(k).and_then(value_scalar_or_join) {
-            if !s.trim().is_empty() {
-                return Some(truncate(&s, MAX_TOOL_OBJECT_CHARS));
-            }
-        }
+    let desc = o
+        .get("description")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let cmd = ["command", "cmd"]
+        .iter()
+        .find_map(|k| o.get(*k).and_then(value_scalar_or_join))
+        .filter(|s| !s.trim().is_empty());
+    match (desc, cmd) {
+        (Some(d), Some(c)) => Some(format!(
+            "{} ({})",
+            truncate(d, MAX_TOOL_OBJECT_CHARS),
+            truncate(&c, 32)
+        )),
+        (Some(d), None) => Some(truncate(d, MAX_TOOL_OBJECT_CHARS)),
+        (None, Some(c)) => Some(truncate(&c, MAX_TOOL_OBJECT_CHARS)),
+        (None, None) => o.as_str().map(|s| truncate(s, MAX_TOOL_OBJECT_CHARS)),
     }
-    if let Some(s) = o.as_str() {
-        return Some(truncate(s, MAX_TOOL_OBJECT_CHARS));
-    }
-    None
 }
 
 /// 从参数取文件名（路径末段）。
@@ -472,14 +666,26 @@ mod tests {
         ]);
         let a = analyze(AgentKind::Cursor, &ls).unwrap();
         assert_eq!(a.text.as_deref(), Some("先跑测试"));
-        let tool = a.tool.unwrap();
-        assert_eq!(tool.label, ToolLabel::Run);
-        assert_eq!(tool.object.as_deref(), Some("cargo test"));
+        let step = a.steps.last().unwrap();
+        assert_eq!(step.tool.label, ToolLabel::Run);
+        assert_eq!(step.tool.object.as_deref(), Some("cargo test"));
+        // Cursor 落盘即已跑完：transcript 步一律已完成（进行中只来自实时 hook 并入）。
+        assert_eq!(step.state, StepState::Done);
     }
 
     #[test]
-    fn tail_text_after_tool_drops_tool() {
-        // 工具之后又产出文字（最终答复）→ 只显示文字。
+    fn claude_tail_tool_without_result_is_running() {
+        // Claude 在调用开始时即写盘：末步无结果 = 真在跑（如 AskHuman 等待答复期间）。
+        let ls = lines(&[
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"先跑测试"},{"type":"tool_use","name":"Bash","input":{"command":"cargo test"}}]}}"#,
+        ]);
+        let a = analyze(AgentKind::Claude, &ls).unwrap();
+        assert_eq!(a.steps.last().unwrap().state, StepState::Running);
+    }
+
+    #[test]
+    fn tail_text_after_tool_clears_steps() {
+        // 工具之后又产出文字（最终答复）→ 时间线清空（用户定案：最新事件是文字时不显示工具行）。
         let ls = lines(&[
             r#"{"role":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/a/b/registry.rs"}}]}}"#,
             r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"..."}]}}"#,
@@ -487,21 +693,124 @@ mod tests {
         ]);
         let a = analyze(AgentKind::Cursor, &ls).unwrap();
         assert_eq!(a.text.as_deref(), Some("改好了"));
-        assert!(a.tool.is_none());
+        assert!(a.steps.is_empty());
+        assert_eq!(a.steps_omitted, 0);
     }
 
     #[test]
-    fn tool_result_tail_keeps_tool() {
-        // 末尾停在 tool_result（工具刚跑完）→ 仍显示该工具。
+    fn steps_omitted_counts_beyond_window() {
+        // 文字之后连发 5 次调用：留最近 3 步，省略 2 步。
+        let mut raw = vec![
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"开始干活"}]}}"#.to_string(),
+        ];
+        for i in 0..5 {
+            raw.push(format!(
+                r#"{{"type":"assistant","message":{{"content":[{{"type":"tool_use","name":"Read","input":{{"file_path":"/a/f{i}.rs"}}}}]}}}}"#
+            ));
+        }
+        let a = analyze(AgentKind::Claude, &raw).unwrap();
+        assert_eq!(a.steps.len(), MAX_STEPS);
+        assert_eq!(a.steps_omitted, 2);
+        assert_eq!(a.steps[0].tool.object.as_deref(), Some("f2.rs"));
+        // 再来一段文字 → 全部清空。
+        let mut raw2 = raw.clone();
+        raw2.push(
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"搞定"}]}}"#
+                .to_string(),
+        );
+        let a2 = analyze(AgentKind::Claude, &raw2).unwrap();
+        assert!(a2.steps.is_empty());
+        assert_eq!(a2.steps_omitted, 0);
+    }
+
+    #[test]
+    fn tool_result_tail_marks_step_done() {
+        // 末尾停在 tool_result（工具刚跑完、助手未回话）→ 步骤保留且已完成。
         let ls = lines(&[
             r#"{"type":"assistant","message":{"content":[{"type":"text","text":"读一下"},{"type":"tool_use","name":"Read","input":{"file_path":"src/agents/title.rs"}}]}}"#,
             r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"..."}]}}"#,
         ]);
         let a = analyze(AgentKind::Claude, &ls).unwrap();
         assert_eq!(a.text.as_deref(), Some("读一下"));
-        let tool = a.tool.unwrap();
-        assert_eq!(tool.label, ToolLabel::Read);
-        assert_eq!(tool.object.as_deref(), Some("title.rs"));
+        let step = a.steps.last().unwrap();
+        assert_eq!(step.tool.label, ToolLabel::Read);
+        assert_eq!(step.tool.object.as_deref(), Some("title.rs"));
+        assert_eq!(step.state, StepState::Done);
+    }
+
+    #[test]
+    fn timeline_keeps_last_steps_in_order() {
+        // 连跑 4 步只留最近 3 步（旧→新），Claude 末步无结果 → 进行中。
+        let ls = lines(&[
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/a/one.rs"}}]}}"#,
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"..."}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/a/two.rs"}}]}}"#,
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"..."}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"/a/three.rs"}}]}}"#,
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"..."}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Shell","input":{"command":"cargo test"}}]}}"#,
+        ]);
+        let a = analyze(AgentKind::Claude, &ls).unwrap();
+        assert_eq!(a.steps.len(), MAX_STEPS);
+        assert_eq!(a.steps[0].tool.object.as_deref(), Some("two.rs"));
+        assert_eq!(a.steps[1].tool.object.as_deref(), Some("three.rs"));
+        assert_eq!(a.steps[2].tool.object.as_deref(), Some("cargo test"));
+        assert_eq!(a.steps[0].state, StepState::Done);
+        assert_eq!(a.steps[1].state, StepState::Done);
+        assert_eq!(a.steps[2].state, StepState::Running);
+    }
+
+    #[test]
+    fn only_last_step_can_be_running_without_results() {
+        // 整段窗口没有 tool_result 事件时：新调用开始即证明前一步已结束 → 只有末步进行中。
+        let ls = lines(&[
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/a/one.rs"}}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"/a/two.rs"}}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"AskHuman -q hi"}}]}}"#,
+        ]);
+        let a = analyze(AgentKind::Claude, &ls).unwrap();
+        assert_eq!(a.steps.len(), 3);
+        assert_eq!(a.steps[0].state, StepState::Done);
+        assert_eq!(a.steps[1].state, StepState::Done);
+        assert_eq!(a.steps[2].state, StepState::Running);
+    }
+
+    #[test]
+    fn cursor_transcript_steps_all_done() {
+        // Cursor 在工具**跑完后**才落盘该次调用（实测 in-flight 探针不可见），且从不写
+        // tool_result：落盘即已结束 → 末步也已完成（修正「答完问题 AskHuman 仍绿点」）。
+        let ls = lines(&[
+            r#"{"role":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/a/one.rs"}}]}}"#,
+            r#"{"role":"assistant","message":{"content":[{"type":"tool_use","name":"Shell","input":{"command":"AskHuman -q hi"}}]}}"#,
+        ]);
+        let a = analyze(AgentKind::Cursor, &ls).unwrap();
+        assert_eq!(a.steps.len(), 2);
+        assert!(a.steps.iter().all(|s| s.state == StepState::Done));
+    }
+
+    #[test]
+    fn tool_result_error_marks_step_failed() {
+        // is_error 显式失败标志 → 该步记失败。
+        let ls = lines(&[
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Shell","input":{"command":"cargo test"}}]}}"#,
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","is_error":true,"content":"boom"}]}}"#,
+        ]);
+        let a = analyze(AgentKind::Claude, &ls).unwrap();
+        assert_eq!(a.steps.last().unwrap().state, StepState::Failed);
+    }
+
+    #[test]
+    fn shell_description_prefixed_over_command() {
+        // Cursor / Claude Shell 自带人话 description → 「描述 (命令)」。
+        let ls = lines(&[
+            r#"{"role":"assistant","message":{"content":[{"type":"tool_use","name":"Shell","input":{"command":"cargo build --release","description":"Rebuild after reverting"}}]}}"#,
+        ]);
+        let a = analyze(AgentKind::Cursor, &ls).unwrap();
+        let step = a.steps.last().unwrap();
+        assert_eq!(
+            step.tool.object.as_deref(),
+            Some("Rebuild after reverting (cargo build --release)")
+        );
     }
 
     #[test]
@@ -512,9 +821,10 @@ mod tests {
         ]);
         let a = analyze(AgentKind::Codex, &ls).unwrap();
         assert_eq!(a.text.as_deref(), Some("运行一下"));
-        let tool = a.tool.unwrap();
-        assert_eq!(tool.label, ToolLabel::Run);
-        assert_eq!(tool.object.as_deref(), Some("bash -lc ls -la"));
+        let step = a.steps.last().unwrap();
+        assert_eq!(step.tool.label, ToolLabel::Run);
+        assert_eq!(step.tool.object.as_deref(), Some("bash -lc ls -la"));
+        assert_eq!(step.state, StepState::Running);
     }
 
     #[test]
@@ -526,7 +836,7 @@ mod tests {
         ]);
         let a = analyze(AgentKind::Codex, &ls).unwrap();
         assert_eq!(a.text.as_deref(), Some("任务完成"));
-        assert!(a.tool.is_none());
+        assert!(a.steps.is_empty());
     }
 
     #[test]
@@ -536,9 +846,9 @@ mod tests {
         ]);
         let a = analyze(AgentKind::Grok, &ls).unwrap();
         assert_eq!(a.text.as_deref(), Some("看看这个文件"));
-        let tool = a.tool.unwrap();
-        assert_eq!(tool.label, ToolLabel::Read);
-        assert_eq!(tool.object.as_deref(), Some("registry.rs"));
+        let step = a.steps.last().unwrap();
+        assert_eq!(step.tool.label, ToolLabel::Read);
+        assert_eq!(step.tool.object.as_deref(), Some("registry.rs"));
     }
 
     #[test]
@@ -547,9 +857,67 @@ mod tests {
             r#"{"role":"assistant","message":{"content":[{"type":"tool_use","name":"Grep","input":{"pattern":"AgentRecord"}}]}}"#,
         ]);
         let a = analyze(AgentKind::Cursor, &ls).unwrap();
-        let tool = a.tool.unwrap();
-        assert_eq!(tool.label, ToolLabel::Other("Grep".to_string()));
-        assert_eq!(tool.object.as_deref(), Some("AgentRecord"));
+        let step = a.steps.last().unwrap();
+        assert_eq!(step.tool.label, ToolLabel::Other("Grep".to_string()));
+        assert_eq!(step.tool.object.as_deref(), Some("AgentRecord"));
+    }
+
+    #[test]
+    fn cursor_todowrite_merge_replay() {
+        // 全量写入（merge=false）后按 id 增量合并（merge=true）：状态就地更新、未知 id 追加、
+        // cancelled 条目从最终结果剔除；TodoWrite 本身不入足迹时间线。
+        let ls = lines(&[
+            r#"{"role":"assistant","message":{"content":[{"type":"tool_use","name":"TodoWrite","input":{"merge":false,"todos":[{"id":"a","content":"改 registry","status":"in_progress"},{"id":"b","content":"跑单测","status":"pending"},{"id":"c","content":"废弃项","status":"pending"}]}}]}}"#,
+            r#"{"role":"assistant","message":{"content":[{"type":"tool_use","name":"TodoWrite","input":{"merge":true,"todos":[{"id":"a","content":"改 registry","status":"completed"},{"id":"b","content":"跑单测","status":"in_progress"},{"id":"c","content":"废弃项","status":"cancelled"},{"id":"d","content":"更新文档","status":"pending"}]}}]}}"#,
+        ]);
+        let a = analyze(AgentKind::Cursor, &ls).unwrap();
+        assert!(a.steps.is_empty(), "TodoWrite 不入足迹时间线");
+        assert_eq!(a.todos.len(), 3, "cancelled 条目剔除");
+        assert_eq!(a.todos[0].content, "改 registry");
+        assert_eq!(a.todos[0].state, TodoState::Completed);
+        assert_eq!(a.todos[1].state, TodoState::InProgress);
+        assert_eq!(a.todos[2].content, "更新文档");
+        assert_eq!(a.todos[2].state, TodoState::Pending);
+    }
+
+    #[test]
+    fn claude_todowrite_full_replace() {
+        // Claude 无 merge 字段 → 恒整表替换，取最后一次。
+        let ls = lines(&[
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"TodoWrite","input":{"todos":[{"content":"步骤一","status":"in_progress"},{"content":"步骤二","status":"pending"}]}}]}}"#,
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"ok"}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"TodoWrite","input":{"todos":[{"content":"步骤一","status":"completed"},{"content":"步骤二","status":"in_progress"}]}}]}}"#,
+        ]);
+        let a = analyze(AgentKind::Claude, &ls).unwrap();
+        assert_eq!(a.todos.len(), 2);
+        assert_eq!(a.todos[0].state, TodoState::Completed);
+        assert_eq!(a.todos[1].state, TodoState::InProgress);
+    }
+
+    #[test]
+    fn codex_update_plan_parsed() {
+        let ls = lines(&[
+            r#"{"type":"response_item","payload":{"type":"function_call","name":"update_plan","arguments":"{\"plan\":[{\"step\":\"初始化仓库\",\"status\":\"completed\"},{\"step\":\"实现脚本\",\"status\":\"in_progress\"}]}"}}"#,
+        ]);
+        let a = analyze(AgentKind::Codex, &ls).unwrap();
+        assert!(a.steps.is_empty());
+        assert_eq!(a.todos.len(), 2);
+        assert_eq!(a.todos[0].content, "初始化仓库");
+        assert_eq!(a.todos[1].state, TodoState::InProgress);
+    }
+
+    #[test]
+    fn todowrite_result_does_not_close_running_step() {
+        // Claude：Bash 在跑 → TodoWrite 更新（另一并行不可能，顺序上 Bash 必已结束）——
+        // 这里验证 TodoWrite 自己的 tool_result 不会误闭合后续真正在跑的步。
+        let ls = lines(&[
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"TodoWrite","input":{"todos":[{"content":"x","status":"pending"}]}}]}}"#,
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"ok"}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"cargo test"}}]}}"#,
+        ]);
+        let a = analyze(AgentKind::Claude, &ls).unwrap();
+        assert_eq!(a.steps.len(), 1);
+        assert_eq!(a.steps[0].state, StepState::Running, "末步 Bash 仍在跑");
     }
 
     #[test]

@@ -74,6 +74,14 @@ pub struct AgentRecord {
     /// daemon 重启自然消失。供 `/status <编号>` 无滞后地反映「此刻在跑什么」。
     #[serde(skip)]
     pub current_tool: Option<CurrentTool>,
+    /// 本回合累计工具步数（PreToolUse +1；turn-start 清零、turn-end 归零）。**不落盘**，
+    /// `snapshot()` 注入 `turnSteps`，供 `/watch` 卡状态行「第 N 步」（依赖生命周期 hook，无则恒 0）。
+    #[serde(skip)]
+    pub turn_steps: u32,
+    /// 本回合开始时刻（Unix 秒；turn-start 置位、首个工具心跳兜底补位、turn-end 清除）。**不落盘**，
+    /// `snapshot()` 注入 `turnStartedAt`，供 `/watch` 卡状态行「已 N 分钟」。
+    #[serde(skip)]
+    pub turn_started_at: Option<u64>,
 }
 
 /// 实时「当前工具」快照：跨进程只存原始工具名 + 已归一化的短对象 + 上报时间（秒）。
@@ -233,6 +241,8 @@ impl AgentRegistry {
                     ended_at: None,
                     terminal: None,
                     current_tool: None,
+                    turn_steps: 0,
+                    turn_started_at: None,
                 });
                 (inner.active.len() - 1, true)
             }
@@ -245,13 +255,26 @@ impl AgentRegistry {
         let prev = inner.active[idx].state;
         match event {
             LifecycleEvent::SessionStart => { /* 已确保登记，保持 Idle */ }
-            LifecycleEvent::TurnStart | LifecycleEvent::Activity => {
+            LifecycleEvent::TurnStart => {
                 inner.active[idx].state = AgentState::Working;
+                // 新回合：步数清零、记回合开始时刻（供 /watch「第 N 步 · 已 N 分钟」）。
+                inner.active[idx].turn_steps = 0;
+                inner.active[idx].turn_started_at = Some(now);
+                changed |= prev != AgentState::Working;
+            }
+            LifecycleEvent::Activity => {
+                inner.active[idx].state = AgentState::Working;
+                // turn-start 缺失（hook 竞态 / 半装）时以首个心跳兜底记回合开始。
+                if inner.active[idx].turn_started_at.is_none() {
+                    inner.active[idx].turn_started_at = Some(now);
+                }
                 changed |= prev != AgentState::Working;
             }
             LifecycleEvent::TurnEnd => {
                 inner.active[idx].state = AgentState::Idle;
                 inner.active[idx].current_tool = None; // 回合结束不应残留在跑工具
+                inner.active[idx].turn_steps = 0;
+                inner.active[idx].turn_started_at = None;
                 changed |= prev != AgentState::Idle;
             }
             LifecycleEvent::SessionEnd => {
@@ -259,6 +282,8 @@ impl AgentRegistry {
                 r.state = AgentState::Ended;
                 r.ended_at = Some(now);
                 r.current_tool = None; // 会话结束清除
+                r.turn_steps = 0;
+                r.turn_started_at = None;
                 push_ended(&mut inner.ended, r);
                 changed = true;
             }
@@ -337,6 +362,11 @@ impl AgentRegistry {
                 r.pid = pid;
             }
             r.current_tool = Some(CurrentTool { name, object, at: now });
+            // 每次 PreToolUse 记一步（回合内单调递增，turn-start/turn-end 清零）。
+            r.turn_steps = r.turn_steps.saturating_add(1);
+            if r.turn_started_at.is_none() {
+                r.turn_started_at = Some(now);
+            }
         }
     }
 
@@ -400,6 +430,8 @@ impl AgentRegistry {
                 ended_at: None,
                 terminal: None,
                 current_tool: None,
+                turn_steps: 0,
+                turn_started_at: None,
             });
             true
         }
@@ -559,16 +591,25 @@ impl AgentRegistry {
         for r in inner.ended.iter() {
             list.push(r.clone());
         }
-        // current_tool 标了 serde(skip)，默认序列化不含它 → 手动注入 `currentTool`（仅进 snapshot，不落盘）。
+        // current_tool / turn_steps / turn_started_at 标了 serde(skip)，默认序列化不含 →
+        // 手动注入 `currentTool` / `turnSteps` / `turnStartedAt`（仅进 snapshot，不落盘）。
         let arr: Vec<Value> = list
             .iter()
             .map(|r| {
                 let mut v = serde_json::to_value(r).unwrap_or(Value::Null);
-                if let (Some(ct), Some(obj)) = (&r.current_tool, v.as_object_mut()) {
-                    obj.insert(
-                        "currentTool".to_string(),
-                        serde_json::json!({ "name": ct.name, "object": ct.object, "at": ct.at }),
-                    );
+                if let Some(obj) = v.as_object_mut() {
+                    if let Some(ct) = &r.current_tool {
+                        obj.insert(
+                            "currentTool".to_string(),
+                            serde_json::json!({ "name": ct.name, "object": ct.object, "at": ct.at }),
+                        );
+                    }
+                    if r.turn_steps > 0 {
+                        obj.insert("turnSteps".to_string(), serde_json::json!(r.turn_steps));
+                    }
+                    if let Some(ts) = r.turn_started_at {
+                        obj.insert("turnStartedAt".to_string(), serde_json::json!(ts));
+                    }
                 }
                 v
             })
@@ -1028,6 +1069,49 @@ mod tests {
             .unwrap()
             .clone();
         assert!(s1.get("currentTool").is_none());
+    }
+
+    #[test]
+    fn turn_steps_count_and_reset() {
+        let r = reg();
+        r.apply_event(AgentKind::Cursor, LifecycleEvent::TurnStart, "s1", None, None, 10);
+        // 两次 PreToolUse → 第 2 步；turnStartedAt 为 turn-start 时刻。
+        r.set_current_tool(AgentKind::Cursor, "s1", None, "Read".into(), None);
+        r.set_current_tool(AgentKind::Cursor, "s1", None, "Shell".into(), None);
+        let snap = r.snapshot();
+        let s1 = snap
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|x| x["sessionId"] == "s1")
+            .unwrap()
+            .clone();
+        assert_eq!(s1["turnSteps"].as_u64(), Some(2));
+        assert_eq!(s1["turnStartedAt"].as_u64(), Some(10));
+        // turn-end 清零；再 turn-start 重新起算。
+        r.apply_event(AgentKind::Cursor, LifecycleEvent::TurnEnd, "s1", None, None, 20);
+        let snap = r.snapshot();
+        let s1 = snap
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|x| x["sessionId"] == "s1")
+            .unwrap()
+            .clone();
+        assert!(s1.get("turnSteps").is_none());
+        assert!(s1.get("turnStartedAt").is_none());
+        r.apply_event(AgentKind::Cursor, LifecycleEvent::TurnStart, "s1", None, None, 30);
+        r.set_current_tool(AgentKind::Cursor, "s1", None, "Write".into(), None);
+        let snap = r.snapshot();
+        let s1 = snap
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|x| x["sessionId"] == "s1")
+            .unwrap()
+            .clone();
+        assert_eq!(s1["turnSteps"].as_u64(), Some(1));
+        assert_eq!(s1["turnStartedAt"].as_u64(), Some(30));
     }
 
     #[test]
