@@ -2,6 +2,20 @@
 
 按具体任务 / 需求记录待办与当前进展。任务 / 需求完成后删除其 section（历史留在 git）。
 
+## 待验收：设置页重构——新增「高级」Tab + 迁移功能 + 实验 Tab 空态
+
+用户诉求：把部分功能移出「实验」开关，新建常显「高级」Tab；实验 Tab 做空态占位。已落地、`vue-tsc` 通过：
+- **新增「高级」Tab**（`SettingsView.vue`，`Tab` 类型加 `advanced`；Tab 按钮 `v-if="!isWindows"`，仅 macOS/Linux）。
+  迁入三卡：Agent 生命周期追踪、守护进程生命周期、IM 渠道按需发送（含其「自动结束 watch」子开关）。
+- **平台可见性（用户 Q1=B + 例外）**：整个「高级」Tab（三项）**保持仅 macOS/Linux**（Windows 未测过、暂不放出）；
+  唯独**「多问题纵向同时显示」移到「通用」Tab 且跨平台**（含 Windows，用户确认 Windows 可支持）。
+- **「自动结束 watch」子开关加缩进**：改为 `.sub-setting`（左缩进 + 左侧竖线 + 次级 `.label` 标题），明确从属「按需发送」。
+- **实验 Tab（用户 Q2=B）**：保留「通用」底部「启用实验性功能」开关，实验 Tab 仍由 `experimental.enabled` 显隐；
+  开启后内容为**空态视图**（`.empty-state`，i18n `settings.experimental.empty{Title,Desc}`「暂时没有实验功能」）。
+- **生命周期刷新时机**：`refreshLifecycle` 挂载时按 `!isWindows` 触发（不再依赖 `experimental.enabled`）；
+  `toggleExperimental` 去掉刷新调用（只留切走 Tab 逻辑）。i18n `settings.tabs.advanced` zh/en 已加。
+- **未做**：install + 真机验收（高级 Tab 三卡显示/交互、通用 Tab 的纵向开关、实验 Tab 空态、子开关缩进观感）。
+
 ## 待验收：「按需发送」子开关——活跃槽切走时自动结束该渠道的 watch（+ 修复：操作即激活）
 
 需求/决策 `docs/specs/im-auto-end-watch.md`（D1–D8），计划 `docs/plans/im-auto-end-watch.md`（P1–P4）。核心 +

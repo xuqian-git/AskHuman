@@ -106,11 +106,14 @@ export default {
       general: "General",
       integration: "Agents",
       channel: "Channels",
+      advanced: "Advanced",
       experimental: "Experimental",
     },
     experimental: {
       enableLabel: "Experimental features",
       enableHint: "Show advanced, unstable features. Off by default.",
+      emptyTitle: "No experimental features yet",
+      emptyDesc: "There are no features under experimentation right now. Future experimental features will show up here.",
       lifecycleTitle: "Agent lifecycle tracking",
       lifecycleDesc:
         "Install user-level hooks so AskHuman can track each agent's sessions (working / idle / ended). While agent activity is tracked, AskHuman stays on standby in the background to receive proactive IM commands (e.g. /status to check status, or activate on-demand sending). Once enabled, run `AskHuman agents monitor` to open the live status window.",

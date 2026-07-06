@@ -102,11 +102,14 @@ export default {
       general: "通用",
       integration: "Agents",
       channel: "通信渠道",
+      advanced: "高级",
       experimental: "实验",
     },
     experimental: {
       enableLabel: "实验性功能",
       enableHint: "显示尚不稳定的高级功能，默认关闭。",
+      emptyTitle: "暂时没有实验功能",
+      emptyDesc: "当前没有正在试验中的功能。未来的实验性功能会出现在这里。",
       lifecycleTitle: "Agent 生命周期追踪",
       lifecycleDesc:
         "安装用户级 Hook，使 AskHuman 能追踪各 Agent 的会话状态（工作中 / 空闲 / 已结束）。追踪到 Agent 活动时，AskHuman 会自动在后台待命，接收 IM 渠道的主动指令（如 /status 查询状态、激活按需发送）。开启后运行 `AskHuman agents monitor` 可弹出实时状态窗口。",
