@@ -525,6 +525,9 @@ pub fn tr(lang: Lang, key: &'static str) -> &'static str {
         "select.truncated" => pick(lang, "(showing first {n})", "（仅列前 {n} 个）"),
         // `/unwatch` 单选卡取到 0 个后定格文案。
         "select.unwatchAllDoneCard" => pick(lang, "All unwatched.", "已全部取消关注。"),
+        // 钉钉 `/watch` 单选卡点选后定格文案（{id} = 所选 agent 展示编号）：钉钉不能就地变身，
+        // 单选卡定格为「已选择 [n]」、另发一张新的实时 watch 卡。
+        "select.pickedCard" => pick(lang, "Selected [{id}]", "已选择 [{id}]"),
 
         // —— Slack 渠道：发给用户的文案 + 本地诊断 ——
         // 静态终态卡片状态行（无 emoji 前缀，与飞书/钉钉一致）。

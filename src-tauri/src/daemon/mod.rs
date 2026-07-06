@@ -3282,6 +3282,23 @@ mod unix_impl {
                 let card = crate::feishu::card::build_select_card(view);
                 client.send_card(&card).await.ok()
             }
+            "dingding" => {
+                // 钉钉：模板 + 变量。消息 id = 自铸 outTrackId（与 watch 卡同规，天然可编辑）。
+                let client =
+                    crate::dingtalk::client::DingTalkClient::new(&config.channels.dingding).ok()?;
+                let otid = format!("select-{}", uuid::Uuid::new_v4());
+                let map = crate::dingtalk::select::build_select_param_map(view, Lang::current());
+                client
+                    .create_and_deliver_card(
+                        &otid,
+                        crate::dingtalk::select::DEFAULT_SELECT_CARD_TEMPLATE_ID,
+                        map,
+                        serde_json::json!({}),
+                    )
+                    .await
+                    .ok()?;
+                Some(otid)
+            }
             _ => None,
         }
     }
@@ -3418,59 +3435,101 @@ mod unix_impl {
         }
     }
 
-    /// 幂等确保单一渠道的单选卡回调路由任务在位（MVP 仅飞书；复用 watch 的路由句柄类型）。
+    /// 幂等确保单一渠道的单选卡回调路由任务在位（MVP 飞书 + 钉钉；复用 watch 的路由句柄类型）。
+    /// 飞书走「回调同步回卡」(oneshot Option)；钉钉先空 ACK、卡片变化经 OpenAPI（见 `handle_select_dd_action`）。
     async fn ensure_select_route_for(
         state: &Arc<ServerState>,
         config: &AppConfig,
         channel_id: &str,
         mids: Vec<String>,
     ) {
-        // MVP：仅飞书有单选卡（其它渠道 send_select_card 返回 None、不会有 picker）。
-        if channel_id != "feishu" || !crate::app::is_feishu_active(config) {
-            return;
-        }
-        let router = match ensure_fs_router(state, &config.channels.feishu).await {
-            Some(r) => r,
-            None => return,
+        // 取该渠道的共享 Router（渠道不可用则跳过；picker 仍在，渠道恢复后下一拍补挂）。
+        let router: WatchChannelRouter = match channel_id {
+            "feishu" => {
+                if !crate::app::is_feishu_active(config) {
+                    return;
+                }
+                match ensure_fs_router(state, &config.channels.feishu).await {
+                    Some(r) => WatchChannelRouter::Feishu(r),
+                    None => return,
+                }
+            }
+            "dingding" => {
+                if !crate::app::is_dingding_active(config) {
+                    return;
+                }
+                let dd = &config.channels.dingding;
+                match ensure_dd_router(state, dd.client_id.trim(), dd.client_secret.trim()).await {
+                    Some(r) => WatchChannelRouter::DingTalk(r),
+                    None => return,
+                }
+            }
+            _ => return, // TG / Slack 暂无单选卡（send_select_card 返回 None、不会有 picker）。
         };
         // 现任务仍绑定同一存活 Router 且卡集合未变 → 无事可做。
         {
             let routes = state.select.routes.lock().unwrap();
             if let Some(h) = routes.get(channel_id) {
-                if h.router
-                    .is_same_alive(&WatchChannelRouter::Feishu(router.clone()))
-                    && h.mids == mids
-                {
+                if h.router.is_same_alive(&router) && h.mids == mids {
                     return;
                 }
             }
         }
         let stop = Arc::new(tokio::sync::Notify::new());
-        let mut routed = router.register();
-        for mid in &mids {
-            routed.set_active(Some(mid), "");
-        }
-        let st = state.clone();
         let stop2 = stop.clone();
-        tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    _ = stop2.notified() => break,
-                    ev = routed.recv() => match ev {
-                        Some(crate::feishu::router::FsInbound::Card { data, ack }) => {
-                            handle_select_card_action(&st, "feishu", &data, ack).await;
-                        }
-                        Some(_) => {} // 未认领聊天消息，不会到达；防御性忽略。
-                        None => break, // Router 断开：下一拍 ensure 重建。
-                    },
+        let st = state.clone();
+        let router_ref: WatchRouterRef = match &router {
+            WatchChannelRouter::Feishu(r) => {
+                let mut routed = r.register();
+                for mid in &mids {
+                    routed.set_active(Some(mid), "");
                 }
+                tokio::spawn(async move {
+                    loop {
+                        tokio::select! {
+                            _ = stop2.notified() => break,
+                            ev = routed.recv() => match ev {
+                                Some(crate::feishu::router::FsInbound::Card { data, ack }) => {
+                                    handle_select_card_action(&st, "feishu", &data, ack).await;
+                                }
+                                Some(_) => {} // 未认领聊天消息，不会到达；防御性忽略。
+                                None => break, // Router 断开：下一拍 ensure 重建。
+                            },
+                        }
+                    }
+                });
+                WatchRouterRef::Feishu(Arc::downgrade(r))
             }
-        });
+            WatchChannelRouter::DingTalk(r) => {
+                let mut routed = r.register();
+                for mid in &mids {
+                    routed.set_active(Some(mid), "");
+                }
+                tokio::spawn(async move {
+                    loop {
+                        tokio::select! {
+                            _ = stop2.notified() => break,
+                            ev = routed.recv() => match ev {
+                                Some(crate::dingtalk::router::DdInbound::Card { data, ack }) => {
+                                    // 先空 ACK 满足 3 秒回包（钉钉无「回调同步回卡」，卡片变化走 OpenAPI）。
+                                    let _ = ack.send(serde_json::json!({}));
+                                    handle_select_dd_action(&st, &data).await;
+                                }
+                                Some(_) => {} // 未认领聊天消息，不会到达；防御性忽略。
+                                None => break, // Router 断开：下一拍 ensure 重建。
+                            },
+                        }
+                    }
+                });
+                WatchRouterRef::DingTalk(Arc::downgrade(r))
+            }
+            _ => return, // 上面已排除，防御性。
+        };
         if let Some(old) = state.select.routes.lock().unwrap().insert(
             channel_id.to_string(),
             WatchRouteHandle {
                 stop,
-                router: WatchRouterRef::Feishu(Arc::downgrade(&router)),
+                router: router_ref,
                 mids,
             },
         ) {
@@ -3695,6 +3754,230 @@ mod unix_impl {
                 .find(|p| p.channel == channel_id && p.message_id == mid)
             {
                 p.options = new_ids;
+            }
+        }
+    }
+
+    // ===== 钉钉单选卡点选（无「回调同步回卡」：空 ACK 已在路由任务发出，卡片变化走 OpenAPI）=====
+
+    /// 处理钉钉单选卡点击：解析 `(outTrackId, sid)` → 找 picker → 按 kind 分派。
+    /// 过期 / sid 空 / 不属于本卡 → 静默（D7；空 ACK 已由路由任务发出）。
+    async fn handle_select_dd_action(state: &Arc<ServerState>, data: &serde_json::Value) {
+        let Some((otid, session_id)) = crate::dingtalk::select::parse_select_action(data) else {
+            return;
+        };
+        let picker = {
+            let pickers = state.select.pickers.lock().unwrap();
+            pickers
+                .iter()
+                .find(|p| p.channel == "dingding" && p.message_id == otid)
+                .cloned()
+        };
+        let Some(picker) = picker else {
+            return; // 已过期 / 被清理：静默（D7）。
+        };
+        // 路由靠 param 回传的 session_id（不用会漂移的编号）；空 / 不属于本卡 → 无效（模板未绑定或已变）。
+        if session_id.is_empty() || !picker.options.contains(&session_id) {
+            return;
+        }
+        let lang = Lang::current();
+        let config = AppConfig::load();
+        match picker.kind {
+            PickerKind::Watch => {
+                dd_select_pick_watch(state, &otid, &session_id, &config, lang).await;
+            }
+            PickerKind::Status => {
+                // 单选卡不动：回纯文本详情（可继续点其它 agent）。
+                let snapshot = state.agents.snapshot();
+                let text = status_detail_by_session(&snapshot, &session_id, "dingding", lang);
+                let _ = reply_channel_text("dingding", &config, &text).await;
+            }
+            PickerKind::Unwatch => {
+                dd_select_pick_unwatch(state, &otid, &session_id, &config, lang).await;
+            }
+        }
+    }
+
+    /// 钉钉单选卡点选「watch」：钉钉不能就地变身（模板固定），故**另发一张新的实时 watch 卡** +
+    /// 把单选卡定格「已选择 [n]」。已在关注同一 session ＝换新卡（`register_watch_at` 定格旧卡）。
+    async fn dd_select_pick_watch(
+        state: &Arc<ServerState>,
+        otid: &str,
+        session_id: &str,
+        config: &AppConfig,
+        lang: Lang,
+    ) {
+        let now = now_secs();
+        let snapshot = state.agents.snapshot();
+        let rec = find_agent_by_session(&snapshot, session_id);
+        let waiting = state
+            .registry
+            .in_flight_agent_session_ids()
+            .contains(&session_id.to_string());
+        let seq = rec
+            .and_then(|r| r.get("seq").and_then(|v| v.as_u64()))
+            .unwrap_or(0);
+        let frame = crate::watch::build_frame(seq, rec, waiting);
+        let ended = frame.phase == crate::watch::WatchPhase::Ended;
+        // 上限校验（本渠道；已在关注同一 session＝换新卡，不计新增；已结束不订阅、不计数）。
+        let already = state
+            .watch
+            .subs
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|s| s.channel == "dingding" && s.session_id == session_id);
+        if !ended && !already {
+            let count = state
+                .watch
+                .subs
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|s| s.channel == "dingding")
+                .count();
+            if count >= crate::watch::MAX_WATCHES {
+                let text = crate::i18n::tr(lang, "watch.limit")
+                    .replace("{n}", &crate::watch::MAX_WATCHES.to_string())
+                    .replace("{p}", crate::autochannel::cmd_prefix("dingding"));
+                let _ = reply_channel_text("dingding", config, &text).await;
+                return; // 单选卡不动，可另选。
+            }
+        }
+        // 另发一张实时 watch 卡（活动态活卡 / 已结束则终态卡）。
+        let Some(client) = WatchClient::for_channel("dingding", config).await else {
+            return;
+        };
+        let mode = if ended {
+            crate::watch::CardMode::Final(crate::watch::FinalKind::Ended)
+        } else {
+            crate::watch::CardMode::Active
+        };
+        let new_mid = match client.send(&frame, mode, now, lang).await {
+            Ok(m) => m,
+            Err(err) => {
+                log(&format!("select: send dingtalk watch card failed: {}", err));
+                return;
+            }
+        };
+        // 登记订阅（含换新卡：本渠道同 session 旧卡定格 Replaced）+ 让 watch 引擎认领新卡按钮。
+        register_watch_at(state, "dingding", session_id, seq, &new_mid, &frame, ended, config, lang)
+            .await;
+        ensure_watch_routes(state).await;
+        // 单选卡定格「已选择 [n]」并消费 picker。
+        let label = crate::i18n::tr(lang, "select.pickedCard").replace("{id}", &seq.to_string());
+        dd_finalize_select_card(config, otid, &label).await;
+        remove_picker(state, "dingding", otid);
+    }
+
+    /// 钉钉单选卡点选「unwatch」：取消该关注（旧 watch 卡定格）+ 回文本确认 + 就地刷新单选卡
+    /// （经 OpenAPI 更新 loop；取到 0 则定格「已全部取消关注」）。
+    async fn dd_select_pick_unwatch(
+        state: &Arc<ServerState>,
+        otid: &str,
+        session_id: &str,
+        config: &AppConfig,
+        lang: Lang,
+    ) {
+        let now = now_secs();
+        let entry = state
+            .watch
+            .subs
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|s| s.channel == "dingding" && s.session_id == session_id)
+            .cloned();
+        if let Some(entry) = entry {
+            if let Some(client) = WatchClient::for_channel("dingding", config).await {
+                let snapshot = state.agents.snapshot();
+                let waiting = state
+                    .registry
+                    .in_flight_agent_session_ids()
+                    .contains(&entry.session_id);
+                let frame = crate::watch::build_frame(
+                    entry.seq,
+                    find_agent_by_session(&snapshot, &entry.session_id),
+                    waiting,
+                );
+                if let Err(err) = client
+                    .edit(
+                        &entry.message_id,
+                        &frame,
+                        crate::watch::CardMode::Final(crate::watch::FinalKind::Cancelled),
+                        now,
+                        lang,
+                    )
+                    .await
+                {
+                    log(&format!("select: finalize dingtalk unwatch card failed: {}", err));
+                }
+            }
+            state
+                .watch
+                .subs
+                .lock()
+                .unwrap()
+                .retain(|s| s.message_id != entry.message_id);
+            persist_watch_subs(state);
+            state.watch.notify.notify_one();
+            ensure_watch_routes(state).await;
+            let text =
+                crate::i18n::tr(lang, "watch.unwatchDone").replace("{id}", &entry.seq.to_string());
+            let _ = reply_channel_text("dingding", config, &text).await;
+        }
+        // 就地刷新单选卡：剩余订阅 → 更新 loop；空 → 定格「已全部取消关注」并消费 picker。
+        let snapshot = state.agents.snapshot();
+        let options = unwatch_options(state, "dingding", &snapshot, lang);
+        if options.is_empty() {
+            dd_finalize_select_card(
+                config,
+                otid,
+                crate::i18n::tr(lang, "select.unwatchAllDoneCard"),
+            )
+            .await;
+            remove_picker(state, "dingding", otid);
+        } else {
+            let view = crate::select::build_view(
+                crate::select::title_unwatch(lang),
+                options,
+                crate::select::SelectAction::Unwatch,
+                lang,
+            );
+            let new_ids: Vec<String> = view.options.iter().map(|o| o.id.clone()).collect();
+            if let Ok(client) =
+                crate::dingtalk::client::DingTalkClient::new(&config.channels.dingding)
+            {
+                let map = crate::dingtalk::select::build_select_param_map(&view, lang);
+                if let Err(err) = client
+                    .update_card_private(otid, map, serde_json::json!({}))
+                    .await
+                {
+                    log(&format!("select: refresh dingtalk unwatch card failed: {}", err));
+                }
+            }
+            if let Some(p) = state
+                .select
+                .pickers
+                .lock()
+                .unwrap()
+                .iter_mut()
+                .find(|p| p.channel == "dingding" && p.message_id == otid)
+            {
+                p.options = new_ids;
+            }
+        }
+    }
+
+    /// 定格一张钉钉单选卡（按 key 更新公有 `finalized=true` + `final_label`）：隐藏循环、显示定格文案。
+    async fn dd_finalize_select_card(config: &AppConfig, otid: &str, final_label: &str) {
+        if let Ok(client) = crate::dingtalk::client::DingTalkClient::new(&config.channels.dingding) {
+            let map = crate::dingtalk::select::build_select_final_param_map(final_label);
+            if let Err(err) = client
+                .update_card_private(otid, map, serde_json::json!({}))
+                .await
+            {
+                log(&format!("select: finalize dingtalk select card failed: {}", err));
             }
         }
     }
