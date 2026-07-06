@@ -2,6 +2,80 @@
 
 按具体任务 / 需求记录待办与当前进展。任务 / 需求完成后删除其 section（历史留在 git）。
 
+## 待验收：通用「单选卡」+ /watch·/status·/unwatch 可点选（飞书 MVP 已落地）
+
+用户诉求：三个命令无参时不再回纯文本编号列表（需再敲一次带编号命令），而是**推一张通用单选卡**列出可选
+agent，点一下即执行。设计见 `docs/specs/im-select-card.md`（D1–D8），落地顺序 `docs/plans/im-select-card.md`。
+
+**飞书 MVP 已实现并 `install.sh` 落盘、425 单测全绿**：
+- `select.rs`（新，传输无关，无标记语言）：`SelectDot{Working,Idle}` / `SelectAction{Watch,Status,Unwatch}`（含
+  本地化按钮文案）/ `SelectOption{id, dot, seq, primary(=类型·工作目录名), badge, secondary(=标题)}` / `SelectView` /
+  `SELECT_MAX_OPTIONS=20` 截断 / 按命令种类本地化标题 / `agent_options`（工作中在前、跳过已结束、`· 关注中`徽标）+
+  `agent_option_by_session`（unwatch 按订阅列举、记录消失时降级）。+ `i18n` `select.*`（含 `btnWatch/Status/Unwatch`）。
+- `feishu/card.rs`：`build_select_card`（**用户定稿「方案A」**：每选项一行 `column_set` = 左侧小字号两行富文本
+  ［第一行 markdown 彩色圆点`●` + `**[编号]**` + `类型·工作目录名` + `· 关注中`徽标；第二行灰色标题］+ 右侧紧凑
+  `size:tiny` 按钮［watch=primary/status=default/unwatch=danger，文案随动作］，回调 `{select:<idx>}`，行间细分隔线）/
+  `build_select_final_card`（unwatch 全取消定格）/ `parse_select_action`（读 `context.open_message_id`+`action.value.select`）。
+- `daemon/mod.rs`：`SelectState{pickers,routes}` + `PickerEntry{channel,message_id,kind,options(session_id 快照),created_at}`
+  + `PickerKind{Watch,Status,Unwatch}`；`register_picker`（TTL 30min + 每渠道软上限 10）/ `send_select_card`（四渠道）
+  / `send_agent_picker`（空/渠道不支持回文本兜底）/ `ensure_select_routes`+`ensure_select_route_for`（复用 watch 路由句柄）
+  / `handle_select_card_action`（解析→找 picker→按 kind 分派；过期/越界静默空 ACK）/ `select_pick_watch`（就地变 watch 卡，
+  含 D8 换新卡：`register_watch_at` 抽出的换新卡收尾复用）/ `select_pick_unwatch`（旧卡定格 Cancelled+文本确认+就地刷新，
+  取到 0 定格「已全部取消关注」）；`handle_inbound` 三处无参分支改推卡（带编号/all 仍直达）。
+- **递归规避**：卡回调 recv-loop 内不再调 `ensure_select_routes`（会与 spawn 形成 `!Send` 递归）；watch 认领靠
+  `register_watch_at` 的 `notify` → watch 引擎 `ensure_watch_routes`，残留 select 认领无害、下次 `send_agent_picker`/
+  监听重建时收敛。
+
+**未做（待你真机验收，飞书；daemon 已重启用上新二进制）**：
+- `/watch` 无参→单选卡；点 agent→就地变实时 watch 卡；点「· 关注中」的→旧卡定格「已由新卡片接替」、本卡变新 watch 卡。
+- `/status` 无参→单选卡；点 agent→回文本详情、卡不动可继续点。
+- `/unwatch` 无参（≥2 关注）→单选卡；点 agent→旧卡定格「已取消关注」+文本确认+卡去掉该项；取到 0→卡定格「已全部取消关注」。
+- 边界：无 agent 不弹卡（回文本）；`/watch 3`、`/status 3`、`/unwatch all` 仍直达；daemon 重启后点旧单选卡静默无效。
+
+**P2 — 钉钉单选卡（✅ 已落地 + 真机点选验证通过）**：
+- **模板**：`docs/assets/dingtalk-select-card-template.json` = 用户后台发布件（`Card[标题 BaseText, Loop[选项
+  Markdown + 关注按钮 SingleButton + Divider], 定格 BaseText]`，按钮**单独成行**）。ID
+  `43e7b261-997d-45de-ac5e-92e49d59cad8.schema`（＝`dingtalk/select.rs::DEFAULT_SELECT_CARD_TEMPLATE_ID`）。
+  按钮回传 param `sid` 绑到**循环项字段** `loop_object_list[i].sid`（这条是钉钉侧唯一需人工确认点，已验证）。
+- **变量契约**：全局 `title/btn_text/btn_color(blue|red)/finalized(bool→字符串)/final_label`；循环
+  `loop_object_list[]{option_md(markdown), sid}`（复杂值→JSON 字符串下发，与提问卡 options 同规）。
+- **代码**：`dingtalk/select.rs`：`option_md`（`<font sizeToken/colorTokenV2>` 两行**同 footnote 字号**、绿/灰
+  圆点、`\n\n` 断行）/ `button_color`（watch·status=blue、unwatch=red）/ `build_select_param_map`(6 变量) /
+  `build_select_final_param_map`(按 key 更新 finalized+final_label) / `parse_select_action`(读
+  `content|value.cardPrivateData.actionIds=select` + `params.sid`) + 5 单测。i18n 加 `select.pickedCard`。
+- **daemon 接线**：`send_select_card` 加 `dingding`（create_and_deliver + 自铸 `select-<uuid>`）；
+  `ensure_select_route_for` 泛化飞书+钉钉（钉钉 recv-loop 先空 ACK 满 3s、再 `handle_select_dd_action`）；
+  D4 不能就地变身 → `dd_select_pick_watch`（另发新 watch 卡 + `register_watch_at` 换新卡收尾 + 单选卡 OpenAPI
+  定格「已选择 [n]」）/ `dd_select_pick_unwatch`（旧卡定格 + 文本 + OpenAPI 刷新 loop / 取 0 定格）/
+  `dd_finalize_select_card`；status 点选＝回文本详情。
+- **踩坑（已修，务必记住）**：`dingtalk/router.rs` reader 的卡回调门禁原来**只放行**「提问卡提交 /
+  watch 按钮」两类、其余一律空 ACK 丢弃 → 单选卡点选静默无效。修法：门禁再加一条
+  `select::parse_select_action(&data).is_none()`（即也放行 `actionId=select` 回调）。**以后钉钉再加新卡种
+  务必同步更新这道门禁**，否则新回调会被悄悄吞掉。
+- 真机日志确认：`select card sent … kind=Watch/Status` + `parse_select_action` 正确取回每项 `sid`；点「关注」
+  →新 watch 卡 + 单选卡定格「已选择 [n]」。样式定稿：选项两行同 footnote 字号、按钮单独成行。
+
+**P3 — Telegram / Slack 单选卡（✅ 已落地、full build + 单测全绿；⚠️ 尚未 install，待你确认后再装 + 真机验收）**：
+- **就地编辑**：TG/Slack 与飞书同属「可就地变身」——点「关注」把这条单选卡消息本身编辑成实时 watch 卡
+  （`WatchClient::edit`，非另发新卡；区别于钉钉的另发+定格）。
+- `telegram/select.rs`：`render_select_html`（HTML 正文：标题 +每选项两行［🟢/⚪ 圆点 + `<b>[编号]</b>` +
+  类型·目录 + 徽标 / 斜体标题］）/ `inline_keyboard`（每选项一枚按钮「<动作> [编号]」独占一行，
+  `callback_data=sel:<idx>`）/ `render_select_final_html`（无按钮定格）/ `parse_select_action`（读 `sel:` 前缀→下标）
+  +3 单测。用户定案布局＝「正文两行 + 每 agent 一枚按钮」。
+- `slack/select.rs`：`build_select_blocks`（Block Kit：标题 section + 每选项一个 section＝两行 mrkdwn +
+  右侧 button accessory；`action_id=select_<idx>` 保证整卡唯一，watch=primary/unwatch=danger）/
+  `build_select_final_blocks`（section+context 定格）/ `parse_select_action`（读 `select_` 前缀→`(ts, 下标)`）+3 单测。
+- **daemon 接线**：`send_select_card` 加 `telegram`（send_message 返回 message_id 转字符串）/ `slack`
+  （open_dm + post_message 返回 ts）；`ensure_select_route_for` 补 TG（`set_card_route`，只认领卡回调不抢提问卡
+  自由文字）/ Slack（`set_active(mid,"")` 只认领卡交互）两臂，复用 watch 的 `TgRouter`/`SlRouter` 与 `WatchChannelRouter`
+  枚举；`handle_select_tg_action`（应答 callback 消转圈→解析下标→分派）/ `handle_select_slack_action`（ws 层已 ack→
+  解析 (ts,下标)→分派）→共用 `dispatch_select_pick`（找 picker→按下标取 session_id→按 kind 分派）；点选实现
+  `select_pick_watch_inplace`（就地变 watch 卡，含结束态定格 Ended、上限校验、换新卡收尾 `register_watch_at`）/
+  status＝回文本详情、卡不动 / `select_pick_unwatch_inplace`（旧卡定格 Cancelled + 文本确认 + `refresh_select_card_edit`
+  就地刷新 / 取 0 走 `finalize_select_card_edit` 定格「已全部取消关注」）。
+- **待办**：install（用户确认后）+ 真机验收 TG/Slack 三命令点选（尤其就地变身与 unwatch 刷新）。
+- 可选把 `/status` 点选改卡内详情（暂沿用回文本，四渠道一致）。
+
 ## 待验收：Agent 插话（Interject）—— M1–M6 全量落地
 
 spec `docs/specs/agent-interject.md`（D1–D9）、计划 `docs/plans/agent-interject.md`（M1–M6），均已

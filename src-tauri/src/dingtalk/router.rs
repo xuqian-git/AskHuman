@@ -177,9 +177,12 @@ async fn reader_task(mut stream: StreamConn, routes: Arc<Mutex<Routes>>, alive: 
     while let Some(ev) = stream.recv().await {
         match ev {
             StreamEvent::CardCallback { data, message_id } => {
-                // 只转发「提交」（提问卡）与 watch 按钮回调；其余（选项切换等）会话本就忽略
-                // → 直接空 ACK、不转发。
-                if !card::is_submit(&data) && super::watch::parse_watch_action(&data).is_none() {
+                // 只转发「提交」（提问卡）、watch 按钮、单选卡点选回调；其余（选项切换等）会话本就
+                // 忽略 → 直接空 ACK、不转发。
+                if !card::is_submit(&data)
+                    && super::watch::parse_watch_action(&data).is_none()
+                    && super::select::parse_select_action(&data).is_none()
+                {
                     stream.respond(&message_id, json!({})).await;
                     continue;
                 }
