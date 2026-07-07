@@ -139,3 +139,18 @@
 
 **用户定案（AskHuman）**：Q1 仅排队→消费才回执；Q2 未消费（结束）不回执；Q3 来源渠道持久化；
 Q4 文案用「**阅读**」而非「接收/接受」，新推一条、不带内容摘要。
+
+## 追加需求 E：单选卡显示 agent「已运行时长」（便于区分）
+
+**需求**：单选卡列 agent 时，每行显示该 agent 的运行时长，便于区分是哪个 agent。
+
+**用户定案（AskHuman）**：
+- 范围：**所有** agent 单选卡（`/watch` `/status` `/unwatch` `/msg` 一致）。
+- 位置：选项**主行末尾**追加「· 已运行 X」，排在「· 关注中」徽标之后。
+- 口径：复用 watch 卡 `fmt_duration`（据快照 `startedAt` 起算）；单选卡是一次性快照卡，时长是发卡那刻的值（不走字）。
+
+**实现**：`SelectOption` 增 `elapsed: Option<String>`；`agent_options/msg_options/agent_option_by_session/option_from_record`
+加 `now` 参数；四渲染器主行 badge 后追加 elapsed；daemon 四处发卡传 `now_secs()`。
+
+**反馈意见（用户，实现后）**：空闲 agent 显示「已运行」易误导 → **改为仅「工作中」显示时长，空闲/其它状态不显示**。
+（`option_from_record` 内按 `dot==Working` 门控 elapsed；`<60 秒仍显示 X 秒` 仅对工作中生效。）

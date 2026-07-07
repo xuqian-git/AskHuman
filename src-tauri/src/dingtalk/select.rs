@@ -75,6 +75,10 @@ fn option_md(opt: &SelectOption) -> String {
         head.push(' ');
         head.push_str(badge);
     }
+    if let Some(elapsed) = &opt.elapsed {
+        head.push(' ');
+        head.push_str(elapsed);
+    }
     // 主行与次行同为 footnote 字号（用户定：agent 标题行缩到与下方描述一致，最紧凑）。
     line1.push_str(&font(&head, Some(SIZE_SMALL), None));
     match &opt.secondary {
@@ -160,6 +164,7 @@ mod tests {
             seq: Some(seq),
             primary: primary.to_string(),
             badge: badge.map(|b| b.to_string()),
+            elapsed: None,
             secondary: Some(sub.to_string()),
         }
     }

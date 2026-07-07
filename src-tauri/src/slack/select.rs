@@ -53,6 +53,9 @@ pub fn build_select_blocks(view: &SelectView, lang: Lang) -> (Value, String) {
         if let Some(badge) = &opt.badge {
             text.push_str(&format!(" {}", esc(badge)));
         }
+        if let Some(elapsed) = &opt.elapsed {
+            text.push_str(&format!(" {}", esc(elapsed)));
+        }
         if let Some(sub) = &opt.secondary {
             text.push_str(&format!("\n{}", esc(sub)));
         }
@@ -117,6 +120,7 @@ mod tests {
             seq: Some(seq),
             primary: primary.to_string(),
             badge: badge.map(|b| b.to_string()),
+            elapsed: None,
             secondary: Some(sub.to_string()),
         }
     }

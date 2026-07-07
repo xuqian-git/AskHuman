@@ -40,6 +40,9 @@ pub fn render_select_html(view: &SelectView) -> String {
         if let Some(badge) = &opt.badge {
             out.push_str(&format!(" {}", esc(badge)));
         }
+        if let Some(elapsed) = &opt.elapsed {
+            out.push_str(&format!(" {}", esc(elapsed)));
+        }
         if let Some(sub) = &opt.secondary {
             out.push_str(&format!("\n<i>{}</i>", esc(sub)));
         }
@@ -88,6 +91,7 @@ mod tests {
             seq: Some(seq),
             primary: primary.to_string(),
             badge: badge.map(|b| b.to_string()),
+            elapsed: None,
             secondary: Some(sub.to_string()),
         }
     }

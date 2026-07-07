@@ -61,6 +61,9 @@ pub struct SelectOption {
     pub primary: String,
     /// 主行末徽标（如「· 关注中」，None = 无）。
     pub badge: Option<String>,
+    /// 主行末「· 已运行 X」运行时长（发卡那一刻的快照值，便于区分 agent；None = 无 `startedAt`）。
+    /// 渲染在徽标之后。时长复用 watch 卡算法（`watch::fmt_duration`），始终显示（含 <60 秒）。
+    pub elapsed: Option<String>,
     /// 次行（灰、可换行）：agent 场景 = 标题。
     pub secondary: Option<String>,
 }
@@ -114,12 +117,14 @@ pub fn title_msg(lang: Lang) -> String {
     i18n::tr(lang, "select.titleMsg").to_string()
 }
 
-/// 由一条注册表快照记录组装选项字段（`dot / seq / primary=类型·工作目录名 / secondary=标题`）；
-/// `sid` 已由调用方取好。`watching` 命中则加「· 关注中」徽标。
+/// 由一条注册表快照记录组装选项字段（`dot / seq / primary=类型·工作目录名 / elapsed=已运行时长 /
+/// secondary=标题`）；`sid` 已由调用方取好。`watching` 命中则加「· 关注中」徽标。`now`＝当前 epoch 秒，
+/// 用于据 `startedAt` 算运行时长。
 fn option_from_record(
     rec: &Value,
     sid: String,
     watching: &HashSet<String>,
+    now: u64,
     lang: Lang,
 ) -> SelectOption {
     let dot = match rec.get("state").and_then(|v| v.as_str()) {
@@ -133,14 +138,30 @@ fn option_from_record(
     } else {
         None
     };
+    // 运行时长只对「工作中」显示（用户定案：空闲 agent 显示「已运行」易误导，直接不显示）。
+    let elapsed = (dot == Some(SelectDot::Working))
+        .then(|| elapsed_badge(rec, now, lang))
+        .flatten();
     SelectOption {
         id: sid,
         dot,
         seq,
         primary: primary_text(rec, lang),
         badge,
+        elapsed,
         secondary: Some(title_text(rec, lang)),
     }
+}
+
+/// 主行末「· 已运行 X」时长徽标：据 `startedAt` 起算，复用 watch 卡算法（`fmt_duration`），始终显示
+/// （含 <60 秒的「X 秒」，最利于区分）。无 `startedAt` → None（不显示）。仅工作中 agent 用（调用方门控）。
+fn elapsed_badge(rec: &Value, now: u64, lang: Lang) -> Option<String> {
+    let start = rec.get("startedAt").and_then(|v| v.as_u64())?;
+    let secs = now.saturating_sub(start);
+    Some(format!(
+        "· {}",
+        i18n::tr(lang, "watch.statsElapsed").replace("{t}", &crate::watch::fmt_duration(secs, lang))
+    ))
 }
 
 /// 主文本 = `类型 · 工作目录名`（工作目录名取 cwd 末段，缺省仅类型）。
@@ -177,7 +198,12 @@ fn title_text(rec: &Value, lang: Lang) -> String {
 
 /// 由注册表快照（`AgentRegistry::snapshot()` 的 Value 数组）组装 agent 选项：仅取「工作中 / 空闲」
 /// （已结束不列），工作中在前。`watching` = 本渠道已在关注的 session_id 集合（命中加「· 关注中」徽标）。
-pub fn agent_options(snapshot: &Value, watching: &HashSet<String>, lang: Lang) -> Vec<SelectOption> {
+pub fn agent_options(
+    snapshot: &Value,
+    watching: &HashSet<String>,
+    now: u64,
+    lang: Lang,
+) -> Vec<SelectOption> {
     let empty = Vec::new();
     let list = snapshot.as_array().unwrap_or(&empty);
     let mut working: Vec<SelectOption> = Vec::new();
@@ -196,7 +222,7 @@ pub fn agent_options(snapshot: &Value, watching: &HashSet<String>, lang: Lang) -
         if sid.is_empty() {
             continue;
         }
-        bucket.push(option_from_record(rec, sid, watching, lang));
+        bucket.push(option_from_record(rec, sid, watching, now, lang));
     }
     working.extend(idle);
     working
@@ -204,7 +230,12 @@ pub fn agent_options(snapshot: &Value, watching: &HashSet<String>, lang: Lang) -
 
 /// 由注册表快照组装「可发送插话」的候选选项（`/msg` 无编号单选卡）：**仅列「工作中」且非 grok**
 /// 的 agent（插话只对工作中有意义、grok 无可靠传话通道）。`watching` 命中仍加「· 关注中」徽标。
-pub fn msg_options(snapshot: &Value, watching: &HashSet<String>, lang: Lang) -> Vec<SelectOption> {
+pub fn msg_options(
+    snapshot: &Value,
+    watching: &HashSet<String>,
+    now: u64,
+    lang: Lang,
+) -> Vec<SelectOption> {
     let empty = Vec::new();
     let list = snapshot.as_array().unwrap_or(&empty);
     let mut out: Vec<SelectOption> = Vec::new();
@@ -223,7 +254,7 @@ pub fn msg_options(snapshot: &Value, watching: &HashSet<String>, lang: Lang) -> 
         if sid.is_empty() {
             continue;
         }
-        out.push(option_from_record(rec, sid, watching, lang));
+        out.push(option_from_record(rec, sid, watching, now, lang));
     }
     out
 }
@@ -234,13 +265,14 @@ pub fn agent_option_by_session(
     snapshot: &Value,
     session_id: &str,
     seq: u64,
+    now: u64,
     lang: Lang,
 ) -> SelectOption {
     if let Some(rec) = snapshot.as_array().and_then(|l| {
         l.iter()
             .find(|r| r.get("sessionId").and_then(|v| v.as_str()) == Some(session_id))
     }) {
-        let mut opt = option_from_record(rec, session_id.to_string(), &HashSet::new(), lang);
+        let mut opt = option_from_record(rec, session_id.to_string(), &HashSet::new(), now, lang);
         // 订阅侧的稳定展示编号优先（快照 seq 与订阅 seq 一致，缺省时兜底）。
         opt.seq = opt.seq.or(Some(seq));
         opt
@@ -251,6 +283,7 @@ pub fn agent_option_by_session(
             seq: Some(seq),
             primary: i18n::tr(lang, "autoChannel.noProject").to_string(),
             badge: None,
+            elapsed: None,
             secondary: Some(i18n::tr(lang, "autoChannel.noTitle").to_string()),
         }
     }
@@ -261,17 +294,20 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// 固定「当前时刻」，配合 `startedAt` 断言运行时长。
+    const NOW: u64 = 1_000_000;
+
     fn snap() -> Value {
         json!([
-            {"seq":1,"kind":"cursor","sessionId":"s-idle","state":"idle","title":"闲着","cwd":"/tmp/my-proj"},
-            {"seq":2,"kind":"claude","sessionId":"s-work","state":"working","title":"忙着","cwd":"/tmp/api-server"},
-            {"seq":3,"kind":"codex","sessionId":"s-end","state":"ended","title":"完了","cwd":"/tmp/proj"},
+            {"seq":1,"kind":"cursor","sessionId":"s-idle","state":"idle","title":"闲着","cwd":"/tmp/my-proj","startedAt": NOW - 600},
+            {"seq":2,"kind":"claude","sessionId":"s-work","state":"working","title":"忙着","cwd":"/tmp/api-server","startedAt": NOW - 360},
+            {"seq":3,"kind":"codex","sessionId":"s-end","state":"ended","title":"完了","cwd":"/tmp/proj","startedAt": NOW - 100},
         ])
     }
 
     #[test]
     fn agent_options_working_first_and_skips_ended() {
-        let opts = agent_options(&snap(), &HashSet::new(), Lang::Zh);
+        let opts = agent_options(&snap(), &HashSet::new(), NOW, Lang::Zh);
         // 只列工作中 + 空闲；工作中在前。
         assert_eq!(opts.len(), 2);
         assert_eq!(opts[0].id, "s-work");
@@ -280,18 +316,35 @@ mod tests {
         // 主文本 = 类型 · 工作目录名。
         assert_eq!(opts[0].primary, "Claude Code · api-server");
         assert_eq!(opts[0].secondary.as_deref(), Some("忙着"));
+        // 运行时长（6 分钟 = NOW-360）。
+        assert_eq!(opts[0].elapsed.as_deref(), Some("· 已运行 6 分钟"));
         assert_eq!(opts[1].id, "s-idle");
         assert_eq!(opts[1].dot, Some(SelectDot::Idle));
         assert_eq!(opts[1].primary, "Cursor · my-proj");
+        // 空闲态不显示运行时长（用户定案：易误导）。
+        assert_eq!(opts[1].elapsed, None);
         // 无徽标。
         assert!(opts[0].badge.is_none());
+    }
+
+    #[test]
+    fn elapsed_shows_seconds_under_a_minute_and_none_without_start() {
+        let snap = json!([
+            {"seq":1,"kind":"claude","sessionId":"s1","state":"working","title":"t","cwd":"/tmp/a","startedAt": NOW - 30},
+            {"seq":2,"kind":"cursor","sessionId":"s2","state":"working","title":"t","cwd":"/tmp/b"},
+        ]);
+        let opts = agent_options(&snap, &HashSet::new(), NOW, Lang::Zh);
+        // <60 秒仍显示「X 秒」（用户定案：始终显示，最利于区分）。
+        assert_eq!(opts[0].elapsed.as_deref(), Some("· 已运行 30 秒"));
+        // 无 startedAt → 不显示时长。
+        assert_eq!(opts[1].elapsed, None);
     }
 
     #[test]
     fn watching_badge_applied() {
         let mut watching = HashSet::new();
         watching.insert("s-work".to_string());
-        let opts = agent_options(&snap(), &watching, Lang::Zh);
+        let opts = agent_options(&snap(), &watching, NOW, Lang::Zh);
         assert_eq!(opts[0].id, "s-work");
         assert_eq!(opts[0].badge.as_deref(), Some("· 关注中"));
         assert!(opts[1].badge.is_none());
@@ -299,14 +352,16 @@ mod tests {
 
     #[test]
     fn agent_option_by_session_falls_back_when_missing() {
-        let opt = agent_option_by_session(&snap(), "s-gone", 7, Lang::Zh);
+        let opt = agent_option_by_session(&snap(), "s-gone", 7, NOW, Lang::Zh);
         assert_eq!(opt.id, "s-gone");
         assert_eq!(opt.seq, Some(7));
         assert!(opt.dot.is_none());
+        assert!(opt.elapsed.is_none());
         // 命中时用快照字段。
-        let opt2 = agent_option_by_session(&snap(), "s-work", 2, Lang::Zh);
+        let opt2 = agent_option_by_session(&snap(), "s-work", 2, NOW, Lang::Zh);
         assert_eq!(opt2.dot, Some(SelectDot::Working));
         assert_eq!(opt2.primary, "Claude Code · api-server");
+        assert_eq!(opt2.elapsed.as_deref(), Some("· 已运行 6 分钟"));
     }
 
     #[test]
@@ -317,6 +372,7 @@ mod tests {
             seq: Some(i as u64),
             primary: format!("opt {i}"),
             badge: None,
+            elapsed: None,
             secondary: None,
         };
         let many: Vec<SelectOption> = (0..(SELECT_MAX_OPTIONS + 5)).map(mk).collect();
@@ -344,14 +400,16 @@ mod tests {
         snap.as_array_mut().unwrap().push(json!({
             "seq":4,"kind":"grok","sessionId":"s-grok","state":"working","title":"g","cwd":"/tmp/g"
         }));
-        let opts = msg_options(&snap, &HashSet::new(), Lang::Zh);
+        let opts = msg_options(&snap, &HashSet::new(), NOW, Lang::Zh);
         // 仅剩工作中·非 grok 的那一个（claude s-work）。
         assert_eq!(opts.len(), 1);
         assert_eq!(opts[0].id, "s-work");
+        // 运行时长随选项显示。
+        assert_eq!(opts[0].elapsed.as_deref(), Some("· 已运行 6 分钟"));
         // 关注徽标仍生效。
         let mut watching = HashSet::new();
         watching.insert("s-work".to_string());
-        let opts2 = msg_options(&snap, &watching, Lang::Zh);
+        let opts2 = msg_options(&snap, &watching, NOW, Lang::Zh);
         assert_eq!(opts2[0].badge.as_deref(), Some("· 关注中"));
     }
 }

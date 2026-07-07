@@ -528,6 +528,10 @@ fn select_option_markdown(opt: &crate::select::SelectOption) -> String {
         line1.push(' ');
         line1.push_str(badge);
     }
+    if let Some(elapsed) = &opt.elapsed {
+        line1.push(' ');
+        line1.push_str(elapsed);
+    }
     match &opt.secondary {
         Some(sec) => format!("{}\n<font color='grey'>{}</font>", line1, sec),
         None => line1,
@@ -1206,6 +1210,7 @@ mod tests {
                     seq: Some(2),
                     primary: "Cursor · my-frontend".into(),
                     badge: Some("· 关注中".into()),
+                    elapsed: Some("· 已运行 6 分钟".into()),
                     secondary: Some("甲".into()),
                 },
                 crate::select::SelectOption {
@@ -1214,6 +1219,7 @@ mod tests {
                     seq: Some(1),
                     primary: "Claude Code · api-server".into(),
                     badge: None,
+                    elapsed: None,
                     secondary: Some("乙".into()),
                 },
             ],
@@ -1235,7 +1241,8 @@ mod tests {
         // 左列富文本：圆点 + 加粗编号 + 主文本 + 徽标 + 灰色次行。
         let md0 = rows[0]["columns"][0]["elements"][0]["content"].as_str().unwrap();
         assert!(md0.contains("<font color='green'>●</font>"));
-        assert!(md0.contains("**[2]** Cursor · my-frontend · 关注中"));
+        // 主行：编号 + 主文本 + 关注徽标 + 运行时长（徽标之后）。
+        assert!(md0.contains("**[2]** Cursor · my-frontend · 关注中 · 已运行 6 分钟"));
         assert!(md0.contains("<font color='grey'>甲</font>"));
         let md1 = rows[1]["columns"][0]["elements"][0]["content"].as_str().unwrap();
         assert!(md1.contains("<font color='grey'>●</font>"));

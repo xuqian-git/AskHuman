@@ -3687,6 +3687,7 @@ mod unix_impl {
         snapshot: &serde_json::Value,
         lang: Lang,
     ) -> Vec<crate::select::SelectOption> {
+        let now = now_secs();
         state
             .watch
             .subs
@@ -3694,7 +3695,7 @@ mod unix_impl {
             .unwrap()
             .iter()
             .filter(|s| s.channel == channel_id)
-            .map(|s| crate::select::agent_option_by_session(snapshot, &s.session_id, s.seq, lang))
+            .map(|s| crate::select::agent_option_by_session(snapshot, &s.session_id, s.seq, now, lang))
             .collect()
     }
 
@@ -5076,7 +5077,7 @@ mod unix_impl {
             }
         }
         // 否则弹选择卡（列工作中·非 grok）；关注中的仍带「· 关注中」徽标。
-        let opts = crate::select::msg_options(&snapshot, &watching, lang);
+        let opts = crate::select::msg_options(&snapshot, &watching, now_secs(), lang);
         if opts.is_empty() {
             let _ = reply_channel_text(
                 channel_id,
@@ -5195,6 +5196,7 @@ mod unix_impl {
                         let opts = crate::select::agent_options(
                             &snapshot,
                             &std::collections::HashSet::new(),
+                            now_secs(),
                             lang,
                         );
                         let sent = send_agent_picker(
@@ -5252,7 +5254,7 @@ mod unix_impl {
                     None => {
                         let snapshot = state.agents.snapshot();
                         let watching = watching_sessions(state, channel_id);
-                        let opts = crate::select::agent_options(&snapshot, &watching, lang);
+                        let opts = crate::select::agent_options(&snapshot, &watching, now_secs(), lang);
                         let sent = send_agent_picker(
                             state,
                             channel_id,
