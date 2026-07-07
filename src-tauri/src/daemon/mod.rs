@@ -1020,6 +1020,10 @@ mod unix_impl {
                 ClientMsg::InterjectSubmit { session_id, text } => {
                     interject_submit(state, &session_id, &text);
                 }
+                // 插话追加（不覆盖既有待送达；快捷固定插话用）。
+                ClientMsg::InterjectAppend { session_id, text } => {
+                    interject_append(state, &session_id, &text);
+                }
                 // 撤回待送达。
                 ClientMsg::InterjectClear { session_id } => {
                     if state.interject.clear(&session_id) {
@@ -1651,6 +1655,13 @@ mod unix_impl {
     /// 插话提交的统一处理：覆盖队列（有等待 hook 时立即交付）→ 落盘 → 刷新徽标。
     fn interject_submit(state: &Arc<ServerState>, session_id: &str, text: &str) {
         state.interject.submit(session_id, text);
+        state.interject.persist();
+        broadcast_agents_state(state);
+    }
+
+    /// 插话追加的统一处理：保留既有队列，追加一条消息；若有等待 hook 则立即交付。
+    fn interject_append(state: &Arc<ServerState>, session_id: &str, text: &str) {
+        state.interject.append(session_id, text, None);
         state.interject.persist();
         broadcast_agents_state(state);
     }

@@ -26,6 +26,9 @@ use tauri::{AppHandle, Manager};
 use tokio::io::BufReader;
 use tokio::sync::Notify;
 
+const QUICK_ASK_INTERJECT: &str =
+    "I have a new thought. Before continuing, ask me immediately using the questioning tool described in your instructions.";
+
 /// 某 label 是否为宿主统一承载的窗口（用于窗口计数 / 续命判定）。
 /// 插话 composer 窗口每 session 一个，label 动态（`interject-<hash>`），按前缀识别。
 pub fn is_hosted_label(label: &str) -> bool {
@@ -514,6 +517,11 @@ fn build_specs(up: bool, lang: Lang, data: &TrayData, lifecycle_on: bool) -> Vec
                 // 「发送消息」：grok 无可靠传话通道（首期排除，spec agent-interject D1），且仅「工作中」
                 // 才显示——插话在 agent 下一次工具调用时送达，对空闲无意义（用户定案）。
                 if a.kind != "grok" && a.state == "working" {
+                    sub.push(Node::item(
+                        format!("ijask:{}", a.session_id),
+                        i18n::tr(lang, "tray.agentAskNow").to_string(),
+                        true,
+                    ));
                     let text = if a.pending_interject {
                         i18n::tr(lang, "tray.agentSendMessagePending").to_string()
                     } else {
@@ -650,6 +658,24 @@ pub fn on_menu_event(app: &AppHandle, id: &str) {
                 }),
             );
         }
+        return;
+    }
+    // Agent 子菜单「要求提问」：追加一条固定插话，不打开 composer、不覆盖已有待送达内容。
+    if let Some(session_id) = id.strip_prefix("ijask:") {
+        let session_id = session_id.to_string();
+        tauri::async_runtime::spawn(async move {
+            if let Ok(stream) = transport::connect().await {
+                let (_r, mut w) = stream.into_split();
+                let _ = ipc::write_msg(
+                    &mut w,
+                    &ClientMsg::InterjectAppend {
+                        session_id,
+                        text: QUICK_ASK_INTERJECT.to_string(),
+                    },
+                )
+                .await;
+            }
+        });
         return;
     }
     // Agent 子菜单「聚焦终端」：AppleScript 可能阻塞（授权弹窗等），放后台线程。

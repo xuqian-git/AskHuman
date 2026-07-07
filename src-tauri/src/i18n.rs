@@ -808,6 +808,7 @@ pub fn tr(lang: Lang, key: &'static str) -> &'static str {
             "发送消息…（有待送达）",
         ),
         "tray.agentFocusTerminal" => pick(lang, "Focus Terminal", "聚焦终端"),
+        "tray.agentAskNow" => pick(lang, "Ask Me Now", "要求提问"),
         "tray.checkUpdate" => pick(lang, "Check for Updates", "检查更新"),
         "tray.applyUpdate" => pick(
             lang,

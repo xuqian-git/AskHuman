@@ -302,6 +302,8 @@ pub enum ClientMsg {
     /// 插话提交（整体覆盖该 session 的待送达队列，D2）：空文本＝清空。有等待中的 hook 时立即交付。
     /// 可在 composer 连接上发，也可独立连接即发即走。
     InterjectSubmit { session_id: String, text: String },
+    /// 插话追加：不覆盖已有待送达条目；有等待中的 hook 时立即交付。用于一键快捷插话。
+    InterjectAppend { session_id: String, text: String },
     /// 撤回：清空该 session 的待送达队列（AgentsView 撤回按钮 / IM `/msg-clear`）。即发即走。
     InterjectClear { session_id: String },
     /// 查询该 session 的待送达全文（composer 预填 / IM 回显）。回一帧 `InterjectState`。
@@ -692,6 +694,10 @@ mod tests {
             ClientMsg::InterjectSubmit {
                 session_id: "s1".into(),
                 text: "调整方向".into(),
+            },
+            ClientMsg::InterjectAppend {
+                session_id: "s1".into(),
+                text: "马上提问".into(),
             },
             ClientMsg::InterjectClear {
                 session_id: "s1".into(),
