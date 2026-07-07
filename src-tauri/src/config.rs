@@ -296,10 +296,9 @@ pub struct ChannelsConfig {
     pub dingding: DingTalkChannelConfig,
     pub feishu: FeishuChannelConfig,
     pub slack: SlackChannelConfig,
-    /// 「IM 渠道按需发送」开关（默认关 = 旧「每次提问全发所有启用 IM」行为）。
+    /// 「IM 渠道按需发送」开关（默认开；显式配置的旧用户设置保持原值）。
     /// 开启后：仅当前活跃槽对应的 IM 收提问卡片；在 agent 工作期间于某 IM 发 `/here`（或「这里」）
-    /// 即把该渠道设为活跃槽。UI 入口受实验开关门控，但配置字段独立于 `experimental`，
-    /// 便于将来「转正」时已开启用户无需重开。
+    /// 即把该渠道设为活跃槽。配置字段独立于 `experimental`，显式写入的用户选择跨版本保留。
     pub auto_activation: bool,
     /// 「自动结束 watch」——「按需发送」的子开关（**默认开**，仅 `auto_activation` 开时生效）。
     /// 开启后：当某真实 IM 渠道**不再是活跃槽**（活跃槽切到本地弹窗或别的 IM）时，自动结束该渠道上的
@@ -316,7 +315,7 @@ impl Default for ChannelsConfig {
             dingding: DingTalkChannelConfig::default(),
             feishu: FeishuChannelConfig::default(),
             slack: SlackChannelConfig::default(),
-            auto_activation: false,
+            auto_activation: true,
             // 子开关默认开：老配置缺该字段时（容器级 `#[serde(default)]` 回退到此）按开处理。
             auto_end_watch: true,
         }
@@ -550,8 +549,8 @@ mod tests {
         assert!(c.channels.slack.bot_token.is_empty());
         assert!(c.channels.slack.app_token.is_empty());
         assert!(c.channels.slack.user_id.is_empty());
-        // 「按需发送」默认关；子开关「自动结束 watch」默认开。
-        assert!(!c.channels.auto_activation);
+        // 「按需发送」默认开；子开关「自动结束 watch」默认开。
+        assert!(c.channels.auto_activation);
         assert!(c.channels.auto_end_watch);
     }
 
@@ -562,6 +561,17 @@ mod tests {
         let c: AppConfig = serde_json::from_str(json).unwrap();
         assert!(c.channels.auto_activation);
         assert!(c.channels.auto_end_watch);
+    }
+
+    #[test]
+    fn missing_auto_activation_defaults_to_true_but_explicit_false_is_preserved() {
+        let missing = r#"{"channels":{}}"#;
+        let c: AppConfig = serde_json::from_str(missing).unwrap();
+        assert!(c.channels.auto_activation);
+
+        let explicit_false = r#"{"channels":{"autoActivation":false}}"#;
+        let c: AppConfig = serde_json::from_str(explicit_false).unwrap();
+        assert!(!c.channels.auto_activation);
     }
 
     #[test]
