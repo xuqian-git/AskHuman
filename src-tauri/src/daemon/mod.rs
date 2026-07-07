@@ -330,6 +330,10 @@ mod unix_impl {
         /// `Msg` 卡的待发送内容（点「发送」时投递）；其它 kind 恒 `None`。
         payload: Option<String>,
         created_at: u64,
+        /// 发卡时刻的渠道扰动水位（Unix 毫秒，同 `WatchState::disturb` 量纲）：与当前渠道水位比较判定
+        /// 本单选卡是否仍位于会话底部（其后未再出现非 watch 消息）。用于「仅当单选卡还是最后一条
+        /// 消息时才抑制 watch 跟底」（见 `select_is_last_on`）。
+        posted_ms: u64,
     }
 
     /// 单选卡台账治理上限：每渠道最多留存的活动单选卡数（超出丢最旧）。
@@ -2317,9 +2321,7 @@ mod unix_impl {
             .any(|e| e.coordinator.has_channel(channel_id))
     }
 
-    /// 该渠道当前是否有在途单选卡（picker 未被消费）。与「在途提问」同样抑制 watch 卡「跟底」：
-    /// 用户正在做单选时，watch 卡只就地编辑、不重发到会话底部（免打断单选交互）；单选完成
-    /// （picker 移除）后由 `remove_picker` 清零跟底节流放开重发。
+    /// 该渠道当前是否有在途单选卡（picker 未被消费）。用于 `remove_picker` 判定是否仍有单选卡残留。
     fn has_active_select_on(state: &Arc<ServerState>, channel_id: &str) -> bool {
         state
             .select
@@ -2328,6 +2330,27 @@ mod unix_impl {
             .unwrap()
             .iter()
             .any(|p| p.channel == channel_id)
+    }
+
+    /// 该渠道是否有「仍位于会话底部」的单选卡：picker 发出后未再出现非 watch 消息（`posted_ms >=`
+    /// 渠道 disturb 水位）。**仅当单选卡还是最后一条消息时才抑制 watch 跟底**（免打断正在进行的单选）；
+    /// 一旦被其它消息淹没即放开跟底（用户定案：忘记选择的旧单选卡不该长期卡住 watch 跟底）。
+    fn select_is_last_on(state: &Arc<ServerState>, channel_id: &str) -> bool {
+        let disturb = state
+            .watch
+            .disturb
+            .lock()
+            .unwrap()
+            .get(channel_id)
+            .copied()
+            .unwrap_or(0);
+        state
+            .select
+            .pickers
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|p| p.channel == channel_id && p.posted_ms >= disturb)
     }
 
     // ===== /watch 实时关注引擎（spec docs/specs/im-watch.md，P1 仅飞书）=====
@@ -2610,8 +2633,9 @@ mod unix_impl {
             let Some(client) = WatchClient::for_channel(&ch, &config).await else {
                 continue;
             };
-            // 跟底判定的渠道量：淹没水位线 + 是否有在途提问 / 在途单选卡（二者期间均抑制跟底，只就地
-            // 编辑，不打断问答 / 单选交互；完结时 last_move_ms 已被清零，下一次内容变化立即跟底）。
+            // 跟底判定的渠道量：淹没水位线 + 是否有在途提问 + 单选卡是否仍在会话底部（二者期间均抑制
+            // 跟底，只就地编辑，不打断问答 / 单选交互）。单选卡抑制**仅在它还是最后一条消息时**生效——
+            // 被其它消息淹没（含用户忘记选择后又发了别的）即放开跟底（用户定案）。
             let disturb = state
                 .watch
                 .disturb
@@ -2621,7 +2645,7 @@ mod unix_impl {
                 .copied()
                 .unwrap_or(0);
             let ask_active = has_active_question_on(state, &ch);
-            let select_active = has_active_select_on(state, &ch);
+            let select_active = select_is_last_on(state, &ch);
             for e in entries.iter().filter(|e| e.channel == ch) {
                 let rec = find_agent_by_session(&snapshot, &e.session_id);
                 let frame =
@@ -3657,6 +3681,7 @@ mod unix_impl {
                 options: session_ids,
                 payload,
                 created_at: now_secs(),
+                posted_ms: now_ms(),
             },
         );
         ensure_select_routes(state).await;

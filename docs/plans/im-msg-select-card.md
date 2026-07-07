@@ -79,6 +79,13 @@
   （含钉钉，覆盖到提问路径遗漏 dingding 的小坑）。TTL 过期清理（`register_picker` 内 retain）不特殊处理
   （罕见，下次内容变化按 30s 节流自然跟底）。
 
+**反馈意见（用户，实现后）**：`has_active_select_on`＝「只要有 picker 就抑制」会被**忘记选择的旧单选卡**长期
+卡住 watch 跟底（用户输入 `/status` 弹卡后没选，watch 卡一直不往下刷）。改为**仅当单选卡还是会话最后一条
+消息时才抑制**：`PickerEntry` 加 `posted_ms`（发卡时的 disturb 水位·毫秒），新增
+`select_is_last_on(state,ch)＝∃picker: posted_ms >= 渠道 disturb 水位`，`watch_tick` 用它代替
+`has_active_select_on`。单选卡被其它非 watch 消息淹没后（disturb 前进超过 posted_ms）即放开跟底；
+`remove_picker`（消费路径）仍保留 `has_active_select_on` 判定 + 清零节流不变。
+
 ## 需求 C：状态窗口 + 状态栏菜单「只有工作中才能发消息」
 
 插话只对「工作中」有意义（送达点是 agent 的下一次工具调用）。收敛入口：
