@@ -70,6 +70,11 @@ pub fn answer_inbound_reply(
         None => {
             if crate::autochannel::classify(text) != crate::autochannel::Parsed::Text {
                 None
+            } else if mode == crate::autochannel::AckMode::Card && auto_activation() {
+                // Card mode + auto-activation on: plain text is also handled by
+                // handle_inbound (channel switch or silent return). Suppress
+                // session-side guidance to avoid duplicate messages.
+                None
             } else {
                 Some(crate::autochannel::help_text(
                     auto_activation(),

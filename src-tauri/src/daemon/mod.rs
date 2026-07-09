@@ -2476,7 +2476,7 @@ mod unix_impl {
                 }
                 WatchClient::Slack { client, dm } => {
                     let (blocks, fallback) =
-                        crate::slack::watch::build_watch_blocks(frame, mode, now, lang);
+                        crate::slack::watch::build_watch_blocks(frame, mode, now, lang, None);
                     client
                         .post_message(dm, Some(&blocks), &fallback)
                         .await
@@ -2520,18 +2520,38 @@ mod unix_impl {
                 }
                 WatchClient::Telegram(c) => {
                     let mid: i64 = message_id.parse().map_err(|_| "bad message id".to_string())?;
-                    // editMessageText 整体替换消息：活动态须重传 keyboard，终态不传即移除按钮。
-                    // 先按 mode 取 markup（借用），再把 mode 交给渲染（CardMode 非 Copy）。
-                    let markup = matches!(mode, crate::watch::CardMode::Active)
-                        .then(|| crate::telegram::watch::inline_keyboard(lang));
-                    let html = crate::telegram::watch::render_watch_html(frame, mode, now, lang);
-                    c.edit_message_text(mid, &html, Some("HTML"), markup)
-                        .await
-                        .map_err(|e| e.to_string())
+                    match (&mode, session_id) {
+                        (crate::watch::CardMode::Final(kind), Some(_))
+                            if kind.is_rewatchable() =>
+                        {
+                            let markup = crate::telegram::watch::rewatch_keyboard(kind, lang);
+                            let html = crate::telegram::watch::render_watch_html(
+                                frame,
+                                crate::watch::CardMode::Active,
+                                now,
+                                lang,
+                            );
+                            c.edit_message_text(mid, &html, Some("HTML"), Some(markup))
+                                .await
+                                .map_err(|e| e.to_string())
+                        }
+                        _ => {
+                            let markup = matches!(mode, crate::watch::CardMode::Active)
+                                .then(|| crate::telegram::watch::inline_keyboard(lang));
+                            let html = crate::telegram::watch::render_watch_html(
+                                frame, mode, now, lang,
+                            );
+                            c.edit_message_text(mid, &html, Some("HTML"), markup)
+                                .await
+                                .map_err(|e| e.to_string())
+                        }
+                    }
                 }
                 WatchClient::Slack { client, dm } => {
                     let (blocks, fallback) =
-                        crate::slack::watch::build_watch_blocks(frame, mode, now, lang);
+                        crate::slack::watch::build_watch_blocks(
+                            frame, mode, now, lang, session_id,
+                        );
                     client
                         .update_message(dm, message_id, Some(&blocks), &fallback)
                         .await
@@ -3104,12 +3124,13 @@ mod unix_impl {
                     .unwrap()
                     .retain(|s| s.message_id != mid);
                 persist_watch_subs(state);
-                // 异步发新 watch 卡（复用 handle_watch_cmd 路径）。
+                // 异步发新 watch 卡 + 激活渠道（复用 handle_watch_cmd 路径）。
                 let state = Arc::clone(state);
                 let sid = session_id;
                 tokio::spawn(async move {
                     let config = AppConfig::load();
                     let lang = Lang::current();
+                    activate_channel_on_action(&state, "feishu", &config, lang).await;
                     let snapshot = state.agents.snapshot();
                     let rec = find_agent_by_session(&snapshot, &sid);
                     let seq = rec
@@ -3129,6 +3150,68 @@ mod unix_impl {
     enum WatchBtn {
         Unwatch,
         Refresh,
+    }
+
+    /// 非飞书渠道的 rewatch 统一处理：编辑旧卡为 Rewatched 终态，移除旧 entry，激活渠道，异步发新卡。
+    async fn handle_rewatch(state: &Arc<ServerState>, channel_id: &str, mid: &str) {
+        let entry = {
+            let subs = state.watch.subs.lock().unwrap();
+            subs.iter()
+                .find(|s| s.channel == channel_id && s.message_id == mid && s.rewatchable)
+                .cloned()
+        };
+        let Some(entry) = entry else {
+            return;
+        };
+        let config = AppConfig::load();
+        let Some(client) = WatchClient::for_channel(channel_id, &config).await else {
+            return;
+        };
+        let lang = Lang::current();
+        activate_channel_on_action(state, channel_id, &config, lang).await;
+        let now = now_secs();
+        let snapshot = state.agents.snapshot();
+        let rec = find_agent_by_session(&snapshot, &entry.session_id);
+        let waiting = state
+            .registry
+            .in_flight_agent_session_ids()
+            .contains(&entry.session_id);
+        let frame = crate::watch::build_frame(entry.seq, rec, waiting);
+        if let Err(err) = client
+            .edit(
+                mid,
+                &frame,
+                crate::watch::CardMode::Final(crate::watch::FinalKind::Rewatched),
+                now,
+                lang,
+                None,
+            )
+            .await
+        {
+            log(&format!("watch: rewatch ack card failed: {}", err));
+        }
+        {
+            let mut subs = state.watch.subs.lock().unwrap();
+            subs.retain(|s| s.message_id != mid);
+        }
+        persist_watch_subs(state);
+        let state = Arc::clone(state);
+        let sid = entry.session_id;
+        let ch = channel_id.to_string();
+        tokio::spawn(async move {
+            let config = AppConfig::load();
+            let lang = Lang::current();
+            let snapshot = state.agents.snapshot();
+            let rec = find_agent_by_session(&snapshot, &sid);
+            let seq = rec
+                .and_then(|r| r.get("seq").and_then(|v| v.as_u64()))
+                .unwrap_or(0);
+            if seq == 0 {
+                log("watch: rewatch target session not found, skipping");
+                return;
+            }
+            handle_watch_cmd(&state, &ch, Some(seq), &config, lang).await;
+        });
     }
 
     /// 非飞书渠道的 watch 按钮统一处理：计算新帧并**就地编辑**卡片（这些渠道无「回调同步回卡」
@@ -3218,11 +3301,6 @@ mod unix_impl {
     /// 处理 Telegram watch 卡按钮回调：先应答（消除客户端转圈），再就地编辑。
     async fn handle_watch_tg_action(state: &Arc<ServerState>, cb: &serde_json::Value) {
         let data = cb.get("data").and_then(|v| v.as_str()).unwrap_or("");
-        let btn = match data {
-            crate::telegram::watch::CB_UNWATCH => WatchBtn::Unwatch,
-            crate::telegram::watch::CB_REFRESH => WatchBtn::Refresh,
-            _ => return,
-        };
         let Some(mid) = cb
             .get("message")
             .and_then(|m| m.get("message_id"))
@@ -3241,6 +3319,15 @@ mod unix_impl {
                 c.answer_callback_query(id).await;
             }
         }
+        if data == crate::telegram::watch::CB_REWATCH {
+            handle_rewatch(state, "telegram", &mid.to_string()).await;
+            return;
+        }
+        let btn = match data {
+            crate::telegram::watch::CB_UNWATCH => WatchBtn::Unwatch,
+            crate::telegram::watch::CB_REFRESH => WatchBtn::Refresh,
+            _ => return,
+        };
         apply_watch_action(state, "telegram", &mid.to_string(), btn).await;
     }
 
@@ -3249,6 +3336,10 @@ mod unix_impl {
         let Some((ts, action_id)) = crate::slack::watch::parse_watch_action(payload) else {
             return;
         };
+        if action_id == crate::slack::watch::ACTION_REWATCH {
+            handle_rewatch(state, "slack", &ts).await;
+            return;
+        }
         let btn = if action_id == crate::slack::watch::ACTION_UNWATCH {
             WatchBtn::Unwatch
         } else {
@@ -3262,6 +3353,10 @@ mod unix_impl {
         let Some((otid, action_id)) = crate::dingtalk::watch::parse_watch_action(data) else {
             return;
         };
+        if action_id == crate::dingtalk::watch::ACTION_REWATCH {
+            handle_rewatch(state, "dingding", &otid).await;
+            return;
+        }
         let btn = if action_id == crate::dingtalk::watch::ACTION_UNWATCH {
             WatchBtn::Unwatch
         } else {
@@ -5447,11 +5542,7 @@ mod unix_impl {
                 .await;
             }
             Parsed::Text => {
-                // 普通文本：该渠道有活动在途提问 → 退避（交渠道会话确认/引导，避免重复回复）。
-                if has_active_question_on(state, channel_id) {
-                    return;
-                }
-                // 无活动提问：开关开则切槽（切换则回激活回执）；否则/未切换回引导（liveness）。
+                let has_q = has_active_question_on(state, channel_id);
                 if auto {
                     let (switched, n) = set_active_channel(state, channel_id).await;
                     if switched {
@@ -5463,6 +5554,9 @@ mod unix_impl {
                         .await;
                         return;
                     }
+                }
+                if has_q {
+                    return;
                 }
                 let _ = reply_channel_text(
                     channel_id,

@@ -11,9 +11,10 @@ use crate::i18n::{self, Lang};
 use crate::watch::{self, CardMode, WatchFrame};
 use serde_json::{json, Value};
 
-/// 按钮回调 data 前缀（`watch:unwatch` / `watch:refresh`）。
+/// 按钮回调 data 前缀（`watch:unwatch` / `watch:refresh` / `watch:rewatch`）。
 pub const CB_UNWATCH: &str = "watch:unwatch";
 pub const CB_REFRESH: &str = "watch:refresh";
+pub const CB_REWATCH: &str = "watch:rewatch";
 
 /// 渲染整卡 HTML（`parse_mode=HTML`）。`now` 为渲染时刻（Unix 秒）。
 pub fn render_watch_html(f: &WatchFrame, mode: CardMode, now: u64, lang: Lang) -> String {
@@ -73,6 +74,15 @@ pub fn inline_keyboard(lang: Lang) -> Value {
         "inline_keyboard": [[
             { "text": i18n::tr(lang, "watch.btnUnwatch"), "callback_data": CB_UNWATCH },
             { "text": i18n::tr(lang, "watch.btnRefresh"), "callback_data": CB_REFRESH },
+        ]]
+    })
+}
+
+/// 可重新关注终态的 inline keyboard：单按钮，文案含原因 + 操作提示。
+pub fn rewatch_keyboard(kind: &watch::FinalKind, lang: Lang) -> Value {
+    json!({
+        "inline_keyboard": [[
+            { "text": watch::rewatch_label_text(kind, lang), "callback_data": CB_REWATCH },
         ]]
     })
 }

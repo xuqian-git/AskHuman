@@ -14,13 +14,16 @@ use serde_json::{json, Value};
 /// 按钮 action_id（`block_actions` 回调据此识别）。
 pub const ACTION_UNWATCH: &str = "watch_unwatch";
 pub const ACTION_REFRESH: &str = "watch_refresh";
+pub const ACTION_REWATCH: &str = "watch_rewatch";
 
 /// 组装 watch 卡 blocks + 通知回退文本。`now` 为渲染时刻（Unix 秒）。
+/// `session_id`：可重新关注终态传入以渲染 rewatch 按钮。
 pub fn build_watch_blocks(
     f: &WatchFrame,
     mode: CardMode,
     now: u64,
     lang: Lang,
+    session_id: Option<&str>,
 ) -> (Value, String) {
     use super::markdown::escape as esc;
     let header = watch::header_text(f, lang);
@@ -95,10 +98,24 @@ pub fn build_watch_blocks(
                 ]
             }));
         }
+        CardMode::Final(ref kind) if session_id.is_some() && kind.is_rewatchable() => {
+            blocks.push(json!({
+                "type": "context",
+                "elements": [{ "type": "mrkdwn", "text": esc(&footer) }]
+            }));
+            blocks.push(json!({
+                "type": "actions",
+                "elements": [{
+                    "type": "button",
+                    "action_id": ACTION_REWATCH,
+                    "text": { "type": "plain_text", "text": watch::rewatch_label_text(kind, lang) }
+                }]
+            }));
+        }
         CardMode::Final(kind) => {
             footer.push_str(&format!(
                 "\n*{}*",
-                esc(&watch::final_label_text(kind, lang))
+                esc(&watch::final_label_text(&kind, lang))
             ));
             blocks.push(json!({
                 "type": "context",
@@ -137,7 +154,7 @@ pub fn parse_watch_action(payload: &Value) -> Option<(String, String)> {
         .and_then(|a| a.first())
         .and_then(|a| a.get("action_id"))
         .and_then(|v| v.as_str())?;
-    if action_id != ACTION_UNWATCH && action_id != ACTION_REFRESH {
+    if action_id != ACTION_UNWATCH && action_id != ACTION_REFRESH && action_id != ACTION_REWATCH {
         return None;
     }
     let ts = payload
@@ -186,7 +203,7 @@ mod tests {
 
     #[test]
     fn blocks_layout_active() {
-        let (blocks, fallback) = build_watch_blocks(&frame(), CardMode::Active, 1_700_000_010, Lang::Zh);
+        let (blocks, fallback) = build_watch_blocks(&frame(), CardMode::Active, 1_700_000_010, Lang::Zh, None);
         let arr = blocks.as_array().unwrap();
         // context 头部 + section 状态 + section 动态 + context 更新行 + actions。
         assert_eq!(arr.len(), 5);
@@ -214,6 +231,7 @@ mod tests {
             CardMode::Final(FinalKind::Moved),
             1_700_000_010,
             Lang::Zh,
+            None,
         );
         let arr = blocks.as_array().unwrap();
         assert_eq!(arr.len(), 4); // 无 actions 块。

@@ -2,7 +2,14 @@
 
 按具体任务 / 需求记录待办与当前进展。任务 / 需求完成后删除其 section（历史留在 git）。
 
-## ⏳ 进行中：分析 src-tauri/target 编译产物过大（40+ GB）
+## ⏳ 进行中：Watch 卡片「重新关注」按钮 — 全渠道
+
+计划 `docs/plans/watch-rewatch.md`，需求 `docs/specs/watch-rewatch.md`。
+AutoStopped / Cancelled 终态的 watch 卡提供可点击「重新关注」按钮。
+飞书已上线验收通过；钉钉模板已更新（`docs/assets/dingtalk-watch-card-template.json`）、
+代码已就绪；Telegram / Slack 代码已就绪。待真机验收钉钉 → Telegram → Slack。
+
+## 待办：分析 src-tauri/target 编译产物过大（40+ GB）
 
 ## Hook 性能优化 —— 进程树遍历移至 Daemon
 

@@ -18,11 +18,12 @@ use crate::watch::{self, CardMode, WatchFrame};
 use serde_json::{json, Value};
 
 /// 内置默认 watch 卡片模板 ID（开发者后台「AskHuman Watch」模板，用户导入发布）。
-pub const DEFAULT_WATCH_CARD_TEMPLATE_ID: &str = "1091f490-69f2-4c43-9ecb-7939e539c7e7.schema";
+pub const DEFAULT_WATCH_CARD_TEMPLATE_ID: &str = "fb330b73-cf00-4a7f-ac80-fd884867f9c1.schema";
 
 /// 按钮回调 actionId。
 pub const ACTION_UNWATCH: &str = "watch_unwatch";
 pub const ACTION_REFRESH: &str = "watch_refresh";
+pub const ACTION_REWATCH: &str = "watch_rewatch";
 
 /// 正文字号（h5=15px，与提问卡选项一致；钉钉 markdown 默认字号偏大）。
 const SIZE_BODY: &str = "common_h5_text_style__font_size";
@@ -52,9 +53,14 @@ const NBSP: char = '\u{00a0}';
 /// 组装 watch 卡【公有】`cardParamMap`（模板全部 11 个变量；值均为字符串，boolean 按钉钉约定
 /// 以字符串下发）。创建与更新共用：更新走 `updateCardDataByKey`，全量下发幂等。
 pub fn build_watch_param_map(f: &WatchFrame, mode: CardMode, now: u64, lang: Lang) -> Value {
+    let rewatchable = matches!(&mode, CardMode::Final(kind) if kind.is_rewatchable());
     let final_label = match &mode {
-        CardMode::Final(kind) => watch::final_label_text(kind, lang),
-        CardMode::Active => String::new(),
+        CardMode::Final(kind) if !rewatchable => watch::final_label_text(kind, lang),
+        _ => String::new(),
+    };
+    let rewatch_label = match &mode {
+        CardMode::Final(kind) if rewatchable => watch::rewatch_label_text(kind, lang),
+        _ => String::new(),
     };
     let todo_summary = autochannel::todo_summary(&f.todos, lang);
     json!({
@@ -64,9 +70,10 @@ pub fn build_watch_param_map(f: &WatchFrame, mode: CardMode, now: u64, lang: Lan
         "updated_line": watch::updated_line_text(now, lang),
         "finalized": if matches!(mode, CardMode::Final(_)) { "true" } else { "false" },
         "final_label": final_label,
+        "rewatchable": if rewatchable { "true" } else { "false" },
+        "rewatch_label": rewatch_label,
         "btn_unwatch": i18n::tr(lang, "watch.btnUnwatch"),
         "btn_refresh": i18n::tr(lang, "watch.btnRefresh"),
-        // TODO 折叠面板（摘要作标题、清单作内容、has_todos 控显隐）。
         "has_todos": if todo_summary.is_some() { "true" } else { "false" },
         "todo_summary": todo_summary.unwrap_or_default(),
         "todo_md": todo_md(f),
@@ -169,7 +176,9 @@ pub fn parse_watch_action(data: &Value) -> Option<(String, String)> {
         .and_then(|arr| {
             arr.iter()
                 .filter_map(|v| v.as_str())
-                .find(|id| *id == ACTION_UNWATCH || *id == ACTION_REFRESH)
+                .find(|id| {
+                    *id == ACTION_UNWATCH || *id == ACTION_REFRESH || *id == ACTION_REWATCH
+                })
         })?;
     Some((otid, action.to_string()))
 }
@@ -295,12 +304,27 @@ mod tests {
     fn param_map_final_sets_flag_and_label() {
         let m = build_watch_param_map(
             &frame(),
+            CardMode::Final(FinalKind::Ended),
+            1_700_000_010,
+            Lang::Zh,
+        );
+        assert_eq!(m["finalized"], "true");
+        assert_eq!(m["final_label"], "已结束 · 已自动取消关注");
+        assert_eq!(m["rewatchable"], "false");
+    }
+
+    #[test]
+    fn param_map_rewatchable_sets_rewatch_label() {
+        let m = build_watch_param_map(
+            &frame(),
             CardMode::Final(FinalKind::Cancelled),
             1_700_000_010,
             Lang::Zh,
         );
         assert_eq!(m["finalized"], "true");
-        assert_eq!(m["final_label"], "已取消关注");
+        assert_eq!(m["rewatchable"], "true");
+        assert_eq!(m["rewatch_label"], "已取消关注 · 点击重新关注");
+        assert_eq!(m["final_label"], "");
     }
 
     #[test]
