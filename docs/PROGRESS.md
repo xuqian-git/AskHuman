@@ -2,11 +2,7 @@
 
 按具体任务 / 需求记录待办与当前进展。任务 / 需求完成后删除其 section（历史留在 git）。
 
-## 已完成：状态栏菜单 install 后首次展开自动关闭
-
-根因已定位并修复。详见 `docs/investigations/tray-menu-close-on-first-hover.md`。
-tao `launched()` 以 `.regular` + `activateIgnoringOtherApps(true)` 激活应用导致异常状态；
-修复：setup hook 切到 `.accessory` 后 `deactivate()` + `activate(false)` 重置。
+## ⏳ 进行中：分析 src-tauri/target 编译产物过大（40+ GB）
 
 ## Hook 性能优化 —— 进程树遍历移至 Daemon
 

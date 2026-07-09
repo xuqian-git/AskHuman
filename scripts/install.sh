@@ -147,12 +147,35 @@ if [ "$(uname)" = "Darwin" ]; then
   codesign --verify --strict "$INSTALL_DIR/AskHuman"
 fi
 
-# 顺手回收 target/ 历史编译残留：cargo 不会自动 GC 旧哈希产物（同一库会堆出多份），
-# 装了 cargo-sweep 就清掉 14 天未使用的（保留近期产物，下次仍可增量编译）。未装则跳过（best-effort）。
+# --- target/ 缓存清理 ---
+
+# 1) cargo sweep：清理 deps/ 中不再使用的旧版本依赖产物（.rlib 等）。
 if command -v cargo-sweep >/dev/null 2>&1; then
-  echo "==> 清理 target 历史残留 (cargo sweep --time 14)"
+  echo "==> 清理 target 依赖残留 (cargo sweep --time 14)"
   ( cd src-tauri && cargo sweep --time 14 ) >/dev/null 2>&1 || true
 fi
+
+# 2) 增量编译缓存清理：Cargo 不会 GC incremental/ 下的废弃 hash 目录——
+#    每次 Cargo.lock 变化就产生新 hash，旧的永不删除，持续开发后可达数十 GB。
+#    只保留最近 2 个 hash 目录（按修改时间排序），删除其余。
+_prune_incremental() {
+  local dir="$1"
+  [ -d "$dir" ] || return 0
+  local count=0 freed=0
+  for d in $(ls -dt "$dir"/*/); do
+    count=$((count + 1))
+    if [ $count -gt 2 ]; then
+      sz=$(du -sm "$d" 2>/dev/null | cut -f1)
+      freed=$((freed + ${sz:-0}))
+      rm -rf "$d"
+    fi
+  done
+  [ $freed -gt 0 ] && echo "   清理 $(basename "$dir")/: 删除 $((count - 2)) 个旧 hash 目录, 释放 ${freed}MB"
+  return 0
+}
+echo "==> 清理 target 增量编译缓存"
+_prune_incremental "src-tauri/target/release/incremental"
+_prune_incremental "src-tauri/target/debug/incremental"
 
 echo "==> 完成：$INSTALL_DIR/AskHuman"
 if ! echo "$PATH" | tr ':' '\n' | grep -qx "$INSTALL_DIR"; then
