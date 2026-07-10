@@ -32,7 +32,7 @@
 | D1 | 模式互斥 | 每个 agent 三态「CLI / MCP / 未集成」，互斥。同一 agent 不同时安装 CLI 与 MCP 产物（避免双触发/冲突） |
 | D2 | MCP server 形态 | **薄壳**：不自带提问/弹窗/IM 逻辑；每次 `ask` 调用 spawn 现有 `AskHuman --output json …` 子进程复用全流程。MCP 专属新代码仅三块：①入参 Schema↔argv 映射；②解析子进程 JSON；③图片文件→`ImageContent` |
 | D3 | 启动方式 | 新增 busybox 角色子命令 `AskHuman mcp`（与 `daemon`/`--popup`/`__agent-hook` 并列），用 `rmcp` 跑 STDIO server |
-| D4 | 工具与 Schema | 单工具 `ask`，精简入参：`message`（**渲染为 Markdown**）、`questions[{question, options[{text, recommended}]}]`、`files[]`（见 §5）。`markdown`/`single`/`selectOnly` 三个开关**不在 MCP 暴露**：`markdown` 恒为 on，`single`/`selectOnly` 属脚本/纯文本场景，不适合 MCP 模型自助 |
+| D4 | 工具与 Schema | 单工具 `ask`，精简入参：`message`（**渲染为 Markdown**）、`questions[{question, options[{text, recommended}]}]`、`files[]`（见 §5）。`markdown`/`single`/`selectOnly` 三个开关**不在 MCP 暴露**：`markdown` 恒为 on，`single`/`selectOnly` 属脚本/纯文本场景，不适合 MCP 模型自助。`questions` / `options` 的 item schema 必须直接内联，`ask.inputSchema` 不得依赖本地 `$ref`，避免部分客户端 / Code Mode 把嵌套数组退化为 `Array<unknown>` |
 | D5 | 输出（结构化 + 图片直返）| `ask` 工具**声明 output schema** 并返回**结构化 JSON**（`action`/`channel`/`status?`/`answers[{questionIndex, selectedOptions, userInput?, files[]}]`）：内部子进程以 `--output json` 调用、解析后规整为 `structuredContent`（**剔除仅供脚本用的 `selectedIndices`**），并按 MCP 规范在 `content` 里附一段序列化 JSON 文本（向后兼容）。**取消时（`action:"cancel"`）顶层带 `status` 引导文案**（必须重新确认直到用户明确答复，不得当作放行），该字段同时落进 CLI `--output json`（见 §5）。人类回复中的图片读出后以 `ImageContent`(base64+mimeType) 一并放入 `content` 数组直返模型；非图片文件以路径出现在 JSON `files` 中 |
 | D6 | 超时 | MCP 模式**不需要超时 Hook**，但需按各家机制配置工具超时（否则长等待被取消）：**Codex** 写 `tool_timeout_sec=86400`(秒)+`startup_timeout_sec=30`；**Claude Code(CLI)** 默认 60s（MCP TS SDK `DEFAULT_REQUEST_TIMEOUT_MSEC`），故在 `mcpServers.askhuman` 写 `timeout=86400000`(**毫秒**,24h) 覆盖；**Cursor** 工具/elicitation 超时 ~60s **硬编码不可配置**（社区实测），无法支撑长等待，不写 timeout（Cursor 推荐 CLI 模式） |
 | D7 | MCP 配置落点 | **用户级全局**（与现有 Rules/Hook 一致）：Codex `~/.codex/config.toml`、Claude `~/.claude.json`（top-level `mcpServers`）、Cursor `~/.cursor/mcp.json` |
@@ -139,7 +139,7 @@ argv 映射：`message`→首个位置参数（或经 `-q` 拆分）；每个 qu
 
 ## 9. 验收标准
 
-1. `AskHuman mcp` 启动一个 STDIO MCP server，`tools/list` 含工具 `ask`，Schema 同 §5。
+1. `AskHuman mcp` 启动一个 STDIO MCP server，`tools/list` 含工具 `ask`，Schema 同 §5；其 input schema 直接保留 `questions[].question` 与 `questions[].options[].text`（无 `$defs` / `$ref`）。
 2. 在 Codex 中：写入 `[mcp_servers.askhuman]`（含大 `tool_timeout_sec`）后，调用 `ask` 能弹窗/经 IM 提问、长时间等待不超时；人类回复正常返回。
 3. `ask` 覆盖核心能力：多问题、`options`/`recommended`、`files` 均按 CLI 语义生效；`message`/`question` 按 Markdown 渲染；取消时输出顶层 `status` 引导。
 4. 人类回复图片：模型侧收到 `ImageContent`（可见图像），非图片文件以路径出现在文本中。

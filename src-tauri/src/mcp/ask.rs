@@ -38,6 +38,7 @@ pub struct AskParams {
 
 // 单个问题。
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[schemars(inline)]
 pub struct AskQuestion {
     /// The question text.
     pub question: String,
@@ -48,6 +49,7 @@ pub struct AskQuestion {
 
 // 单个选项。
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[schemars(inline)]
 pub struct AskOption {
     /// The option label.
     pub text: String,
@@ -116,7 +118,10 @@ impl AskServer {
         description = "Ask the human operator one or more questions and wait (possibly for a long \
 time) until they reply. Use this whenever you need a decision, clarification, review, approval, or \
 any input that only the human can provide. Provide `message` for free-form questions, or \
-`questions` (each with optional `options`) for structured choices. The reply is returned as \
+`questions` for structured choices. Each `questions` item requires `question`; each nested \
+`options` item requires `text` and may set `recommended` to true. Example: \
+`{\"questions\":[{\"question\":\"Continue?\",\"options\":[{\"text\":\"Yes\",\"recommended\":true}]}]}`. \
+The reply is returned as \
 structured content; any images the human attaches are returned as image content.",
         output_schema = rmcp::handler::server::tool::schema_for_type::<AskResult>()
     )]
@@ -303,6 +308,16 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    fn contains_ref(value: &Value) -> bool {
+        match value {
+            Value::Object(object) => {
+                object.contains_key("$ref") || object.values().any(contains_ref)
+            }
+            Value::Array(items) => items.iter().any(contains_ref),
+            _ => false,
+        }
+    }
+
     fn params(json: Value) -> AskParams {
         serde_json::from_value(json).unwrap()
     }
@@ -344,6 +359,42 @@ mod tests {
                 "--output",
                 "json",
             ]
+        );
+    }
+
+    #[test]
+    fn ask_tool_schema_inlines_question_and_option_fields() {
+        let server = AskServer::new();
+        let tool = server.tool_router.get("ask").unwrap();
+        let schema = Value::Object((*tool.input_schema).clone());
+
+        assert!(!contains_ref(&schema), "ask input schema must not expose $ref");
+        assert!(schema.get("$defs").is_none());
+        assert_eq!(
+            schema.pointer("/properties/questions/items/type"),
+            Some(&json!("object"))
+        );
+        assert_eq!(
+            schema.pointer("/properties/questions/items/properties/question/type"),
+            Some(&json!("string"))
+        );
+        assert_eq!(
+            schema.pointer("/properties/questions/items/required"),
+            Some(&json!(["question"]))
+        );
+        assert_eq!(
+            schema.pointer("/properties/questions/items/properties/options/items/type"),
+            Some(&json!("object"))
+        );
+        assert_eq!(
+            schema.pointer(
+                "/properties/questions/items/properties/options/items/properties/text/type"
+            ),
+            Some(&json!("string"))
+        );
+        assert_eq!(
+            schema.pointer("/properties/questions/items/properties/options/items/required"),
+            Some(&json!(["text"]))
         );
     }
 

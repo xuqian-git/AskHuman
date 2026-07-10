@@ -193,7 +193,7 @@ pub fn set(target, mode) -> Result<()>;  // 一键切换：先卸其余模式全
 ## 9. 测试
 
 - `prompts.rs`：`mcp_reference()` 含 `ask`、不含 Shell/24h/agent-help 片段（断言）。
-- `mcp/ask.rs`：`image_paths_from_result`（解析 JSON 取图片路径）纯函数单测（单题/多题/无 files/图片+非图片混合/路径含空格）；Schema→argv 构造单测（message/questions/options/recommended/files/flags 组合）；`AskResult` 能反序列化 `render_json` 的输出（忽略 `selectedIndices`）并重新序列化出不含 `selectedIndices`、字段稳定的结构（防 output schema 漂移）。
+- `mcp/ask.rs`：`image_paths_from_result`（解析 JSON 取图片路径）纯函数单测（单题/多题/无 files/图片+非图片混合/路径含空格）；Schema→argv 构造单测（message/questions/options/recommended/files/flags 组合）；从真实 `ToolRouter` 断言 `ask.inputSchema` 的 question / option item 已内联且无 `$ref`；`AskResult` 能反序列化 `render_json` 的输出（忽略 `selectedIndices`）并重新序列化出不含 `selectedIndices`、字段稳定的结构（防 output schema 漂移）。
 - `integrations/mcp_config.rs`：三家 `apply_install`/`apply_uninstall` 幂等、保留用户内容/注释、解析失败中止、command 写绝对路径、Codex 超时字段；`needs_update`（路径漂移）。
 - `integrations/agent_mode.rs`：`current` 变体识别（cli/mcp/none/旧版兜底）；`set` 切换后旧模式产物清除、新模式产物齐全（用临时 HOME 或纯函数层测）。
 - `agent_rules.rs`：variant 写入/识别/needs_update 单测扩展。
