@@ -305,12 +305,27 @@ mod unix_impl {
 
     /// 通用「单选卡」子系统的 daemon 侧状态（spec docs/specs/im-select-card.md）。
     /// picker 是一次性选择器、**不持久化**（daemon 重启后旧卡点击静默无效，D7）。
-    #[derive(Default)]
+    /// 同台账挂 `/stage` Confirm 卡（spec im-diff-stage-transcript；不持久化，TTL 同 picker）。
     struct SelectState {
         /// 活动的单选卡台账（被消费即移除；软上限 + TTL 兜底清理，见 `register_picker`）。
         pickers: Mutex<Vec<PickerEntry>>,
+        /// `/stage` 确认卡台账（与 pickers 共享路由重建，message_id 并入 ensure_select_routes）。
+        confirms: Mutex<Vec<ConfirmEntry>>,
         /// 渠道 id → 卡片按钮回调路由任务句柄（复用 watch 的 `WatchRouteHandle`）。
         routes: Mutex<HashMap<String, WatchRouteHandle>>,
+        /// 异步请求重建 select/confirm 路由（打破 ensure_select_route_for ↔ card handler 的 async 环）。
+        route_refresh: tokio::sync::Notify,
+    }
+
+    impl Default for SelectState {
+        fn default() -> Self {
+            Self {
+                pickers: Mutex::new(Vec::new()),
+                confirms: Mutex::new(Vec::new()),
+                routes: Mutex::new(HashMap::new()),
+                route_refresh: tokio::sync::Notify::new(),
+            }
+        }
     }
 
     /// 单选卡种类（决定点选后做什么；接新命令只需加一档 + 其选中动作）。
@@ -321,6 +336,25 @@ mod unix_impl {
         Unwatch,
         /// 发送插话（`/msg` 无编号）：点选把 `PickerEntry::payload` 发给该 agent。
         Msg,
+        Diff,
+        Stage,
+        Transcript,
+    }
+
+    /// `/stage` 确认卡台账（不持久化）。用提问卡模板：单选「暂存/取消」+ 提交，无输入框。
+    #[derive(Clone)]
+    struct ConfirmEntry {
+        channel: String,
+        message_id: String,
+        session_id: String,
+        git_root: std::path::PathBuf,
+        paths_fp: String,
+        title: String,
+        /// 文件列表正文（markdown），用于 toggle 重渲染。
+        body: String,
+        /// 单选已选原文（飞书表单外勾选器；钉钉由提交 payload 带上）。
+        selected: Option<String>,
+        created_at: u64,
     }
 
     /// 一条活动的单选卡台账。选项快照仅存各选项的 session_id（下标即按钮 idx），点击时按下标取 id、
@@ -705,6 +739,17 @@ mod unix_impl {
         {
             let st = state.clone();
             tokio::spawn(async move { watch_restore_and_run(st).await; });
+        }
+
+        // select/confirm 路由重建旁路任务：避免 card handler → ensure_select_routes 的 async 类型环。
+        {
+            let st = state.clone();
+            tokio::spawn(async move {
+                loop {
+                    st.select.route_refresh.notified().await;
+                    ensure_select_routes(&st).await;
+                }
+            });
         }
 
         loop {
@@ -3855,6 +3900,9 @@ mod unix_impl {
             PickerKind::Status => crate::select::SelectAction::Status,
             PickerKind::Unwatch => crate::select::SelectAction::Unwatch,
             PickerKind::Msg => crate::select::SelectAction::Msg,
+            PickerKind::Diff => crate::select::SelectAction::Diff,
+            PickerKind::Stage => crate::select::SelectAction::Stage,
+            PickerKind::Transcript => crate::select::SelectAction::Transcript,
         };
         let view = crate::select::build_view(title, options, action, lang);
         let session_ids: Vec<String> = view.options.iter().map(|o| o.id.clone()).collect();
@@ -3968,6 +4016,7 @@ mod unix_impl {
     }
 
     /// 幂等确保各渠道的单选卡回调路由任务在位（撤掉已无 picker 的渠道路由）。飞书 / 钉钉 / TG / Slack。
+    /// Confirm 卡 message_id 一并纳入（与 pickers 共享路由任务）。
     async fn ensure_select_routes(state: &Arc<ServerState>) {
         let mut desired: HashMap<String, Vec<String>> = HashMap::new();
         for p in state.select.pickers.lock().unwrap().iter() {
@@ -3976,8 +4025,15 @@ mod unix_impl {
                 .or_default()
                 .push(p.message_id.clone());
         }
+        for c in state.select.confirms.lock().unwrap().iter() {
+            desired
+                .entry(c.channel.clone())
+                .or_default()
+                .push(c.message_id.clone());
+        }
         for mids in desired.values_mut() {
             mids.sort();
+            mids.dedup();
         }
         {
             let mut routes = state.select.routes.lock().unwrap();
@@ -4163,14 +4219,19 @@ mod unix_impl {
         }
     }
 
-    /// 处理飞书单选卡点击：解析 `(open_message_id, idx)` → 找 picker → 按 kind 分派。
-    /// 过期 / 越界 / 无 picker → 空 ACK（静默，D7）。
+    /// 处理飞书单选卡 / 确认卡点击。
+    /// 过期 / 越界 / 无台账 → 空 ACK（静默，D7）。
     async fn handle_select_card_action(
         state: &Arc<ServerState>,
         channel_id: &str,
         data: &serde_json::Value,
         ack: tokio::sync::oneshot::Sender<Option<serde_json::Value>>,
     ) {
+        // Stage 双按钮确认卡。
+        if let Some((mid, ok)) = crate::feishu::card::parse_confirm_action(data) {
+            handle_confirm_action(state, channel_id, &mid, ok, Some(ack)).await;
+            return;
+        }
         let Some((mid, idx)) = crate::feishu::card::parse_select_action(data) else {
             let _ = ack.send(None);
             return;
@@ -4215,6 +4276,20 @@ mod unix_impl {
                 let content = picker.payload.clone().unwrap_or_default();
                 select_pick_msg(state, channel_id, &mid, &session_id, &content, lang, ack).await;
                 // 卡片点『发送』＝在该渠道操作 → 设为活跃槽（与 /msg 一致，用户决策）。
+                activate_channel_on_action(state, channel_id, &config, lang).await;
+            }
+            PickerKind::Diff | PickerKind::Stage | PickerKind::Transcript => {
+                select_pick_export(
+                    state,
+                    channel_id,
+                    &mid,
+                    &session_id,
+                    picker.kind,
+                    &config,
+                    lang,
+                    Some(ack),
+                )
+                .await;
                 activate_channel_on_action(state, channel_id, &config, lang).await;
             }
         }
@@ -4452,6 +4527,10 @@ mod unix_impl {
     /// 处理钉钉单选卡点击：解析 `(outTrackId, sid)` → 找 picker → 按 kind 分派。
     /// 过期 / sid 空 / 不属于本卡 → 静默（D7；空 ACK 已由路由任务发出）。
     async fn handle_select_dd_action(state: &Arc<ServerState>, data: &serde_json::Value) {
+        // Stage 确认卡（提问模板）：提交后按选项 0=暂存 / 1=取消。
+        if handle_stage_dd_submit(state, data).await {
+            return;
+        }
         let Some((otid, session_id)) = crate::dingtalk::select::parse_select_action(data) else {
             return;
         };
@@ -4492,6 +4571,20 @@ mod unix_impl {
                 let content = picker.payload.clone().unwrap_or_default();
                 dd_select_pick_msg(state, &otid, &session_id, &content, &config, lang).await;
                 // 卡片点『发送』＝在该渠道操作 → 设为活跃槽（与 /msg 一致，用户决策）。
+                activate_channel_on_action(state, "dingding", &config, lang).await;
+            }
+            PickerKind::Diff | PickerKind::Stage | PickerKind::Transcript => {
+                select_pick_export(
+                    state,
+                    "dingding",
+                    &otid,
+                    &session_id,
+                    picker.kind,
+                    &config,
+                    lang,
+                    None,
+                )
+                .await;
                 activate_channel_on_action(state, "dingding", &config, lang).await;
             }
         }
@@ -4700,12 +4793,9 @@ mod unix_impl {
 
     // ===== Telegram / Slack 单选卡点选（可就地编辑：点 watch → 本消息变身为实时 watch 卡）=====
 
-    /// 处理 Telegram 单选卡点击：应答消除转圈 → 解析下标 → 分派。
+    /// 处理 Telegram 单选卡 / 确认卡点击：应答消除转圈 → 解析 → 分派。
     async fn handle_select_tg_action(state: &Arc<ServerState>, cb: &serde_json::Value) {
         let data = cb.get("data").and_then(|v| v.as_str()).unwrap_or("");
-        let Some(idx) = crate::telegram::select::parse_select_action(data) else {
-            return; // 非单选卡回调（本路由只认领单选卡消息；防御）。
-        };
         let Some(mid) = cb
             .get("message")
             .and_then(|m| m.get("message_id"))
@@ -4725,15 +4815,26 @@ mod unix_impl {
                 c.answer_callback_query(id).await;
             }
         }
+        if let Some(ok) = crate::telegram::confirm::parse_confirm_action(data) {
+            handle_confirm_action(state, "telegram", &mid.to_string(), ok, None).await;
+            return;
+        }
+        let Some(idx) = crate::telegram::select::parse_select_action(data) else {
+            return;
+        };
         dispatch_select_pick(state, "telegram", &mid.to_string(), idx, &config).await;
     }
 
-    /// 处理 Slack 单选卡点击（ack 已在 ws 层完成）：解析 `(ts, 下标)` → 分派。
+    /// 处理 Slack 单选卡 / 确认卡点击（ack 已在 ws 层完成）。
     async fn handle_select_slack_action(state: &Arc<ServerState>, payload: &serde_json::Value) {
+        let config = AppConfig::load();
+        if let Some((ts, ok)) = crate::slack::confirm::parse_confirm_action(payload) {
+            handle_confirm_action(state, "slack", &ts, ok, None).await;
+            return;
+        }
         let Some((ts, idx)) = crate::slack::select::parse_select_action(payload) else {
             return;
         };
-        let config = AppConfig::load();
         dispatch_select_pick(state, "slack", &ts, idx, &config).await;
     }
 
@@ -4781,6 +4882,20 @@ mod unix_impl {
                 select_pick_msg_inplace(state, channel_id, mid, &session_id, &content, config, lang)
                     .await;
                 // 卡片点『发送』＝在该渠道操作 → 设为活跃槽（与 /msg 一致，用户决策）。
+                activate_channel_on_action(state, channel_id, config, lang).await;
+            }
+            PickerKind::Diff | PickerKind::Stage | PickerKind::Transcript => {
+                select_pick_export(
+                    state,
+                    channel_id,
+                    mid,
+                    &session_id,
+                    picker.kind,
+                    config,
+                    lang,
+                    None,
+                )
+                .await;
                 activate_channel_on_action(state, channel_id, config, lang).await;
             }
         }
@@ -5533,6 +5648,24 @@ mod unix_impl {
             Parsed::Command(Command::MsgClear(sel)) => {
                 handle_msg_clear_cmd(state, channel_id, sel, &config, lang).await;
             }
+            // /diff · /stage · /transcript（spec im-diff-stage-transcript）。
+            Parsed::Command(Command::Diff(sel)) => {
+                handle_export_cmd(state, channel_id, sel, PickerKind::Diff, &config, lang).await;
+            }
+            Parsed::Command(Command::Stage(sel)) => {
+                handle_export_cmd(state, channel_id, sel, PickerKind::Stage, &config, lang).await;
+            }
+            Parsed::Command(Command::Transcript(sel)) => {
+                handle_export_cmd(
+                    state,
+                    channel_id,
+                    sel,
+                    PickerKind::Transcript,
+                    &config,
+                    lang,
+                )
+                .await;
+            }
             Parsed::Command(Command::Help) | Parsed::UnknownCommand => {
                 let has_q = has_active_question_on(state, channel_id);
                 let _ = reply_channel_text(
@@ -5631,8 +5764,8 @@ mod unix_impl {
     }
 
     /// 「在该渠道操作即激活」的统一入口：`auto_activation` 开时把活跃槽切到本渠道；真正切换了
-    /// 就回一条激活回执（与 `/here`、`/status`、普通文本一致）。用于 `/watch`、`/msg`、`/msg-clear`
-    /// 及单选卡「关注 / 查看」点选——这些本属「在渠道上说话」，理应把它设为活跃槽（用户决策）。
+    /// 就回一条激活回执（与 `/here`、`/status`、普通文本一致）。用于 `/watch`、`/msg`、`/msg-clear`、
+    /// `/diff`/`/stage`/`/transcript` 及单选卡点选——这些本属「在渠道上说话」，理应设为活跃槽。
     async fn activate_channel_on_action(
         state: &Arc<ServerState>,
         channel_id: &str,
@@ -5757,6 +5890,667 @@ mod unix_impl {
             }
             _ => Err(format!("reply unsupported for channel: {}", channel_id)),
         }
+    }
+
+    // ── /diff · /stage · /transcript（spec im-diff-stage-transcript）──
+
+    async fn handle_export_cmd(
+        state: &Arc<ServerState>,
+        channel_id: &str,
+        sel: Option<u64>,
+        kind: PickerKind,
+        config: &AppConfig,
+        lang: Lang,
+    ) {
+        activate_channel_on_action(state, channel_id, config, lang).await;
+        match sel {
+            Some(n) => {
+                let snapshot = state.agents.snapshot();
+                let Some(rec) = crate::autochannel::find_by_seq(&snapshot, n) else {
+                    let prefix = crate::autochannel::cmd_prefix(channel_id);
+                    let text = crate::i18n::tr(lang, "export.notFound")
+                        .replace("{n}", &n.to_string())
+                        .replace("{p}", prefix);
+                    let _ = reply_channel_text(channel_id, config, &text).await;
+                    return;
+                };
+                let sid = rec
+                    .get("sessionId")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                if sid.is_empty() {
+                    let _ = reply_channel_text(
+                        channel_id,
+                        config,
+                        crate::i18n::tr(lang, "export.noCwd"),
+                    )
+                    .await;
+                    return;
+                }
+                match kind {
+                    PickerKind::Diff => run_diff(state, channel_id, &sid, config, lang).await,
+                    PickerKind::Transcript => {
+                        run_transcript(state, channel_id, &sid, config, lang).await
+                    }
+                    PickerKind::Stage => {
+                        run_stage_confirm(state, channel_id, &sid, config, lang).await
+                    }
+                    _ => {}
+                }
+            }
+            None => {
+                let snapshot = state.agents.snapshot();
+                let opts = crate::select::agent_options(
+                    &snapshot,
+                    &std::collections::HashSet::new(),
+                    now_secs(),
+                    lang,
+                );
+                let title = match kind {
+                    PickerKind::Diff => crate::select::title_diff(lang),
+                    PickerKind::Stage => crate::select::title_stage(lang),
+                    PickerKind::Transcript => crate::select::title_transcript(lang),
+                    _ => String::new(),
+                };
+                let sent =
+                    send_agent_picker(state, channel_id, config, kind, title, opts, None, lang)
+                        .await;
+                if !sent {
+                    let _ = reply_channel_text(
+                        channel_id,
+                        config,
+                        &crate::autochannel::status_text(&snapshot, lang),
+                    )
+                    .await;
+                }
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn select_pick_export(
+        state: &Arc<ServerState>,
+        channel_id: &str,
+        mid: &str,
+        session_id: &str,
+        kind: PickerKind,
+        config: &AppConfig,
+        lang: Lang,
+        ack: Option<tokio::sync::oneshot::Sender<Option<serde_json::Value>>>,
+    ) {
+        let snapshot = state.agents.snapshot();
+        let seq = find_agent_by_session(&snapshot, session_id)
+            .and_then(|r| r.get("seq").and_then(|v| v.as_u64()))
+            .unwrap_or(0);
+        let label_key = match kind {
+            PickerKind::Diff => "select.diffDoneCard",
+            PickerKind::Stage => "select.stageOpenedCard",
+            PickerKind::Transcript => "select.transcriptDoneCard",
+            _ => "select.diffDoneCard",
+        };
+        let title = match kind {
+            PickerKind::Diff => crate::select::title_diff(lang),
+            PickerKind::Stage => crate::select::title_stage(lang),
+            PickerKind::Transcript => crate::select::title_transcript(lang),
+            _ => String::new(),
+        };
+        let label = crate::i18n::tr(lang, label_key).replace("{id}", &seq.to_string());
+        if channel_id == "feishu" {
+            if let Some(ack) = ack {
+                let card = crate::feishu::card::build_select_final_card(&title, &label);
+                let _ = ack.send(Some(crate::feishu::card::callback_update_card(card)));
+            }
+        } else if channel_id == "dingding" {
+            dd_finalize_select_card(config, mid, &label).await;
+        } else {
+            finalize_select_card_edit(channel_id, config, mid, &title, &label).await;
+        }
+        remove_picker(state, channel_id, mid);
+        match kind {
+            PickerKind::Diff => run_diff(state, channel_id, session_id, config, lang).await,
+            PickerKind::Transcript => {
+                run_transcript(state, channel_id, session_id, config, lang).await
+            }
+            PickerKind::Stage => {
+                run_stage_confirm(state, channel_id, session_id, config, lang).await
+            }
+            _ => {}
+        }
+    }
+
+    fn agent_export_meta(
+        snapshot: &serde_json::Value,
+        session_id: &str,
+    ) -> Option<(u64, String, String, String, Option<String>)> {
+        let rec = find_agent_by_session(snapshot, session_id)?;
+        let seq = rec.get("seq").and_then(|v| v.as_u64()).unwrap_or(0);
+        let kind = rec
+            .get("kind")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let title = rec
+            .get("title")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let cwd = rec
+            .get("cwd")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let project = cwd
+            .as_deref()
+            .and_then(crate::autochannel::project_name)
+            .unwrap_or_else(|| "project".into());
+        Some((seq, kind, title, project, cwd))
+    }
+
+    async fn run_diff(
+        state: &Arc<ServerState>,
+        channel_id: &str,
+        session_id: &str,
+        config: &AppConfig,
+        lang: Lang,
+    ) {
+        let snapshot = state.agents.snapshot();
+        let Some((seq, kind, _title, project, cwd)) = agent_export_meta(&snapshot, session_id)
+        else {
+            let _ = reply_channel_text(channel_id, config, crate::i18n::tr(lang, "export.noCwd")).await;
+            return;
+        };
+        let Some(cwd) = cwd else {
+            let _ = reply_channel_text(channel_id, config, crate::i18n::tr(lang, "export.noCwd")).await;
+            return;
+        };
+        let Some(root) = crate::gitutil::find_git_root(std::path::Path::new(&cwd)) else {
+            let text = crate::i18n::tr(lang, "export.notGit").replace("{path}", &cwd);
+            let _ = reply_channel_text(channel_id, config, &text).await;
+            return;
+        };
+        let model = match crate::gitutil::build_diff_model(&root) {
+            Ok(m) => m,
+            Err(e) => {
+                let _ = reply_channel_text(channel_id, config, &e).await;
+                return;
+            }
+        };
+        if model.total_paths == 0 {
+            let _ = reply_channel_text(channel_id, config, crate::i18n::tr(lang, "export.noUnstaged"))
+                .await;
+            return;
+        }
+        let meta = format!("Diff · [{seq}] {kind} · {project}");
+        // 用户定案：直接发附件，不附摘要消息头。
+        let (bytes, name) = match channel_id {
+            "feishu" => {
+                let md = crate::export::render_diff_md(&model, &meta);
+                (md.into_bytes(), crate::export::diff_filename(seq, &project, "md"))
+            }
+            "dingding" | "slack" => match crate::export::render_diff_docx(&model, &meta) {
+                Ok(b) => (b, crate::export::diff_filename(seq, &project, "docx")),
+                Err(e) => {
+                    let t = crate::i18n::tr(lang, "export.sendFailed").replace("{err}", &e);
+                    let _ = reply_channel_text(channel_id, config, &t).await;
+                    return;
+                }
+            },
+            _ => {
+                // telegram (and any other)
+                let html = crate::export::render_diff_html(&model, &meta);
+                (
+                    html.into_bytes(),
+                    crate::export::diff_filename(seq, &project, "html"),
+                )
+            }
+        };
+        if let Err(e) = reply_channel_file(channel_id, config, &name, &bytes).await {
+            let t = crate::i18n::tr(lang, "export.sendFailed").replace("{err}", &e);
+            let _ = reply_channel_text(channel_id, config, &t).await;
+        }
+    }
+
+    async fn run_transcript(
+        state: &Arc<ServerState>,
+        channel_id: &str,
+        session_id: &str,
+        config: &AppConfig,
+        lang: Lang,
+    ) {
+        let snapshot = state.agents.snapshot();
+        let Some((seq, kind_s, title, project, _)) = agent_export_meta(&snapshot, session_id)
+        else {
+            let _ = reply_channel_text(channel_id, config, crate::i18n::tr(lang, "export.noCwd")).await;
+            return;
+        };
+        let Some(akind) = crate::agents::AgentKind::parse(&kind_s) else {
+            let _ = reply_channel_text(channel_id, config, crate::i18n::tr(lang, "export.noTranscript"))
+                .await;
+            return;
+        };
+        let doc = match crate::agents::transcript_full::load_events(akind, session_id) {
+            Ok(d) => d,
+            Err(_) => {
+                let _ = reply_channel_text(
+                    channel_id,
+                    config,
+                    crate::i18n::tr(lang, "export.noTranscript"),
+                )
+                .await;
+                return;
+            }
+        };
+        let meta = format!(
+            "Transcript · [{seq}] {kind_s} · {}",
+            if title.is_empty() { &project } else { &title }
+        );
+        // 用户定案：直接发附件，不附摘要消息头。
+        let slug_src = if title.is_empty() { &project } else { &title };
+        let (bytes, name) = match channel_id {
+            "feishu" => {
+                let md = crate::export::render_transcript_md(&doc, &meta);
+                (
+                    md.into_bytes(),
+                    crate::export::transcript_filename(seq, slug_src, "md"),
+                )
+            }
+            "dingding" | "slack" => match crate::export::render_transcript_docx(&doc, &meta) {
+                Ok(b) => (
+                    b,
+                    crate::export::transcript_filename(seq, slug_src, "docx"),
+                ),
+                Err(e) => {
+                    let t = crate::i18n::tr(lang, "export.sendFailed").replace("{err}", &e);
+                    let _ = reply_channel_text(channel_id, config, &t).await;
+                    return;
+                }
+            },
+            _ => {
+                let html = crate::export::render_transcript_html(&doc, &meta);
+                (
+                    html.into_bytes(),
+                    crate::export::transcript_filename(seq, slug_src, "html"),
+                )
+            }
+        };
+        if let Err(e) = reply_channel_file(channel_id, config, &name, &bytes).await {
+            let t = crate::i18n::tr(lang, "export.sendFailed").replace("{err}", &e);
+            let _ = reply_channel_text(channel_id, config, &t).await;
+        }
+    }
+
+    async fn run_stage_confirm(
+        state: &Arc<ServerState>,
+        channel_id: &str,
+        session_id: &str,
+        config: &AppConfig,
+        lang: Lang,
+    ) {
+        let snapshot = state.agents.snapshot();
+        let Some((_seq, _kind, _title, project, cwd)) = agent_export_meta(&snapshot, session_id)
+        else {
+            let _ = reply_channel_text(channel_id, config, crate::i18n::tr(lang, "export.noCwd")).await;
+            return;
+        };
+        let Some(cwd) = cwd else {
+            let _ = reply_channel_text(channel_id, config, crate::i18n::tr(lang, "export.noCwd")).await;
+            return;
+        };
+        let Some(root) = crate::gitutil::find_git_root(std::path::Path::new(&cwd)) else {
+            let text = crate::i18n::tr(lang, "export.notGit").replace("{path}", &cwd);
+            let _ = reply_channel_text(channel_id, config, &text).await;
+            return;
+        };
+        let preview = match crate::gitutil::preview_stage(&root) {
+            Ok(p) => p,
+            Err(e) => {
+                let _ = reply_channel_text(channel_id, config, &e).await;
+                return;
+            }
+        };
+        if preview.paths.is_empty() {
+            let _ = reply_channel_text(channel_id, config, crate::i18n::tr(lang, "export.noUnstaged"))
+                .await;
+            return;
+        }
+        let view = crate::confirm::stage_confirm_view(
+            lang,
+            &project,
+            &preview.paths,
+            preview.paths.len(),
+        );
+        let Some(mid) = send_confirm_card(channel_id, config, &view).await else {
+            let _ = reply_channel_text(channel_id, config, "Failed to send confirm card").await;
+            return;
+        };
+        {
+            let mut cs = state.select.confirms.lock().unwrap();
+            let now = now_secs();
+            cs.retain(|c| now.saturating_sub(c.created_at) < SELECT_PICKER_TTL_SECS);
+            cs.push(ConfirmEntry {
+                channel: channel_id.to_string(),
+                message_id: mid,
+                session_id: session_id.to_string(),
+                git_root: root,
+                paths_fp: crate::gitutil::paths_fingerprint(&preview.paths),
+                title: view.title.clone(),
+                body: view.body.clone(),
+                selected: None,
+                created_at: now,
+            });
+        }
+        state.select.route_refresh.notify_one();
+    }
+
+    /// 钉钉 stage 确认（专用确认模板双按钮）：成功返回 true。
+    async fn handle_stage_dd_submit(state: &Arc<ServerState>, data: &serde_json::Value) -> bool {
+        let Some((otid, ok)) = crate::dingtalk::confirm::parse_confirm_action(data) else {
+            return false;
+        };
+        let has = {
+            let cs = state.select.confirms.lock().unwrap();
+            cs.iter()
+                .any(|c| c.channel == "dingding" && c.message_id == otid)
+        };
+        if !has {
+            return false;
+        }
+        handle_confirm_action(state, "dingding", &otid, ok, None).await;
+        true
+    }
+
+    async fn send_confirm_card(
+        channel_id: &str,
+        config: &AppConfig,
+        view: &crate::confirm::ConfirmView,
+    ) -> Option<String> {
+        match channel_id {
+            "feishu" => {
+                let client =
+                    crate::feishu::client::FeishuClient::new(&config.channels.feishu).ok()?;
+                let card = crate::feishu::card::build_confirm_card(view);
+                client.send_card(&card).await.ok()
+            }
+            "dingding" => {
+                // 专用确认模板：双按钮 + finalized（docs/assets/dingtalk-confirm-card-template.json）。
+                let client =
+                    crate::dingtalk::client::DingTalkClient::new(&config.channels.dingding)
+                        .ok()?;
+                let otid = uuid::Uuid::new_v4().to_string();
+                let map = crate::dingtalk::confirm::build_param_map(view);
+                let private = serde_json::json!({});
+                let tpl = {
+                    let t = config.channels.dingding.confirm_card_template_id.trim();
+                    if t.is_empty() {
+                        crate::dingtalk::confirm::DEFAULT_CONFIRM_CARD_TEMPLATE_ID
+                    } else {
+                        t
+                    }
+                };
+                client
+                    .create_and_deliver_card(&otid, tpl, map, private)
+                    .await
+                    .ok()?;
+                Some(otid)
+            }
+            "telegram" => {
+                let tg = &config.channels.telegram;
+                let client = crate::telegram::TelegramClient::new(
+                    tg.bot_token.clone(),
+                    tg.chat_id.clone(),
+                    tg.api_base_url.clone(),
+                )
+                .ok()?;
+                let html = crate::telegram::confirm::build_html(view);
+                let markup = crate::telegram::confirm::inline_keyboard(view);
+                client
+                    .send_message(&html, Some("HTML"), Some(markup))
+                    .await
+                    .ok()
+                    .map(|mid| mid.to_string())
+            }
+            "slack" => {
+                let client = crate::slack::client::SlackClient::new(&config.channels.slack).ok()?;
+                let dm = client.open_dm().await.ok()?;
+                let (blocks, fallback) = crate::slack::confirm::build_blocks(view);
+                client.post_message(&dm, Some(&blocks), &fallback).await.ok()
+            }
+            _ => None,
+        }
+    }
+
+    async fn handle_confirm_action(
+        state: &Arc<ServerState>,
+        channel_id: &str,
+        mid: &str,
+        ok: bool,
+        ack: Option<tokio::sync::oneshot::Sender<Option<serde_json::Value>>>,
+    ) {
+        let lang = Lang::current();
+        let config = AppConfig::load();
+        let entry = {
+            let mut cs = state.select.confirms.lock().unwrap();
+            let pos = cs
+                .iter()
+                .position(|c| c.channel == channel_id && c.message_id == mid);
+            pos.map(|i| cs.remove(i))
+        };
+        let Some(entry) = entry else {
+            if let Some(ack) = ack {
+                let _ = ack.send(None);
+            }
+            return;
+        };
+        if !ok {
+            let text = crate::i18n::tr(lang, "confirm.stageCancelled").to_string();
+            finalize_confirm_card(channel_id, &config, mid, &entry.title, &text, ack).await;
+            state.select.route_refresh.notify_one();
+            return;
+        }
+        // Re-check paths fingerprint.
+        let preview = match crate::gitutil::preview_stage(&entry.git_root) {
+            Ok(p) => p,
+            Err(e) => {
+                let text = crate::i18n::tr(lang, "confirm.stageFailed").replace("{err}", &e);
+                finalize_confirm_card(channel_id, &config, mid, &entry.title, &text, ack).await;
+                state.select.route_refresh.notify_one();
+                return;
+            }
+        };
+        let fp = crate::gitutil::paths_fingerprint(&preview.paths);
+        if fp != entry.paths_fp {
+            let text = crate::i18n::tr(lang, "confirm.stageChanged").to_string();
+            finalize_confirm_card(channel_id, &config, mid, &entry.title, &text, ack).await;
+            let _ = reply_channel_text(channel_id, &config, &text).await;
+            state.select.route_refresh.notify_one();
+            return;
+        }
+        match crate::gitutil::stage_all(&entry.git_root) {
+            Ok(r) => {
+                let text = crate::i18n::tr(lang, "confirm.stageDone")
+                    .replace("{n}", &r.paths.len().to_string());
+                finalize_confirm_card(channel_id, &config, mid, &entry.title, &text, ack).await;
+                let show: Vec<&str> = r
+                    .paths
+                    .iter()
+                    .take(crate::confirm::STAGE_LIST_MAX)
+                    .map(|s| s.as_str())
+                    .collect();
+                let mut detail = text.clone();
+                if !show.is_empty() {
+                    detail.push('\n');
+                    detail.push_str(&show.join("\n"));
+                    if r.paths.len() > show.len() {
+                        detail.push_str(&format!("\n… +{}", r.paths.len() - show.len()));
+                    }
+                }
+                let _ = reply_channel_text(channel_id, &config, &detail).await;
+            }
+            Err(e) => {
+                let text = crate::i18n::tr(lang, "confirm.stageFailed").replace("{err}", &e);
+                finalize_confirm_card(channel_id, &config, mid, &entry.title, &text, ack).await;
+                let _ = reply_channel_text(channel_id, &config, &text).await;
+            }
+        }
+        state.select.route_refresh.notify_one();
+    }
+
+    async fn finalize_confirm_card(
+        channel_id: &str,
+        config: &AppConfig,
+        mid: &str,
+        title: &str,
+        text: &str,
+        ack: Option<tokio::sync::oneshot::Sender<Option<serde_json::Value>>>,
+    ) {
+        // 终态按钮文案：整段结果摘要截断到按钮可读长度。
+        let btn = {
+            let t = text.trim();
+            let one: String = t.chars().take(40).collect();
+            if t.chars().count() > 40 {
+                format!("{one}…")
+            } else {
+                one
+            }
+        };
+        match channel_id {
+            "feishu" => {
+                // 双按钮 → 单个禁用按钮（已取消 / 已暂存 / 暂存失败…）
+                let card =
+                    crate::feishu::card::build_confirm_final_card(title, text, &btn);
+                if let Some(ack) = ack {
+                    let _ = ack.send(Some(crate::feishu::card::callback_update_card(card)));
+                } else if let Ok(client) =
+                    crate::feishu::client::FeishuClient::new(&config.channels.feishu)
+                {
+                    let _ = client.patch_card(mid, &card).await;
+                }
+            }
+            "telegram" => {
+                let tg = &config.channels.telegram;
+                if let (Ok(client), Ok(mid_i)) = (
+                    crate::telegram::TelegramClient::new(
+                        tg.bot_token.clone(),
+                        tg.chat_id.clone(),
+                        tg.api_base_url.clone(),
+                    ),
+                    mid.parse::<i64>(),
+                ) {
+                    let html = format!(
+                        "<b>{}</b>\n{}",
+                        crate::telegram::markdown::escape_html(title),
+                        crate::telegram::markdown::escape_html(text)
+                    );
+                    let _ = client
+                        .edit_message_text(mid_i, &html, Some("HTML"), None)
+                        .await;
+                }
+            }
+            "slack" => {
+                if let Ok(client) = crate::slack::client::SlackClient::new(&config.channels.slack) {
+                    if let Ok(dm) = client.open_dm().await {
+                        let (blocks, fallback) =
+                            crate::slack::confirm::build_final_blocks(title, text);
+                        let _ = client.update_message(&dm, mid, Some(&blocks), &fallback).await;
+                    }
+                }
+            }
+            "dingding" => {
+                // 专用确认模板终态：finalized=true + final_label。
+                if let Ok(client) =
+                    crate::dingtalk::client::DingTalkClient::new(&config.channels.dingding)
+                {
+                    let map = serde_json::json!({
+                        "title": title,
+                        "markdown": text,
+                        "btn_primary": "",
+                        "btn_secondary": "",
+                        "finalized": "true",
+                        "final_label": text,
+                    });
+                    let _ = client
+                        .update_card_private(mid, map, serde_json::json!({}))
+                        .await;
+                }
+            }
+            _ => {
+                if let Some(ack) = ack {
+                    let _ = ack.send(None);
+                }
+            }
+        }
+    }
+
+    async fn reply_channel_file(
+        channel_id: &str,
+        config: &AppConfig,
+        file_name: &str,
+        bytes: &[u8],
+    ) -> Result<(), String> {
+        let dir = crate::paths::request_temp_dir(&format!("export-{}", now_ms()));
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let path = dir.join(file_name);
+        std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+        let path_str = path.to_string_lossy().to_string();
+        let result = match channel_id {
+            "feishu" => {
+                let client = crate::feishu::client::FeishuClient::new(&config.channels.feishu)
+                    .map_err(|e| e.to_string())?;
+                let key = client
+                    .upload_file(&path_str, file_name)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                client
+                    .send_file(&key)
+                    .await
+                    .map(|_| ())
+                    .map_err(|e| e.to_string())
+            }
+            "telegram" => {
+                let tg = &config.channels.telegram;
+                let client = crate::telegram::TelegramClient::new(
+                    tg.bot_token.clone(),
+                    tg.chat_id.clone(),
+                    tg.api_base_url.clone(),
+                )
+                .map_err(|e| e.to_string())?;
+                client
+                    .send_document(&path_str, file_name)
+                    .await
+                    .map(|_| ())
+                    .map_err(|e| e.to_string())
+            }
+            "slack" => {
+                let client = crate::slack::client::SlackClient::new(&config.channels.slack)
+                    .map_err(|e| e.to_string())?;
+                let dm = client.open_dm().await.map_err(|e| e.to_string())?;
+                client
+                    .upload_file(&dm, &path_str, file_name)
+                    .await
+                    .map_err(|e| e.to_string())
+            }
+            "dingding" => {
+                let client =
+                    crate::dingtalk::client::DingTalkClient::new(&config.channels.dingding)
+                        .map_err(|e| e.to_string())?;
+                let media_id = client
+                    .upload_media(&path_str, "file")
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let ext = std::path::Path::new(file_name)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("docx");
+                client
+                    .send_oto_file(&media_id, file_name, ext)
+                    .await
+                    .map_err(|e| e.to_string())
+            }
+            _ => Err(format!("file send unsupported for channel: {}", channel_id)),
+        };
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
+        result
     }
 
     /// 当前已建连且存活的 IM 长连接名（供 `daemon status` 展示）。

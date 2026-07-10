@@ -16,6 +16,7 @@ pub mod registry;
 #[cfg(unix)]
 pub mod report;
 pub mod title;
+pub mod transcript_full;
 
 use serde::{Deserialize, Serialize};
 

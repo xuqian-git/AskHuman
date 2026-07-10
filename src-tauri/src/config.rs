@@ -212,6 +212,9 @@ pub struct DingTalkChannelConfig {
     pub user_id: String,
     /// 互动卡片高级版模板 ID（可空）。留空则用代码内置默认模板（见 channels::dingding）。
     pub card_template_id: String,
+    /// 通用确认卡模板 ID（`/stage` 等；双按钮 + finalized。见 docs/assets/dingtalk-confirm-card-template.json）。
+    #[serde(default)]
+    pub confirm_card_template_id: String,
     /// 文本类附件：短文本（≤阈值）是否内联进消息正文（默认开）。见
     /// `docs/plans/dingtalk-attachment-preview.md`。
     pub inline_small_text: bool,
@@ -227,6 +230,7 @@ impl Default for DingTalkChannelConfig {
             client_secret: String::new(),
             user_id: String::new(),
             card_template_id: String::new(),
+            confirm_card_template_id: String::new(),
             // 文本附件预览能力默认开启（旧配置缺字段时经 serde(default) 取此默认）。
             inline_small_text: true,
             convert_text_to_docx: true,

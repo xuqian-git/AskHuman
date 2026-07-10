@@ -183,13 +183,29 @@ impl FeishuClient {
     }
 
     /// 上传文件，返回 file_key。
+    /// `file_type`：飞书要求枚举（opus/mp4/pdf/doc/xls/ppt/stream）；docx/xlsx/pptx 用
+    /// doc/xls/ppt 以利预览，其余 `stream`。
     pub async fn upload_file(&self, path: &str, file_name: &str) -> Result<String, FeishuError> {
         let token = self.token().await?;
         let bytes = std::fs::read(path)
             .map_err(|e| FeishuError::Network(format!("failed to read file: {}", e)))?;
+        let ext = std::path::Path::new(file_name)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        let file_type = match ext.as_str() {
+            "pdf" => "pdf",
+            "doc" | "docx" => "doc",
+            "xls" | "xlsx" => "xls",
+            "ppt" | "pptx" => "ppt",
+            "mp4" => "mp4",
+            "opus" => "opus",
+            _ => "stream",
+        };
         let part = reqwest::multipart::Part::bytes(bytes).file_name(file_name.to_string());
         let form = reqwest::multipart::Form::new()
-            .text("file_type", "stream")
+            .text("file_type", file_type)
             .text("file_name", file_name.to_string())
             .part("file", part);
         let v = self.upload(&token, "/open-apis/im/v1/files", form).await?;

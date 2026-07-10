@@ -520,8 +520,12 @@ const SELECT_ACTION_KEY: &str = "select";
 /// 飞书按钮样式（`type`）按单选卡动作种类映射（用户定稿：watch=蓝主色、status=默认、unwatch=红）。
 fn select_button_type(action: crate::select::SelectAction) -> &'static str {
     match action {
-        crate::select::SelectAction::Watch | crate::select::SelectAction::Msg => "primary",
-        crate::select::SelectAction::Status => "default",
+        crate::select::SelectAction::Watch
+        | crate::select::SelectAction::Msg
+        | crate::select::SelectAction::Stage => "primary",
+        crate::select::SelectAction::Status
+        | crate::select::SelectAction::Diff
+        | crate::select::SelectAction::Transcript => "default",
         crate::select::SelectAction::Unwatch => "danger",
     }
 }
@@ -628,6 +632,99 @@ pub fn build_select_final_card(title: &str, text: &str) -> Value {
             { "tag": "markdown", "content": text },
         ] },
     })
+}
+
+/// Confirm 卡回调键：`{"confirm":"ok"|"cancel"}`。
+const CONFIRM_ACTION_KEY: &str = "confirm";
+
+/// 轻量确认卡：标题 + markdown 正文 + 确认/取消两按钮。
+pub fn build_confirm_card(view: &crate::confirm::ConfirmView) -> Value {
+    json!({
+        "schema": "2.0",
+        "config": { "update_multi": true },
+        "body": { "elements": [
+            {
+                "tag": "div",
+                "text": { "tag": "plain_text", "content": view.title, "text_size": "notation", "text_align": "left", "text_color": "blue" },
+                "icon": { "tag": "standard_icon", "token": "file-link-docx_outlined", "color": "blue" },
+            },
+            { "tag": "hr" },
+            { "tag": "markdown", "content": view.body },
+            {
+                "tag": "column_set",
+                "flex_mode": "none",
+                "background_style": "default",
+                "columns": [
+                    {
+                        "tag": "column",
+                        "width": "weighted",
+                        "weight": 1,
+                        "elements": [{
+                            "tag": "button",
+                            "text": { "tag": "plain_text", "content": view.confirm_label },
+                            "type": "primary",
+                            "width": "fill",
+                            "behaviors": [{ "type": "callback", "value": { CONFIRM_ACTION_KEY: "ok" } }],
+                        }],
+                    },
+                    {
+                        "tag": "column",
+                        "width": "weighted",
+                        "weight": 1,
+                        "elements": [{
+                            "tag": "button",
+                            "text": { "tag": "plain_text", "content": view.cancel_label },
+                            "type": "default",
+                            "width": "fill",
+                            "behaviors": [{ "type": "callback", "value": { CONFIRM_ACTION_KEY: "cancel" } }],
+                        }],
+                    },
+                ],
+            },
+        ] },
+    })
+}
+
+/// 定格确认卡：正文 + **单个禁用按钮**（「已取消」/「已暂存」/「暂存失败」）。
+pub fn build_confirm_final_card(title: &str, body_md: &str, button_label: &str) -> Value {
+    json!({
+        "schema": "2.0",
+        "config": { "update_multi": true },
+        "body": { "elements": [
+            { "tag": "div", "text": { "tag": "plain_text", "content": title, "text_size": "notation", "text_align": "left", "text_color": "grey" } },
+            { "tag": "markdown", "content": body_md },
+            {
+                "tag": "button",
+                "text": { "tag": "plain_text", "content": button_label },
+                "type": "default",
+                "width": "default",
+                "disabled": true,
+            },
+        ] },
+    })
+}
+
+/// 解析确认卡点击 → `(open_message_id, ok)`；非 confirm 回调 None。
+pub fn parse_confirm_action(event: &Value) -> Option<(String, bool)> {
+    let action = event.get("action")?;
+    let value = action.get("value")?;
+    let obj: Value = match value {
+        Value::String(s) => serde_json::from_str(s).ok()?,
+        v => v.clone(),
+    };
+    let verb = obj.get(CONFIRM_ACTION_KEY)?.as_str()?;
+    let ok = match verb {
+        "ok" | "confirm" => true,
+        "cancel" => false,
+        _ => return None,
+    };
+    let message_id = event
+        .get("context")
+        .and_then(|c| c.get("open_message_id"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    Some((message_id, ok))
 }
 
 /// 把一条 `card.action.trigger` 解析为单选卡点击：`(open_message_id, 选项下标)`；非单选卡回调 None。

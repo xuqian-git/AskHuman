@@ -2,7 +2,8 @@
 
 按具体任务 / 需求记录待办与当前进展。任务 / 需求完成后删除其 section（历史留在 git）。
 
-## ⏳ 进行中：Watch 卡片「重新关注」按钮 — 全渠道
+
+## 待办：Watch 卡片「重新关注」按钮 — 全渠道
 
 计划 `docs/plans/watch-rewatch.md`，需求 `docs/specs/watch-rewatch.md`。
 AutoStopped / Cancelled 终态的 watch 卡提供可点击「重新关注」按钮。

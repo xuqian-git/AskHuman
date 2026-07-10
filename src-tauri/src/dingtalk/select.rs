@@ -50,7 +50,10 @@ fn button_color(action: crate::select::SelectAction) -> &'static str {
     match action {
         crate::select::SelectAction::Watch
         | crate::select::SelectAction::Status
-        | crate::select::SelectAction::Msg => "blue",
+        | crate::select::SelectAction::Msg
+        | crate::select::SelectAction::Diff
+        | crate::select::SelectAction::Stage
+        | crate::select::SelectAction::Transcript => "blue",
         crate::select::SelectAction::Unwatch => "red",
     }
 }

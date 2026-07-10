@@ -112,7 +112,7 @@ export default {
       emptyDesc: "当前没有正在试验中的功能。未来的实验性功能会出现在这里。",
       lifecycleTitle: "Agent 生命周期追踪",
       lifecycleDesc:
-        "为各 Agent 安装用户级 Hook，用于识别 Agent 的运行状态（工作中、空闲或已结束）。Agent 状态窗口与菜单栏状态、IM /status 当前状态、/watch 实时关注、/msg 插话投递等能力依赖该功能。开启后，守护进程也能更准确地根据 Agent 活动启动与保活。",
+        "为各 Agent 安装用户级 Hook，用于识别 Agent 的运行状态（工作中、空闲或已结束）。Agent 状态窗口与菜单栏状态、IM /status、/watch、/msg、/diff、/stage、/transcript 等能力依赖该功能。开启后，守护进程也能更准确地根据 Agent 活动启动与保活。",
       claude: "Claude Code",
       codex: "Codex",
       cursor: "Cursor",

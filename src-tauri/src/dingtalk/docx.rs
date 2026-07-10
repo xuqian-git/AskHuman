@@ -81,6 +81,43 @@ pub fn build_plaincode_docx(file_name: &str, content: &str) -> std::io::Result<V
     package(&body)
 }
 
+/// 打包已拼好的 `w:body` 内部 OOXML（不含 body/sect 外壳）。供 diff 等需要逐 run 上色的导出使用。
+pub fn build_raw_docx(body_inner_xml: &str) -> std::io::Result<Vec<u8>> {
+    package(body_inner_xml)
+}
+
+/// 标题段落（供外部 diff/transcript 导出复用）。
+pub fn ooxml_heading(level: u8, text: &str) -> String {
+    heading_para(level, text)
+}
+
+/// 普通段落（正文）。
+pub fn ooxml_para(text: &str) -> String {
+    format!(
+        r#"<w:p><w:r><w:t xml:space="preserve">{}</w:t></w:r></w:p>"#,
+        esc(text)
+    )
+}
+
+/// 等宽一行：可选底色 `fill`（hex 无 #，如 `E6FFEC`）与文字色 `color`（hex 无 #）。
+pub fn ooxml_mono_line(text: &str, fill: Option<&str>, color: Option<&str>) -> String {
+    let mut rpr = String::from(
+        r#"<w:rFonts w:ascii="Courier New" w:hAnsi="Courier New" w:eastAsia="SimHei" w:cs="Courier New"/><w:sz w:val="18"/><w:szCs w:val="18"/>"#,
+    );
+    if let Some(c) = color {
+        rpr.push_str(&format!(r#"<w:color w:val="{c}"/>"#));
+    }
+    let shd = fill
+        .map(|f| format!(r#"<w:shd w:val="clear" w:color="auto" w:fill="{f}"/>"#))
+        .unwrap_or_default();
+    format!(
+        r#"<w:p><w:pPr><w:spacing w:before="0" w:after="0" w:line="240" w:lineRule="auto"/>{shd}</w:pPr><w:r><w:rPr>{rpr}</w:rPr><w:t xml:space="preserve">{t}</w:t></w:r></w:p>"#,
+        shd = shd,
+        rpr = rpr,
+        t = esc(text),
+    )
+}
+
 // ===== zip 打包 =====
 
 fn package(body_xml: &str) -> std::io::Result<Vec<u8>> {

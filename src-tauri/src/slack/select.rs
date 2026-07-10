@@ -26,8 +26,8 @@ fn dot_emoji(dot: Option<SelectDot>) -> &'static str {
 /// 按钮样式（watch=primary、status=默认、unwatch=danger，对齐飞书）。
 fn button_style(action: SelectAction) -> Option<&'static str> {
     match action {
-        SelectAction::Watch | SelectAction::Msg => Some("primary"),
-        SelectAction::Status => None,
+        SelectAction::Watch | SelectAction::Msg | SelectAction::Stage => Some("primary"),
+        SelectAction::Status | SelectAction::Diff | SelectAction::Transcript => None,
         SelectAction::Unwatch => Some("danger"),
     }
 }

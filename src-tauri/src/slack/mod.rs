@@ -13,6 +13,7 @@
 
 pub mod blockkit;
 pub mod client;
+pub mod confirm;
 pub mod markdown;
 pub mod router;
 pub mod select;

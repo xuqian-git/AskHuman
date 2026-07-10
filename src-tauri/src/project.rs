@@ -20,7 +20,7 @@ pub fn detect() -> String {
 }
 
 /// Walk up from `start` to the first ancestor that contains a `.git` entry (file or dir).
-fn git_root(start: &Path) -> Option<PathBuf> {
+pub fn git_root(start: &Path) -> Option<PathBuf> {
     let mut cur: Option<&Path> = Some(start);
     while let Some(dir) = cur {
         if dir.join(".git").exists() {

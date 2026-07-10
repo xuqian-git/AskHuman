@@ -444,6 +444,21 @@ pub fn tr(lang: Lang, key: &'static str) -> &'static str {
             "• {p}msg <n> <text> — send a message to agent n (delivered at its next tool call)",
             "• {p}msg <编号> <内容> — 给该 agent 插话（其下一次工具调用时送达）",
         ),
+        "autoChannel.helpCmdDiff" => pick(
+            lang,
+            "• {p}diff [n] — unstaged git diff for agent n (attachment)",
+            "• {p}diff [编号] — 导出该 agent 工作区未暂存 diff（附件）",
+        ),
+        "autoChannel.helpCmdStage" => pick(
+            lang,
+            "• {p}stage [n] — stage unstaged changes for agent n (confirm first)",
+            "• {p}stage [编号] — 确认后暂存该 agent 未 stage 的改动",
+        ),
+        "autoChannel.helpCmdTranscript" => pick(
+            lang,
+            "• {p}transcript [n] — full session transcript for agent n (attachment)",
+            "• {p}transcript [编号] — 导出该 agent 完整会话记录（附件）",
+        ),
         "autoChannel.helpCmdHelp" => pick(lang, "• {p}help — show this help", "• {p}help — 显示此帮助"),
         "autoChannel.helpCmdHere" => pick(lang, "• {p}here — route questions to this channel", "• {p}here — 把提问切到此渠道接收"),
         // 有在途提问时的作答指引。
@@ -606,8 +621,84 @@ pub fn tr(lang: Lang, key: &'static str) -> &'static str {
         "select.btnStatus" => pick(lang, "View", "查看"),
         "select.btnUnwatch" => pick(lang, "Unwatch", "取消"),
         "select.btnMsg" => pick(lang, "Send", "发送"),
+        "select.btnDiff" => pick(lang, "Diff", "差异"),
+        "select.btnStage" => pick(lang, "Stage", "暂存"),
+        "select.btnTranscript" => pick(lang, "Transcript", "会话"),
+        "select.titleDiff" => pick(
+            lang,
+            "Pick an agent for unstaged diff:",
+            "选择要查看未暂存 diff 的 Agent：",
+        ),
+        "select.titleStage" => pick(
+            lang,
+            "Pick an agent to stage changes:",
+            "选择要暂存改动的 Agent：",
+        ),
+        "select.titleTranscript" => pick(
+            lang,
+            "Pick an agent for full transcript:",
+            "选择要导出完整会话的 Agent：",
+        ),
+        "select.diffDoneCard" => pick(lang, "Diff sent for [{id}]", "已发送 [{id}] 的 diff"),
+        "select.stageOpenedCard" => pick(
+            lang,
+            "Confirm card opened for [{id}]",
+            "已为 [{id}] 打开暂存确认",
+        ),
+        "select.transcriptDoneCard" => pick(
+            lang,
+            "Transcript sent for [{id}]",
+            "已发送 [{id}] 的会话记录",
+        ),
         // 选项徽标：已在本渠道关注中（`/watch` 卡；点它＝换新卡）。前后空格由渲染器按需拼接。
         "select.watchingBadge" => pick(lang, "· watching", "· 关注中"),
+        // —— Confirm 卡（/stage）——
+        "confirm.stageTitle" => pick(lang, "Stage changes · {project}", "暂存改动 · {project}"),
+        "confirm.stageIntro" => pick(
+            lang,
+            "About to `git add -A` **{n}** path(s):",
+            "即将对 **{n}** 个路径执行 `git add -A`：",
+        ),
+        "confirm.stageMore" => pick(lang, "…and {n} more", "…另有 {n} 个"),
+        "confirm.btnConfirm" => pick(lang, "Confirm stage", "确认暂存"),
+        "confirm.btnCancel" => pick(lang, "Cancel", "取消"),
+        "confirm.stageDone" => pick(lang, "Staged {n} path(s).", "已暂存 {n} 个路径。"),
+        "confirm.stageCancelled" => pick(lang, "Staging cancelled.", "已取消暂存。"),
+        "confirm.stageChanged" => pick(
+            lang,
+            "Working tree changed since the confirm card — run /stage again.",
+            "工作区已变化，请重新发送 /stage。",
+        ),
+        "confirm.stageFailed" => pick(lang, "git add failed: {err}", "git add 失败：{err}"),
+        // —— /diff · /stage · /transcript 文本 ——
+        "export.notFound" => pick(
+            lang,
+            "No agent with number {n}. Send {p}status to list.",
+            "没有编号为 {n} 的 agent。发送 {p}status 查看列表。",
+        ),
+        "export.noCwd" => pick(lang, "This agent has no working directory.", "该 agent 没有工作目录。"),
+        "export.notGit" => pick(
+            lang,
+            "Not a git repository (no .git above {path}).",
+            "不是 git 仓库（{path} 之上没有 .git）。",
+        ),
+        "export.noUnstaged" => pick(lang, "No unstaged changes.", "没有未暂存的改动。"),
+        "export.diffSummary" => pick(
+            lang,
+            "[{n}] {kind} · {project} · unstaged diff · {files} file(s)",
+            "[{n}] {kind} · {project} · 未暂存 diff · {files} 个文件",
+        ),
+        "export.transcriptSummary" => pick(
+            lang,
+            "[{n}] {kind} · {project} · transcript",
+            "[{n}] {kind} · {project} · 会话记录",
+        ),
+        "export.noTranscript" => pick(
+            lang,
+            "Could not find transcript for this agent session.",
+            "找不到该 agent 会话的 transcript 文件。",
+        ),
+        "export.sendFailed" => pick(lang, "Failed to send file: {err}", "发送文件失败：{err}"),
         // 选项超上限截断说明（{n} = 实际展示数）。
         "select.truncated" => pick(lang, "(showing first {n})", "（仅列前 {n} 个）"),
         // `/unwatch` 单选卡取到 0 个后定格文案。

@@ -116,7 +116,7 @@ export default {
       emptyDesc: "There are no features under experimentation right now. Future experimental features will show up here.",
       lifecycleTitle: "Agent lifecycle tracking",
       lifecycleDesc:
-        "Install user-level hooks for each agent to detect whether it is working, idle, or ended. The Agent status window, menu bar agent status, IM /status, /watch live tracking, and /msg message delivery depend on this capability. When enabled, the daemon can also start and stay alive more accurately based on agent activity.",
+        "Install user-level hooks for each agent to detect whether it is working, idle, or ended. The Agent status window, menu bar agent status, and IM /status, /watch, /msg, /diff, /stage, /transcript depend on this capability. When enabled, the daemon can also start and stay alive more accurately based on agent activity.",
       claude: "Claude Code",
       codex: "Codex",
       cursor: "Cursor",

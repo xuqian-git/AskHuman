@@ -65,6 +65,12 @@ pub enum Command {
     Msg(Option<u64>, Option<String>),
     /// `/msg-clear <编号>`、`/撤回`：清空该 agent 的待送达插话。编号缺省 → 回用法提示。
     MsgClear(Option<u64>),
+    /// `/diff [编号]`：导出 agent 工作区未暂存 diff（无参 → 单选卡）。
+    Diff(Option<u64>),
+    /// `/stage [编号]`：确认后 stage 未暂存改动（无参 → 单选卡）。
+    Stage(Option<u64>),
+    /// `/transcript [编号]`：导出 agent 完整会话渲染（无参 → 单选卡）。
+    Transcript(Option<u64>),
     /// `/help`、`/帮助`、`/?`：返回动态引导文案（可发什么、可用命令）。
     Help,
 }
@@ -159,6 +165,18 @@ pub fn classify(text: &str) -> Parsed {
             let sel = tokens.next().and_then(|s| s.parse::<u64>().ok());
             Parsed::Command(Command::MsgClear(sel))
         }
+        "diff" => {
+            let sel = tokens.next().and_then(|s| s.parse::<u64>().ok());
+            Parsed::Command(Command::Diff(sel))
+        }
+        "stage" => {
+            let sel = tokens.next().and_then(|s| s.parse::<u64>().ok());
+            Parsed::Command(Command::Stage(sel))
+        }
+        "transcript" => {
+            let sel = tokens.next().and_then(|s| s.parse::<u64>().ok());
+            Parsed::Command(Command::Transcript(sel))
+        }
         "help" | "帮助" | "?" | "？" => Parsed::Command(Command::Help),
         _ if bang => Parsed::Text,
         _ => Parsed::UnknownCommand,
@@ -233,6 +251,13 @@ pub fn help_text(
     // `/msg` 插话与 `/status` 同门控（daemon 存活即可用，spec agent-interject D9）。
     out.push('\n');
     out.push_str(&i18n::tr(lang, "autoChannel.helpCmdMsg").replace("{p}", prefix));
+    // `/diff` · `/stage` · `/transcript`：同门控（spec im-diff-stage-transcript）。
+    out.push('\n');
+    out.push_str(&i18n::tr(lang, "autoChannel.helpCmdDiff").replace("{p}", prefix));
+    out.push('\n');
+    out.push_str(&i18n::tr(lang, "autoChannel.helpCmdStage").replace("{p}", prefix));
+    out.push('\n');
+    out.push_str(&i18n::tr(lang, "autoChannel.helpCmdTranscript").replace("{p}", prefix));
     out.push('\n');
     out.push_str(&i18n::tr(lang, "autoChannel.helpCmdHelp").replace("{p}", prefix));
     if auto {
@@ -699,6 +724,23 @@ mod tests {
     }
 
     #[test]
+    fn classify_diff_stage_transcript() {
+        assert_eq!(classify("/diff"), Parsed::Command(Command::Diff(None)));
+        assert_eq!(classify("/diff 3"), Parsed::Command(Command::Diff(Some(3))));
+        assert_eq!(classify("!stage 2"), Parsed::Command(Command::Stage(Some(2))));
+        assert_eq!(
+            classify("/transcript"),
+            Parsed::Command(Command::Transcript(None))
+        );
+        assert_eq!(
+            classify("/transcript 9"),
+            Parsed::Command(Command::Transcript(Some(9)))
+        );
+        // 非数字 → 无参。
+        assert_eq!(classify("/diff abc"), Parsed::Command(Command::Diff(None)));
+    }
+
+    #[test]
     fn classify_is_case_insensitive_and_takes_first_token() {
         assert_eq!(classify("/HELP"), Parsed::Command(Command::Help));
         // "now" 非数字 → 全局。
@@ -850,6 +892,19 @@ mod tests {
         assert_eq!(classify("/撤回 3"), Parsed::Command(Command::MsgClear(Some(3))));
         assert_eq!(classify("/msg-clear"), Parsed::Command(Command::MsgClear(None)));
         assert_eq!(classify("!MSG-CLEAR 7"), Parsed::Command(Command::MsgClear(Some(7))));
+    }
+
+    #[test]
+    fn help_text_lists_diff_stage_transcript() {
+        // /diff · /stage · /transcript 与 /status 同门控：help 始终列出（spec D23）。
+        for lang in [Lang::En, Lang::Zh] {
+            let t = help_text(true, false, true, "/", lang);
+            assert!(t.contains("diff"), "{t}");
+            assert!(t.contains("stage"), "{t}");
+            assert!(t.contains("transcript"), "{t}");
+            let off = help_text(false, false, false, "/", lang);
+            assert!(off.contains("diff") && off.contains("stage") && off.contains("transcript"));
+        }
     }
 
     #[test]

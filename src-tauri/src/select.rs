@@ -33,6 +33,12 @@ pub enum SelectAction {
     Unwatch,
     /// 发送插话（`/msg` 无编号时的选择卡；按钮「发送」，点它把预存内容发给该 agent）。
     Msg,
+    /// 导出未暂存 diff。
+    Diff,
+    /// 发起 stage 确认。
+    Stage,
+    /// 导出会话 transcript。
+    Transcript,
 }
 
 impl SelectAction {
@@ -43,6 +49,9 @@ impl SelectAction {
             SelectAction::Status => "select.btnStatus",
             SelectAction::Unwatch => "select.btnUnwatch",
             SelectAction::Msg => "select.btnMsg",
+            SelectAction::Diff => "select.btnDiff",
+            SelectAction::Stage => "select.btnStage",
+            SelectAction::Transcript => "select.btnTranscript",
         };
         i18n::tr(lang, key).to_string()
     }
@@ -115,6 +124,15 @@ pub fn title_unwatch(lang: Lang) -> String {
 }
 pub fn title_msg(lang: Lang) -> String {
     i18n::tr(lang, "select.titleMsg").to_string()
+}
+pub fn title_diff(lang: Lang) -> String {
+    i18n::tr(lang, "select.titleDiff").to_string()
+}
+pub fn title_stage(lang: Lang) -> String {
+    i18n::tr(lang, "select.titleStage").to_string()
+}
+pub fn title_transcript(lang: Lang) -> String {
+    i18n::tr(lang, "select.titleTranscript").to_string()
 }
 
 /// 由一条注册表快照记录组装选项字段（`dot / seq / primary=类型·工作目录名 / elapsed=已运行时长 /
@@ -419,6 +437,9 @@ mod tests {
         assert_eq!(SelectAction::Status.button_label(Lang::Zh), "查看");
         assert_eq!(SelectAction::Unwatch.button_label(Lang::Zh), "取消");
         assert_eq!(SelectAction::Msg.button_label(Lang::Zh), "发送");
+        assert_eq!(SelectAction::Diff.button_label(Lang::Zh), "差异");
+        assert_eq!(SelectAction::Stage.button_label(Lang::Zh), "暂存");
+        assert_eq!(SelectAction::Transcript.button_label(Lang::Zh), "会话");
     }
 
     #[test]
