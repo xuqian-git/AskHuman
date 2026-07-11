@@ -2,10 +2,11 @@
 
 按具体任务 / 需求记录待办与当前进展。任务 / 需求完成后删除其 section（历史留在 git）。
 
-## 进行中：抽离通用确认卡展示 / 传输层
+## 进行中：核对并推进 Agent 权限审批
 
-先把飞书/钉钉/Telegram/Slack 的双动作确认卡从 `/stage` git 业务中解耦为通用 view/builder/transport，
-保持钉钉既有固定模板兼容并让 `/stage` 行为不变；完成后再接独立权限审批流程。
+计划 `docs/plans/agent-permission-approval.md`。M-1 通用双动作确认卡 view/builder/transport 已完成并验证，
+`/stage` 行为与钉钉固定模板保持兼容；当前步骤：完成权限 Confirm、Hook 共存、设置/CLI 整包语义的计划
+核对，确认后进入 M0 通用确认模型与协议。
 
 
 ## 待办：Watch 卡片「重新关注」按钮 — 全渠道
