@@ -1095,13 +1095,11 @@ const confirmDetailHtml = computed(() =>
     ? renderMarkdown(confirmRequest.value.detail.bodyMd, codeCopyLabels.value)
     : ""
 );
-
-function confirmFieldValue(field: ConfirmRequest["context"][number]): string {
-  if (field.kind !== "timestamp") return field.value;
-  const numeric = Number(field.value);
-  const date = new Date(Number.isFinite(numeric) ? numeric : field.value);
-  return Number.isNaN(date.getTime()) ? field.value : date.toLocaleString();
-}
+const confirmToolName = computed(
+  () =>
+    confirmRequest.value?.context.find((field) => field.id === "tool")?.value ??
+    "Tool"
+);
 
 function selectConfirmChoice(index: number) {
   if (!submitting.value) confirmChoiceIndex.value = index;
@@ -1989,42 +1987,41 @@ onBeforeUnmount(() => {
       <template v-if="isConfirm && confirmRequest">
         <section class="confirm-request">
           <h1 class="confirm-request-title">{{ confirmRequest.title }}</h1>
-          <dl class="confirm-context">
-            <div v-for="field in confirmRequest.context" :key="field.id" class="confirm-context-row">
-              <dt>{{ field.label }}</dt>
-              <dd :class="{ 'confirm-path': field.kind === 'path' }" :title="field.value">
-                {{ confirmFieldValue(field) }}
-              </dd>
-            </div>
-          </dl>
-          <div class="confirm-summary">{{ confirmRequest.detail.summary }}</div>
-          <div
-            v-if="confirmRequest.detail.bodyMd"
-            class="markdown-body confirm-detail"
-            v-html="confirmDetailHtml"
-            @click="onContentClick"
-          ></div>
+          <section class="confirm-tool">
+            <header class="confirm-tool-header">{{ confirmToolName }}</header>
+            <div
+              v-if="confirmRequest.detail.bodyMd"
+              class="markdown-body confirm-detail"
+              v-html="confirmDetailHtml"
+              @click="onContentClick"
+            ></div>
+            <p v-if="confirmRequest.detail.summary" class="confirm-summary">
+              {{ confirmRequest.detail.summary }}
+            </p>
+          </section>
           <div class="confirm-options" role="radiogroup" :aria-label="confirmRequest.title">
-            <button
+            <div
               v-for="(choice, index) in confirmRequest.choices"
               :key="choice.id"
-              type="button"
-              class="confirm-option"
+              class="option single confirm-option"
               :class="[
                 `role-${choice.role}`,
                 { selected: confirmChoiceIndex === index },
               ]"
               role="radio"
+              tabindex="0"
               :aria-checked="confirmChoiceIndex === index"
               @click="selectConfirmChoice(index)"
+              @keydown.enter.prevent="selectConfirmChoice(index)"
+              @keydown.space.prevent="selectConfirmChoice(index)"
             >
-              <span class="confirm-radio" aria-hidden="true"></span>
-              <span class="confirm-option-copy">
-                <strong>{{ choice.label }}</strong>
-                <span v-if="choice.description">{{ choice.description }}</span>
+              <span class="check radio" aria-hidden="true"></span>
+              <span class="label confirm-option-label">
+                <span>{{ choice.label }}</span>
+                <small v-if="choice.description">{{ choice.description }}</small>
               </span>
               <kbd v-if="index < 9" class="opt-sc">⌘{{ index + 1 }}</kbd>
-            </button>
+            </div>
           </div>
           <label v-if="showConfirmInput && confirmInput" class="confirm-input-block">
             <span>{{ confirmInput.label }}</span>
@@ -2523,103 +2520,76 @@ onBeforeUnmount(() => {
 .confirm-request {
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  max-width: 820px;
-  margin: 0 auto;
+  gap: 18px;
+  width: 100%;
+  min-width: 0;
 }
 .confirm-request-title {
   margin: 0;
-  font-size: 20px;
-  line-height: 1.3;
-  color: var(--text-primary);
-}
-.confirm-context {
-  display: grid;
-  gap: 7px;
-  margin: 0;
-  padding: 12px 14px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md, 8px);
-  background: color-mix(in srgb, var(--surface) 74%, transparent);
-}
-.confirm-context-row {
-  display: grid;
-  grid-template-columns: minmax(90px, 0.28fr) minmax(0, 1fr);
-  gap: 12px;
-  align-items: baseline;
-}
-.confirm-context dt {
-  color: var(--text-secondary);
-  font-size: 12px;
-}
-.confirm-context dd {
-  min-width: 0;
-  margin: 0;
-  color: var(--text-primary);
-  overflow-wrap: anywhere;
-}
-.confirm-context .confirm-path {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
-}
-.confirm-summary {
+  font-size: 16px;
   font-weight: 600;
+  line-height: 1.35;
+  color: var(--text-primary);
+}
+.confirm-tool {
+  display: grid;
+  gap: 0;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  box-shadow: 0 1px 2px color-mix(in srgb, #000 4%, transparent);
+}
+.confirm-tool-header {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.25;
   color: var(--text-primary);
 }
 .confirm-detail {
-  padding: 12px 14px;
-  border-left: 3px solid var(--border);
-  background: color-mix(in srgb, var(--surface) 65%, transparent);
+  min-width: 0;
+  padding: 13px 14px 14px;
+  background: color-mix(in srgb, var(--surface) 68%, transparent);
+}
+.confirm-summary {
+  margin: 0;
+  padding: 10px 14px 11px;
+  border-top: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.4;
 }
 .confirm-options {
   display: grid;
-  gap: 9px;
+  gap: 8px;
 }
 .confirm-option {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
   width: 100%;
-  padding: 12px 13px;
-  text-align: left;
-  color: var(--text-primary);
-  background: color-mix(in srgb, var(--surface) 82%, transparent);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md, 8px);
-  cursor: pointer;
-}
-.confirm-option:hover {
-  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
-}
-.confirm-option.selected {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent);
+  box-sizing: border-box;
 }
 .confirm-option.role-destructive.selected {
   border-color: #ff453a;
-  box-shadow: 0 0 0 2px color-mix(in srgb, #ff453a 18%, transparent);
+  background: color-mix(in srgb, #ff453a 10%, transparent);
 }
-.confirm-radio {
-  flex: 0 0 auto;
-  width: 15px;
-  height: 15px;
-  margin-top: 2px;
-  border: 1.5px solid var(--text-secondary);
-  border-radius: 50%;
-}
-.confirm-option.selected .confirm-radio {
-  border: 4px solid var(--accent);
-}
-.confirm-option.role-destructive.selected .confirm-radio {
+.confirm-option.role-destructive.selected .check.radio {
   border-color: #ff453a;
 }
-.confirm-option-copy {
+.confirm-option.role-destructive.selected .check.radio::after {
+  background: #ff453a;
+}
+.confirm-option.role-destructive.selected .opt-sc {
+  color: #ff453a;
+  border-color: color-mix(in srgb, #ff453a 40%, transparent);
+}
+.confirm-option-label {
   display: grid;
-  flex: 1;
-  gap: 4px;
+  gap: 2px;
   min-width: 0;
 }
-.confirm-option-copy span {
+.confirm-option-label small {
   color: var(--text-secondary);
   font-size: 12px;
   line-height: 1.4;
@@ -2635,6 +2605,11 @@ onBeforeUnmount(() => {
 .confirm-input-block small {
   justify-self: end;
   color: var(--text-secondary);
+}
+@media (max-width: 560px) {
+  .confirm-request {
+    gap: 14px;
+  }
 }
 
 /* 托盘「待答」子菜单点击本弹窗 → 边框 accent 蓝脉冲 2 次（约 0.6s）。仅视觉，不拦截交互。 */

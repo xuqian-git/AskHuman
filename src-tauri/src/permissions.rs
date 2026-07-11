@@ -143,12 +143,7 @@ fn parse_permission(agent: Agent, input: &Value) -> Option<ParsedPermission> {
 
     let mut choices = vec![ConfirmChoice {
         id: "approve_once".into(),
-        label: if zh {
-            "仅批准本次"
-        } else {
-            "Approve once"
-        }
-        .into(),
+        label: if zh { "批准" } else { "Approve" }.into(),
         description: String::new(),
         role: ActionRole::Primary,
     }];
@@ -203,9 +198,9 @@ fn parse_permission(agent: Agent, input: &Value) -> Option<ParsedPermission> {
     }
     let spec = ConfirmSpec {
         title: if zh {
-            "Agent 权限请求"
+            "Agent 请求调用以下工具"
         } else {
-            "Agent permission request"
+            "Agent requests to use the following tool"
         }
         .into(),
         context,
@@ -222,9 +217,9 @@ fn parse_permission(agent: Agent, input: &Value) -> Option<ParsedPermission> {
                 }
                 .into(),
                 placeholder: if zh {
-                    "告诉 Agent 为什么拒绝"
+                    "告诉 Agent 应该怎么做"
                 } else {
-                    "Tell the agent why"
+                    "Tell the Agent what it should do"
                 }
                 .into(),
                 max_chars: 1000,
