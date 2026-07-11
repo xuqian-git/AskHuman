@@ -201,12 +201,12 @@ fn dingtalk_param_map(request: &crate::models::ConfirmRequest, lang: Lang) -> se
             } else {
                 format!("{}\n{}", choice.label, choice.description)
             };
-            crate::models::OptionItem::new(text, choice.role == crate::confirm::ActionRole::Primary)
+            crate::models::OptionItem::new(text, false)
         })
         .collect();
     let mut public = crate::dingtalk::card::build_card_param_map(
         &request.title,
-        &choice_cards::request_markdown(request, 12_000),
+        &choice_cards::compact_tool_markdown(request, 12_000),
         &options,
         true,
         false,
@@ -231,9 +231,9 @@ fn dingtalk_param_map(request: &crate::models::ConfirmRequest, lang: Lang) -> se
     );
     public["reason_placeholder"] = serde_json::Value::String(
         if lang == Lang::Zh {
-            "说明拒绝原因"
+            "告诉 Agent 应该怎么做"
         } else {
-            "Explain why this request is denied"
+            "Tell the Agent what it should do"
         }
         .to_string(),
     );
@@ -722,7 +722,10 @@ pub fn start_telegram(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{ConfirmChoice, ConfirmDetail, ConfirmPresentation, ConfirmSpec};
+    use crate::models::{
+        ConfirmChoice, ConfirmDetail, ConfirmField, ConfirmFieldKind, ConfirmPresentation,
+        ConfirmSpec,
+    };
 
     #[test]
     fn channel_names_are_localized_for_terminal_copy() {
@@ -734,7 +737,20 @@ mod tests {
     fn dingtalk_permission_payload_matches_dedicated_template_contract() {
         let request = ConfirmSpec {
             title: "Permission".into(),
-            context: vec![],
+            context: vec![
+                ConfirmField {
+                    id: "agent".into(),
+                    label: "Agent".into(),
+                    value: "Codex".into(),
+                    kind: ConfirmFieldKind::Text,
+                },
+                ConfirmField {
+                    id: "tool".into(),
+                    label: "Tool".into(),
+                    value: "Bash".into(),
+                    kind: ConfirmFieldKind::Text,
+                },
+            ],
             detail: ConfirmDetail {
                 summary: "Run command".into(),
                 body_md: "`git status`".into(),
@@ -771,11 +787,24 @@ mod tests {
         let payload = dingtalk_param_map(&request, Lang::En);
         assert_eq!(payload["deny_index"], "2");
         assert_eq!(payload["submit_label"], "Submit");
+        assert_eq!(
+            payload["reason_placeholder"],
+            "Tell the Agent what it should do"
+        );
+        let markdown = payload["markdown"].as_str().unwrap();
+        assert!(markdown.starts_with("**Bash**"));
+        assert!(markdown.contains("`git status`"));
+        assert!(markdown.ends_with("*Run command*"));
+        assert!(!markdown.contains("Codex"));
+        assert!(!markdown.contains("**Agent:**"));
         assert!(payload.get("single").is_none());
         assert!(payload.get("allow_input").is_none());
         let options: serde_json::Value =
             serde_json::from_str(payload["options"].as_str().unwrap()).unwrap();
         assert_eq!(options.as_array().unwrap().len(), 3);
+        assert!(options.as_array().unwrap().iter().all(|option| option["md"]
+            .as_str()
+            .is_some_and(|text| !text.contains("Recommended"))));
     }
 
     #[test]

@@ -51,6 +51,20 @@ fn context_markdown(request: &ConfirmRequest) -> String {
         .join("\n")
 }
 
+pub(crate) fn compact_tool_markdown(request: &ConfirmRequest, max: usize) -> String {
+    let mut body = format!("**{}**", tool_name(request));
+    if !request.detail.body_md.trim().is_empty() {
+        body.push_str("\n\n");
+        body.push_str(&request.detail.body_md);
+    }
+    if !request.detail.summary.trim().is_empty() {
+        body.push_str("\n\n*");
+        body.push_str(&request.detail.summary.replace('*', "\\*"));
+        body.push('*');
+    }
+    bounded(&body, max)
+}
+
 pub(crate) fn request_markdown(request: &ConfirmRequest, max: usize) -> String {
     let mut body = context_markdown(request);
     if !body.is_empty() {
@@ -77,7 +91,7 @@ fn input_for_selected(
         .filter(|input| selected_id == Some(input.visible_when_action_id.as_str()))
 }
 
-fn tool_name(request: &ConfirmRequest) -> &str {
+pub(crate) fn tool_name(request: &ConfirmRequest) -> &str {
     request
         .context
         .iter()

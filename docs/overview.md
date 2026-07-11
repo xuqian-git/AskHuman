@@ -487,6 +487,8 @@ AskHuman/
   已在导航栏可见的 Agent/项目/时间等 context，而以「工具名 → 调用正文 → 次要描述」全宽呈现；单选与快捷键
   直接复用普通 Ask 的 `.option/.check.radio/.opt-sc`，只为 destructive 选中态覆盖红色。飞书卡片沿用同一信息
   层级，并直接复用普通 Ask 的小号蓝色头部与原生 checker builder；选中 destructive 时以红色文字区分。
+  钉钉沿用已发布专用模板与原变量契约，只把 `markdown` 改为紧凑工具正文；Permission 选项不借用普通 Ask
+  的 recommended 标记，拒绝输入占位与 popup 保持一致，故无需重新发布模板或更换模板 ID。
 - **安装与 mode**：permission 是独立默认开 preference，不是第四种 mode。Claude/Codex 的 CLI/MCP mode
   在 preference 开时安装 PermissionRequest handler，None 卸 handler 但保留偏好；重复设置同 mode 仍完整
   reconcile Rule/timeout/MCP/permission 磁盘产物，但 mode 操作从不改 permission preference。Hook JSONC 编辑
