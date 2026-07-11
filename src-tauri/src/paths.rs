@@ -103,6 +103,14 @@ pub fn update_state_file() -> PathBuf {
     config_dir().join("update.json")
 }
 
+/// 自动集成产物的内部所有权账本 `~/.askhuman/integration-state.json`。
+///
+/// 它与用户设置 `config.json` 分离，只用于区分“用户预存配置”和“AskHuman 实际追加配置”，
+/// 从而在卸载时只删除本应用拥有的增量。
+pub fn integration_state_file() -> PathBuf {
+    config_dir().join("integration-state.json")
+}
+
 /// Agent 生命周期追踪状态文件 `~/.askhuman/agents.json`（daemon 持久化、重启复核用）。
 pub fn agents_file() -> PathBuf {
     config_dir().join("agents.json")

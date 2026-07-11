@@ -3,20 +3,22 @@
 //! `ImageContent` 一并返回。
 //!
 //! 关键点：
-//! - 子进程用 `Command::output()` 运行 —— stdin 被置空、stdout/stderr 被捕获，因此**不会**污染本
-//!   server 的 STDIO MCP 协议流。
+//! - 子进程用 Tokio `Command::output()` 运行 —— stdin 被置空、stdout/stderr 被捕获，因此**不会**污染本
+//!   server 的 STDIO MCP 协议流；`kill_on_drop(true)` 保证 MCP 调用被取消时子进程随之终止，进而让
+//!   daemon 从 CLI socket EOF 取消在途请求。
 //! - 子进程的 JSON 含脚本专用的 `selected_indices`；反序列化进 [`AskResult`]（无该字段）即自动丢弃，
 //!   再重新序列化为 `structuredContent`，对 MCP 客户端不暴露该字段。
 
 use base64::Engine;
+use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, Content, Implementation, ServerCapabilities, ServerInfo};
 use rmcp::{tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler};
-use rmcp::handler::server::router::tool::ToolRouter;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
+use std::process::{Output, Stdio};
 
 // `ask` 工具的入参（MCP 入参 schema 由 schemars 从本结构派生）。结构体级注释用 `//` 以免泄漏进对外
 // schema 的 description；字段级 `///` 才是给 agent 读的描述，须为英文。
@@ -153,15 +155,11 @@ structured content; any images the human attaches are returned as image content.
 
         // `output()` 置空 stdin、捕获 stdout/stderr，确保子进程不碰 MCP 的 STDIO 协议流。
         // `ASKHUMAN_FROM_MCP=1`：告知子进程这是 MCP 发起，daemon 据此「只刷新、不新建」会话（防幽灵）。
-        let output = tokio::task::spawn_blocking(move || {
-            std::process::Command::new(exe)
-                .args(&argv)
-                .env("ASKHUMAN_FROM_MCP", "1")
-                .output()
-        })
-        .await
-        .map_err(|e| McpError::internal_error(format!("ask task failed to join: {e}"), None))?
-        .map_err(|e| McpError::internal_error(format!("failed to spawn AskHuman: {e}"), None))?;
+        let mut command = tokio::process::Command::new(exe);
+        command.args(&argv).env("ASKHUMAN_FROM_MCP", "1");
+        let output = capture_output(command).await.map_err(|e| {
+            McpError::internal_error(format!("failed to spawn AskHuman: {e}"), None)
+        })?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let code = output.status.code().unwrap_or(3);
@@ -215,14 +213,28 @@ structured content; any images the human attaches are returned as image content.
     }
 }
 
+/// 捕获子进程输出，同时把 future 的取消传播为子进程终止。
+///
+/// MCP transport 取消 `ask()` 时会 drop 此 future；Tokio 随即 drop child 并 kill。AskHuman CLI 的
+/// daemon 连接因此收到 EOF，daemon 现有 `wait_cli_eof` 路径会取消 popup 与所有 IM 渠道。
+async fn capture_output(mut command: tokio::process::Command) -> std::io::Result<Output> {
+    command
+        .kill_on_drop(true)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+}
+
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for AskServer {
     fn get_info(&self) -> ServerInfo {
         let mut info = ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_instructions(
-                "AskHuman bridges the agent and a human operator. Call the `ask` tool whenever you \
+            "AskHuman bridges the agent and a human operator. Call the `ask` tool whenever you \
 need the human to decide, clarify, review, or approve something; it blocks until they reply.",
-            );
+        );
         // `from_build_env()` 的名字/版本来自 rmcp crate（"rmcp"/"1.7.0"），改成本应用的品牌名与版本。
         let mut implementation = Implementation::from_build_env();
         implementation.name = "AskHuman".to_string();
@@ -308,6 +320,9 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[cfg(unix)]
+    use std::time::Duration;
+
     fn contains_ref(value: &Value) -> bool {
         match value {
             Value::Object(object) => {
@@ -322,13 +337,50 @@ mod tests {
         serde_json::from_value(json).unwrap()
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancelled_output_future_kills_child() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("pid");
+        let script = format!("echo $$ > '{}'; exec sleep 60", pid_file.display());
+        let mut command = tokio::process::Command::new("sh");
+        command.args(["-c", &script]);
+
+        let task = tokio::spawn(capture_output(command));
+        let pid = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Ok(text) = std::fs::read_to_string(&pid_file) {
+                    if let Ok(pid) = text.trim().parse::<i32>() {
+                        break pid;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("child should publish its pid");
+
+        task.abort();
+        let _ = task.await;
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                // kill(pid, 0) == -1 with ESRCH means the child no longer exists.
+                let alive = unsafe { libc::kill(pid, 0) } == 0;
+                if !alive {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("dropping capture_output must kill the child");
+    }
+
     #[test]
     fn argv_message_only_becomes_question() {
         let p = params(json!({ "message": "Continue?" }));
-        assert_eq!(
-            build_argv(&p),
-            vec!["Continue?", "--output", "json"]
-        );
+        assert_eq!(build_argv(&p), vec!["Continue?", "--output", "json"]);
     }
 
     #[test]
@@ -368,7 +420,10 @@ mod tests {
         let tool = server.tool_router.get("ask").unwrap();
         let schema = Value::Object((*tool.input_schema).clone());
 
-        assert!(!contains_ref(&schema), "ask input schema must not expose $ref");
+        assert!(
+            !contains_ref(&schema),
+            "ask input schema must not expose $ref"
+        );
         assert!(schema.get("$defs").is_none());
         assert_eq!(
             schema.pointer("/properties/questions/items/type"),

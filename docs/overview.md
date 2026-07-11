@@ -110,7 +110,8 @@ AskHuman/
                              OptionItem(text+recommended，反序列化兼容旧纯字符串) /
                              FileAttachment / ChannelResult(含 files) / ImageAttachment / ChannelAction / source_name()
       config.rs              AppConfig 读写 ~/.askhuman/config.json（原子写、容错解码；旧 ~/.humaninloop 自动回退读取）
-      paths.rs               home/config/temp 路径 + history.jsonl/history.lock + cursor_mcp_json/claude_json（MCP 配置）
+      paths.rs               home/config/temp 路径 + history.jsonl/history.lock + integration-state.json（集成所有权）+
+                             cursor_mcp_json/claude_json（MCP 配置）
                              + gui_host_sock/gui_host_lock（统一 GUI 宿主自有 socket / 单实例锁）
       project.rs             项目识别：从 cwd 向上找首个 .git 根，回退 cwd（回复历史归类）
       history.rs             回复历史存储：~/.askhuman/history.jsonl（每行一条 JSON，追加写 + 文件锁裁剪/清空）
@@ -120,7 +121,9 @@ AskHuman/
                              ask.rs(单工具 `ask`：JsonSchema 入/出参 → build_argv → spawn 现有
                              `AskHuman … --output json`[带 `ASKHUMAN_FROM_MCP=1`] → 解析为 `AskResult`
                              [剔除脚本专用 `selected_indices`] → structuredContent + content[JSON 文本 +
-                             图片转 ImageContent]）。薄壳：每次调用新 spawn 子进程，天然跨 daemon 重启重连
+                             图片转 ImageContent]）。薄壳：每次调用新 spawn 子进程，天然跨 daemon 重启重连；
+                             Tokio process `kill_on_drop` 把 MCP 取消传播到 CLI socket EOF，daemon 随之取消
+                             popup/IM，避免孤儿问题
       hooks.rs               用户级 hooks：~/.askhuman/hooks/<event> 可执行脚本（首个事件 ask-received）
       watch.rs               `/watch` 实时关注纯逻辑（四渠道）：订阅持久化(state/watch.json) + 结构化帧/签名 +
                              共享文案构件 + 飞书卡片视图 + 渠道门控 + 本地时区绝对时刻（TG/Slack/钉钉
@@ -236,7 +239,11 @@ AskHuman/
                              startup_timeout_sec/tool_timeout_sec；**Grok 额外写 `tool_timeouts = { ask = 86400 }`**
                              per-tool 超时，对默认模型 Composer 更精准）。TOML 数值比较**容忍整值浮点**（Codex/Grok
                              CLI 会把 `30`→`30.0`，只按整数比会陷入「永远需更新」死循环）。最小编辑保留用户其它内容/
-                             注释/格式；install/update/uninstall/is_installed/needs_update/display_path/reveal/open（幂等纯函数 + 单测）
+                             注释/格式。Codex MCP 还把 `mcp__askhuman` 最小追加到
+                             `[features.code_mode].direct_only_tool_namespaces`，强制 ask 顶层阻塞、避免 Code Mode
+                             yield 后模型自行放弃；通过 `~/.askhuman/integration-state.json` 仅记录本应用实际
+                             追加项的所有权，卸载不删除用户预存同名项。install/update/uninstall/is_installed/needs_update/
+                             display_path/reveal/open（幂等纯函数 + 单测）
         agent_mode.rs        三态模式编排（None|Cli|Mcp 互斥）：Cli=Rule(CLI)+超时 Hook，Mcp=Rule(MCP)+MCP 配置；
                              `current`(**以产物 MCP配置/超时Hook 为首要信号**，互斥且由 set 维护、稳定；产物不
                              明确时才回退 Rule 变体——避免内置提示词改版后已装旧正文失配被错判模式) /
