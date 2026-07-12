@@ -32,6 +32,19 @@ fn source_name(channel: &str, lang: Lang) -> String {
     .to_string()
 }
 
+fn input_limit_warning(request: &crate::models::ConfirmRequest, lang: Lang) -> String {
+    let max = request
+        .presentation
+        .input()
+        .map(|input| input.max_chars)
+        .unwrap_or(1000);
+    if lang == Lang::Zh {
+        format!("输入最多 {max} 字；本条回复未保存。")
+    } else {
+        format!("Input is limited to {max} characters; this reply was not saved.")
+    }
+}
+
 fn final_status(entry: &ConfirmEntry, lang: Lang) -> String {
     match entry.coordinator.terminal_kind() {
         Some(ConfirmTerminalKind::Decision(result)) => {
@@ -43,11 +56,20 @@ fn final_status(entry: &ConfirmEntry, lang: Lang) -> String {
                 .map(|choice| choice.role == crate::confirm::ActionRole::Destructive)
                 .unwrap_or(false);
             let source = source_name(&result.source_channel_id, lang);
-            match (lang, denied) {
-                (Lang::Zh, true) => format!("已通过 {source} 提交拒绝决定"),
-                (Lang::Zh, false) => format!("已通过 {source} 允许"),
-                (Lang::En, true) => format!("Denial decision submitted via {source}"),
-                (Lang::En, false) => format!("Allowed via {source}"),
+            let task_input = entry
+                .request
+                .presentation
+                .input()
+                .is_some_and(|input| input.max_chars > 1000);
+            match (task_input, lang, denied) {
+                (true, Lang::Zh, true) => format!("已通过 {source} 取消"),
+                (true, Lang::Zh, false) => format!("已通过 {source} 提交"),
+                (true, Lang::En, true) => format!("Cancelled via {source}"),
+                (true, Lang::En, false) => format!("Submitted via {source}"),
+                (false, Lang::Zh, true) => format!("已通过 {source} 提交拒绝决定"),
+                (false, Lang::Zh, false) => format!("已通过 {source} 允许"),
+                (false, Lang::En, true) => format!("Denial decision submitted via {source}"),
+                (false, Lang::En, false) => format!("Allowed via {source}"),
             }
         }
         Some(ConfirmTerminalKind::Fallback(ConfirmFallbackReason::Expired)) => match lang {
@@ -192,21 +214,54 @@ async fn keep_dingtalk_tombstone(
 }
 
 fn dingtalk_param_map(request: &crate::models::ConfirmRequest, lang: Lang) -> serde_json::Value {
-    let options: Vec<crate::models::OptionItem> = request
-        .choices
-        .iter()
-        .map(|choice| {
-            let text = if choice.description.trim().is_empty() {
-                choice.label.clone()
-            } else {
-                format!("{}\n{}", choice.label, choice.description)
-            };
-            crate::models::OptionItem::new(text, false)
-        })
-        .collect();
+    let task_input = request
+        .presentation
+        .input()
+        .is_some_and(|input| input.max_chars > 1000);
+    let options: Vec<crate::models::OptionItem> = if task_input {
+        Vec::new()
+    } else {
+        request
+            .choices
+            .iter()
+            .map(|choice| {
+                let text = if choice.description.trim().is_empty() {
+                    choice.label.clone()
+                } else {
+                    format!("{}\n{}", choice.label, choice.description)
+                };
+                crate::models::OptionItem::new(text, false)
+            })
+            .collect()
+    };
+    let markdown = if task_input {
+        let mut value = request.detail.summary.clone();
+        if !request.detail.body_md.trim().is_empty() {
+            value.push_str("\n\n");
+            value.push_str(&request.detail.body_md);
+        }
+        value
+            .lines()
+            .enumerate()
+            .map(|(index, line)| {
+                if line.is_empty() {
+                    String::new()
+                } else if index == 0 {
+                    format!("<font sizeToken=common_body_text_style__font_size>{line}</font>")
+                } else if let Some(item) = line.strip_prefix("- ") {
+                    format!("- <font sizeToken=common_footnote_text_style__font_size>{item}</font>")
+                } else {
+                    format!("<font sizeToken=common_footnote_text_style__font_size>{line}</font>")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    } else {
+        choice_cards::compact_tool_markdown(request, 12_000, lang)
+    };
     let mut public = crate::dingtalk::card::build_card_param_map(
         &request.title,
-        &choice_cards::compact_tool_markdown(request, 12_000, lang),
+        &markdown,
         &options,
         true,
         false,
@@ -217,25 +272,38 @@ fn dingtalk_param_map(request: &crate::models::ConfirmRequest, lang: Lang) -> se
         },
     );
     if let Some(map) = public.as_object_mut() {
-        map.remove("single");
-        map.remove("allow_input");
+        if !task_input {
+            map.remove("single");
+            map.remove("allow_input");
+        }
     }
     public["deny_index"] = serde_json::Value::String(request.dismiss_index().to_string());
+    let input = request.presentation.input();
     public["reason_label"] = serde_json::Value::String(
-        if lang == Lang::Zh {
-            "拒绝原因（可选）"
-        } else {
-            "Denial reason (optional)"
-        }
-        .to_string(),
+        input
+            .map(|v| v.label.trim())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| {
+                if lang == Lang::Zh {
+                    "拒绝原因（可选）"
+                } else {
+                    "Denial reason (optional)"
+                }
+            })
+            .to_string(),
     );
     public["reason_placeholder"] = serde_json::Value::String(
-        if lang == Lang::Zh {
-            "告诉 Agent 应该怎么做"
-        } else {
-            "Tell the Agent what it should do"
-        }
-        .to_string(),
+        input
+            .map(|v| v.placeholder.trim())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| {
+                if lang == Lang::Zh {
+                    "告诉 Agent 应该怎么做"
+                } else {
+                    "Tell the Agent what it should do"
+                }
+            })
+            .to_string(),
     );
     public["submit_label"] =
         serde_json::Value::String(request.presentation.submit_label().to_string());
@@ -258,7 +326,16 @@ pub fn start_dingtalk(
             }
         };
         let target = client.user_id().to_string();
-        let template = config.permission_confirm_card_template_id.trim();
+        let task_input = entry
+            .request
+            .presentation
+            .input()
+            .is_some_and(|input| input.max_chars > 1000);
+        let template = if task_input {
+            crate::channels::dingding::effective_template_id(&config)
+        } else {
+            config.permission_confirm_card_template_id.trim()
+        };
         let template = if template.is_empty() {
             DEFAULT_DINGTALK_PERMISSION_TEMPLATE_ID
         } else {
@@ -309,11 +386,16 @@ pub fn start_dingtalk(
                             let _ = ack.send(serde_json::json!({}));
                             continue;
                         };
-                        if submit.user_id != target || submit.out_track_id != out_track_id || submit.selected_indices.len() != 1 {
+                        if submit.user_id != target || submit.out_track_id != out_track_id || submit.selected_indices.len() > 1 {
                             let _ = ack.send(serde_json::json!({}));
                             continue;
                         }
-                        let index = submit.selected_indices[0];
+                        let index = submit.selected_indices.first().copied()
+                            .or_else(|| entry.request.choice_form_view().default_index);
+                        let Some(index) = index else {
+                            let _ = ack.send(serde_json::json!({}));
+                            continue;
+                        };
                         if entry.coordinator.submit_wire(index, submit.user_input, channel).is_ok() {
                             let _ = ack.send(crate::dingtalk::card::submit_ack_success());
                             break;
@@ -363,7 +445,7 @@ pub fn start_feishu(
         };
         let target = client.open_id().to_string();
         let mut events = router.register();
-        let mut selected = None;
+        let mut selected = entry.request.choice_form_view().default_index;
         let mut comment = String::new();
         let initial = choice_cards::feishu_card(&entry.request, selected, &comment, lang);
         let message_id =
@@ -482,7 +564,7 @@ pub fn start_slack(
                 return;
             }
         };
-        let mut selected = None;
+        let mut selected = entry.request.choice_form_view().default_index;
         let mut comment = String::new();
         let mut events = router.register();
         let initial = choice_cards::slack_blocks(&entry.request, selected, &comment, lang);
@@ -557,17 +639,20 @@ pub fn start_slack(
                         let thread = event.get("thread_ts").and_then(|value| value.as_str()).unwrap_or("");
                         let text = event.get("text").and_then(|value| value.as_str()).unwrap_or("").trim();
                         if actor == target && thread == message_id && !text.is_empty() {
-                            let deny = entry.request.dismiss_index();
+                            let input_index = entry.request.choice_form_view().default_index
+                                .unwrap_or_else(|| entry.request.dismiss_index());
+                            let max_chars = entry.request.presentation.input()
+                                .map(|input| input.max_chars).unwrap_or(1000);
                             let extra = usize::from(!comment.is_empty());
-                            if comment.chars().count() + extra + text.chars().count() <= 1000 {
+                            if comment.chars().count() + extra + text.chars().count() <= max_chars {
                                 if !comment.is_empty() { comment.push('\n'); }
                                 comment.push_str(text);
-                                selected = Some(deny);
+                                selected = Some(input_index);
                                 let blocks = choice_cards::slack_blocks(&entry.request, selected, &comment, lang);
                                 let _ = client.update_message(&dm, &message_id, Some(&blocks), &entry.request.title).await;
                             } else {
-                                let warning = if lang == Lang::Zh { "拒绝原因最多 1000 字；本条回复未保存。" } else { "The denial reason is limited to 1000 characters; this reply was not saved." };
-                                let _ = client.post_thread_text(&dm, &message_id, warning).await;
+                                let warning = input_limit_warning(&entry.request, lang);
+                                let _ = client.post_thread_text(&dm, &message_id, &warning).await;
                             }
                         }
                     }
@@ -612,11 +697,25 @@ pub fn start_telegram(
                 return;
             }
         };
-        let mut selected = None;
+        let mut selected = entry.request.choice_form_view().default_index;
         let mut comment = String::new();
         let mut events = router.register();
         let initial = choice_cards::telegram_html(&entry.request, selected, &comment, None, lang);
-        let keyboard = choice_cards::telegram_keyboard(&entry.request, selected);
+        let force_reply = entry
+            .request
+            .presentation
+            .input()
+            .is_some_and(|input| input.max_chars > 1000);
+        let keyboard = if force_reply {
+            serde_json::json!({
+                "force_reply": true,
+                "selective": true,
+                "input_field_placeholder": entry.request.presentation.input()
+                    .map(|input| input.placeholder.as_str()).unwrap_or("")
+            })
+        } else {
+            choice_cards::telegram_keyboard(&entry.request, selected)
+        };
         let message_id = match tokio::time::timeout(
             DELIVERY_TIMEOUT,
             client.send_message(&initial, Some("HTML"), Some(keyboard)),
@@ -638,6 +737,28 @@ pub fn start_telegram(
             }
         };
         events.set_active(client.chat_id(), message_id);
+        let cancel_message_id = if force_reply {
+            let dismiss = entry.request.dismiss_index();
+            let label = entry
+                .request
+                .choices
+                .get(dismiss)
+                .map(|choice| choice.label.as_str())
+                .unwrap_or("Cancel");
+            let markup = serde_json::json!({ "inline_keyboard": [[{
+                "text": label,
+                "callback_data": format!("pc:do:{dismiss}")
+            }]] });
+            match client.send_message(label, None, Some(markup)).await {
+                Ok(id) if id != 0 => {
+                    events.set_card_route(id);
+                    Some(id)
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
         if !entry.mark_ready(channel, message_id.to_string()) {
             let html = choice_cards::telegram_html(
                 &entry.request,
@@ -676,17 +797,25 @@ pub fn start_telegram(
                     Some(crate::telegram::router::TgInbound::Text { text, reply_to_message_id, .. }) => {
                         if reply_to_message_id == Some(message_id) {
                             let text = text.trim();
+                            let max_chars = entry.request.presentation.input()
+                                .map(|input| input.max_chars).unwrap_or(1000);
                             let extra = usize::from(!comment.is_empty());
-                            if !text.is_empty() && comment.chars().count() + extra + text.chars().count() <= 1000 {
+                            if !text.is_empty() && comment.chars().count() + extra + text.chars().count() <= max_chars {
                                 if !comment.is_empty() { comment.push('\n'); }
                                 comment.push_str(text);
-                                selected = Some(entry.request.dismiss_index());
-                                let keyboard = choice_cards::telegram_keyboard(&entry.request, selected);
-                                let html = choice_cards::telegram_html(&entry.request, selected, &comment, None, lang);
-                                let _ = client.edit_message_text(message_id, &html, Some("HTML"), Some(keyboard)).await;
+                                let input_index = entry.request.choice_form_view().default_index
+                                    .unwrap_or_else(|| entry.request.dismiss_index());
+                                selected = Some(input_index);
+                                if force_reply {
+                                    if entry.coordinator.submit_wire(input_index, Some(comment.clone()), channel).is_ok() { break; }
+                                } else {
+                                    let keyboard = choice_cards::telegram_keyboard(&entry.request, selected);
+                                    let html = choice_cards::telegram_html(&entry.request, selected, &comment, None, lang);
+                                    let _ = client.edit_message_text(message_id, &html, Some("HTML"), Some(keyboard)).await;
+                                }
                             } else if !text.is_empty() {
-                                let warning = if lang == Lang::Zh { "拒绝原因最多 1000 字；本条回复未保存。" } else { "The denial reason is limited to 1000 characters; this reply was not saved." };
-                                let _ = client.send_reply_message(message_id, warning).await;
+                                let warning = input_limit_warning(&entry.request, lang);
+                                let _ = client.send_reply_message(message_id, &warning).await;
                             }
                         }
                     }
@@ -707,6 +836,12 @@ pub fn start_telegram(
         let _ = client
             .edit_message_text(message_id, &html, Some("HTML"), None)
             .await;
+        if let Some(cancel_id) = cancel_message_id {
+            let _ = client
+                .edit_message_text(cancel_id, &final_status(&entry, lang), None, None)
+                .await;
+            events.clear_card_route(cancel_id);
+        }
         let deadline = entry.deadline;
         drop(entry);
         keep_telegram_tombstone(events, client, message_id, html, deadline).await;
@@ -717,8 +852,8 @@ pub fn start_telegram(
 mod tests {
     use super::*;
     use crate::models::{
-        ConfirmChoice, ConfirmDetail, ConfirmField, ConfirmFieldKind, ConfirmPresentation,
-        ConfirmSpec,
+        ConfirmChoice, ConfirmDetail, ConfirmField, ConfirmFieldKind, ConfirmInput,
+        ConfirmPresentation, ConfirmSpec,
     };
 
     #[test]
@@ -808,5 +943,61 @@ mod tests {
             DEFAULT_DINGTALK_PERMISSION_TEMPLATE_ID,
             "3a5ce2de-99b8-4a79-a4ea-622897526645.schema"
         );
+    }
+
+    #[test]
+    fn dingtalk_task_payload_enables_question_template_input_without_options() {
+        let request = ConfirmSpec {
+            title: "Enter task".into(),
+            context: vec![],
+            detail: ConfirmDetail {
+                summary: "**Describe the task**\n\n- **Agent:** Codex\n- **Workspace:** Demo"
+                    .into(),
+                body_md: String::new(),
+            },
+            choices: vec![
+                ConfirmChoice {
+                    id: "start".into(),
+                    label: "Start".into(),
+                    description: String::new(),
+                    role: crate::confirm::ActionRole::Primary,
+                },
+                ConfirmChoice {
+                    id: "cancel".into(),
+                    label: "Cancel".into(),
+                    description: String::new(),
+                    role: crate::confirm::ActionRole::Destructive,
+                },
+            ],
+            presentation: ConfirmPresentation::SingleSelectSubmit {
+                input: Some(ConfirmInput {
+                    id: "task".into(),
+                    visible_when_action_id: "start".into(),
+                    label: "Task".into(),
+                    placeholder: "Describe".into(),
+                    max_chars: 3000,
+                }),
+                submit_label: "Start task".into(),
+                default_action_id: Some("start".into()),
+            },
+            dismiss_action_id: "cancel".into(),
+        }
+        .into_request("task".into(), 1, 2)
+        .unwrap();
+        let payload = dingtalk_param_map(&request, Lang::En);
+        assert_eq!(payload["allow_input"], "true");
+        assert_eq!(payload["single"], "true");
+        assert_eq!(payload["options"], "[]");
+        assert!(payload["markdown"]
+            .as_str()
+            .unwrap()
+            .contains("common_footnote_text_style__font_size"));
+        let markdown = payload["markdown"].as_str().unwrap();
+        assert!(markdown.starts_with(
+            "<font sizeToken=common_body_text_style__font_size>**Describe the task**</font>"
+        ));
+        assert!(markdown.contains(
+            "\n- <font sizeToken=common_footnote_text_style__font_size>**Agent:** Codex</font>"
+        ));
     }
 }

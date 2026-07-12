@@ -275,15 +275,19 @@ async fn dispatch(client: &TelegramClient, routes: &Arc<Mutex<Routes>>, update: 
         if observed && crate::autochannel::classify(&text) != crate::autochannel::Parsed::Text {
             return;
         }
-        // 归给该 chat 下「最新活动卡片」的会话（活动序号最大者）。
+        // A reply to a specific card belongs to that card even when a newer task/input flow is
+        // active. Otherwise, free text goes to the latest active card for backward compatibility.
         let sink = {
             let r = routes.lock().unwrap();
-            let best = r
-                .active
-                .iter()
-                .filter(|(_, info)| info.chat_id == our_chat)
-                .max_by_key(|(_, info)| info.seq)
-                .map(|(rid, _)| *rid);
+            let exact =
+                reply_to_message_id.and_then(|message_id| r.cards.get(&message_id).copied());
+            let best = exact.or_else(|| {
+                r.active
+                    .iter()
+                    .filter(|(_, info)| info.chat_id == our_chat)
+                    .max_by_key(|(_, info)| info.seq)
+                    .map(|(rid, _)| *rid)
+            });
             best.and_then(|rid| r.sinks.get(&rid).cloned())
         };
         if let Some(tx) = sink {

@@ -10,6 +10,8 @@ import type {
   FeishuWaitArgs,
   AgentId,
   AgentKind,
+  AgentTaskReadiness,
+  AgentTaskWorkspace,
   AgentMode,
   AgentModeStatus,
   ClaudeHookStatus,
@@ -87,6 +89,23 @@ export const getSettings = () => invoke<SettingsPayload>("get_settings");
 
 export const saveSettings = (config: AppConfig, secretActions: SecretActions) =>
   invoke<void>("save_settings", { config, secretActions });
+
+export const agentTaskWorkspaces = (refresh = false) =>
+  invoke<AgentTaskWorkspace[]>("agent_task_workspaces", { refresh });
+export const agentTaskWorkspaceAdd = (path: string) =>
+  invoke<AgentTaskWorkspace>("agent_task_workspace_add", { path });
+export const agentTaskWorkspacePick = () =>
+  invoke<string | null>("agent_task_workspace_pick");
+export const agentTaskWorkspacePin = (path: string, pinned: boolean) =>
+  invoke<void>("agent_task_workspace_pin", { path, pinned });
+export const agentTaskWorkspaceHide = (path: string, hidden: boolean) =>
+  invoke<void>("agent_task_workspace_hide", { path, hidden });
+export const agentTaskWorkspaceForget = (path: string) =>
+  invoke<void>("agent_task_workspace_forget", { path });
+export const agentTaskReadiness = () =>
+  invoke<AgentTaskReadiness[]>("agent_task_readiness");
+export const agentTaskTestTerminal = () =>
+  invoke<void>("agent_task_test_terminal");
 
 export const getPrompt = (variant?: "cli" | "mcp") =>
   invoke<string>("get_prompt", { variant });

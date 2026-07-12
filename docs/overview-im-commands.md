@@ -20,6 +20,7 @@
 
 ## 命令地图
 
+- `/new`：macOS 上依次选择最近 workspace、三重就绪的 Agent 和权限，并通过渠道原生输入控件提交任务；Slack 显示为 `!new`。提交后新的 Terminal.app 窗口运行交互式 Agent，来源渠道默认自动 watch 新会话。
 - `/help`、`/?`：按当前配置和是否有在途问题生成可用命令与作答提示。
 - `/here`：把当前 IM 设为活跃槽。
 - `/status [编号]`：无编号查看 Agent 列表；带编号查看最近助手文字和当前/最近工具活动。
@@ -48,10 +49,15 @@ Watch 规格见 `docs/specs/im-watch.md`。订阅持久化在 `~/.askhuman/state
 
 `/msg` 的目标选择复用同一单选卡模型，实际队列由 `agents/interject.rs` 管理；插话能力见 `docs/specs/agent-interject.md`。
 
+`/new` 的 workspace / Agent / 权限步骤也复用单选卡；最终任务输入复用结构化 Confirm 的渠道原生
+输入能力，但只投放到命令来源渠道。启动参数不经过 shell：IM 数据进入一次性 `0600` LaunchRecord，
+Terminal shell 只接收 AskHuman 绝对路径和 UUID token。详细边界见 `docs/specs/im-agent-task-launch.md`。
+
 ## 主要代码入口
 
 - `src-tauri/src/autochannel.rs`：命令分类、帮助文案、活跃槽与共享回复文案。
 - `src-tauri/src/daemon/mod.rs`：入站监听、命令分派、补推、watch/select/confirm 台账。
 - `src-tauri/src/watch.rs`、`select.rs`：传输无关状态与视图模型。
+- `src-tauri/src/agents/workspaces.rs`、`integrations/agent_launch.rs`：workspace 索引、readiness 与安全终端启动。
 - `src-tauri/src/gitutil.rs`、`confirm/`、`export/`：Git 操作、确认和附件导出。
 - `src-tauri/src/{telegram,dingtalk,feishu,slack}/`：平台传输、渲染、回调与路由。

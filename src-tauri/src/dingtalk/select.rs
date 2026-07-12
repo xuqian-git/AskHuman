@@ -49,6 +49,9 @@ fn font(text: &str, size: Option<&str>, color: Option<&str>) -> String {
 fn button_color(action: crate::select::SelectAction) -> &'static str {
     match action {
         crate::select::SelectAction::Watch
+        | crate::select::SelectAction::TaskWorkspace
+        | crate::select::SelectAction::TaskAgent
+        | crate::select::SelectAction::TaskPermission
         | crate::select::SelectAction::Status
         | crate::select::SelectAction::Msg
         | crate::select::SelectAction::Diff

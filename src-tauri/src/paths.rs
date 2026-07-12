@@ -157,6 +157,21 @@ pub fn interject_file() -> PathBuf {
     state_dir().join("interject.json")
 }
 
+/// Workspaces discovered from recent local Agent sessions and user curation.
+pub fn agent_workspaces_file() -> PathBuf {
+    config_dir().join("agent-workspaces.json")
+}
+
+/// Cross-process lock for workspace discovery and curation.
+pub fn agent_workspaces_lock() -> PathBuf {
+    config_dir().join("agent-workspaces.lock")
+}
+
+/// Private, one-time launch records consumed by `AskHuman __agent-launch`.
+pub fn agent_launch_dir() -> PathBuf {
+    state_dir().join("agent-launches")
+}
+
 /// GUI 宿主进程的 IPC socket `~/.askhuman/gui-host.sock`（与 daemon socket 解耦，
 /// 使 daemon 未运行时也能打开设置/历史窗口，spec D13）。
 pub fn gui_host_sock() -> PathBuf {

@@ -50,6 +50,9 @@ pub fn save_active(channel: Option<&str>) {
 /// 入站内置命令（带 `/` 前缀才算命令；可扩展）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
+    /// `/new`、`/新任务`：从 IM 选择工作区和 Agent，并在电脑上打开可接续的终端任务。
+    /// 带任何参数均由调用方作为用法错误处理。
+    New { has_args: bool },
     /// `/here`、`/这里`：把此渠道设为活跃槽 + 补推在途 + 必回执。
     Here,
     /// `/status`、`/状态`：`None` 返回工作中/空闲 agent 列表；`Some(编号)` 返回该 agent 的当前活动详情。
@@ -123,6 +126,9 @@ pub fn classify(text: &str) -> Parsed {
     };
     let mut tokens = rest.split_whitespace();
     match token.to_ascii_lowercase().as_str() {
+        "new" | "新任务" => Parsed::Command(Command::New {
+            has_args: !rest.trim().is_empty(),
+        }),
         "here" | "这里" => Parsed::Command(Command::Here),
         "status" | "状态" => {
             let sel = tokens.next().and_then(|s| s.parse::<u64>().ok());
@@ -244,6 +250,8 @@ pub fn help_text(
     out.push_str(i18n::tr(lang, "autoChannel.helpTitle"));
     out.push('\n');
     out.push_str(&i18n::tr(lang, "autoChannel.helpCmdStatus").replace("{p}", prefix));
+    out.push('\n');
+    out.push_str(&i18n::tr(lang, "autoChannel.helpCmdNew").replace("{p}", prefix));
     if watch {
         out.push('\n');
         out.push_str(&i18n::tr(lang, "autoChannel.helpCmdWatch").replace("{p}", prefix));
@@ -711,6 +719,22 @@ mod tests {
 
     #[test]
     fn classify_commands_and_synonyms() {
+        assert_eq!(
+            classify("/new"),
+            Parsed::Command(Command::New { has_args: false })
+        );
+        assert_eq!(
+            classify("!new"),
+            Parsed::Command(Command::New { has_args: false })
+        );
+        assert_eq!(
+            classify("/新任务"),
+            Parsed::Command(Command::New { has_args: false })
+        );
+        assert_eq!(
+            classify("/new do work"),
+            Parsed::Command(Command::New { has_args: true })
+        );
         assert_eq!(classify("/here"), Parsed::Command(Command::Here));
         assert_eq!(classify(" /这里 "), Parsed::Command(Command::Here));
         assert_eq!(classify("/status"), Parsed::Command(Command::Status(None)));

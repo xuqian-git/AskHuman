@@ -665,11 +665,16 @@ pub fn get_settings() -> SettingsPayload {
 }
 
 #[tauri::command]
-pub fn save_settings(
+pub async fn save_settings(
     app: AppHandle,
     mut config: AppConfig,
     secret_actions: SecretActions,
 ) -> Result<(), String> {
+    if config.agent_tasks.enabled {
+        config.general.daemon_lifecycle = crate::config::DaemonLifecycleMode::KeepAlive;
+        #[cfg(unix)]
+        crate::integrations::login_item::sync_daemon(true).map_err(|e| e.to_string())?;
+    }
     // Secrets are governed solely by the explicit actions (the incoming config carries blank
     // placeholders). unchanged → leave the field empty so save() won't touch the keychain;
     // set → store it via save(); clear → delete from the keychain now.
@@ -699,6 +704,12 @@ pub fn save_settings(
         secret_actions.slack_app_token,
     );
     config.save().map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    if config.agent_tasks.enabled {
+        crate::client::ensure_running()
+            .await
+            .map_err(|e| e.to_string())?;
+    }
     // 广播 general 配置，令同进程内已打开的弹窗实时生效（如语音语言/快捷键）。
     let _ = app.emit("settings-updated", &config.general);
     // 界面语言可能变化：实时更新已打开窗口的原生标题（弹窗标题在 macOS 多隐藏，settings 可见）。
@@ -710,6 +721,88 @@ pub fn save_settings(
         let _ = w.set_title(crate::i18n::tr(lang, "title.popup"));
     }
     Ok(())
+}
+
+#[tauri::command]
+pub fn agent_task_workspaces(refresh: Option<bool>) -> Vec<crate::agents::workspaces::Workspace> {
+    if refresh.unwrap_or(false) {
+        let _ = crate::agents::workspaces::refresh();
+        crate::agents::workspaces::list()
+    } else {
+        crate::agents::workspaces::list()
+    }
+}
+
+#[tauri::command]
+pub fn agent_task_workspace_add(
+    path: String,
+) -> Result<crate::agents::workspaces::Workspace, String> {
+    crate::agents::workspaces::add(std::path::Path::new(&path), false)
+}
+
+/// Open the native system directory picker used by the Agent-task workspace manager.
+#[tauri::command]
+pub fn agent_task_workspace_pick(app: AppHandle) -> Result<Option<String>, String> {
+    #[cfg(target_os = "macos")]
+    {
+        use std::sync::mpsc::channel;
+        let (tx, rx) = channel();
+        app.run_on_main_thread(move || {
+            let _ = tx.send(crate::macos_menu::choose_directory());
+        })
+        .map_err(|e| e.to_string())?;
+        rx.recv().map_err(|e| e.to_string())?
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+        Err("Agent task workspace picker is only supported on macOS".to_string())
+    }
+}
+
+#[tauri::command]
+pub fn agent_task_workspace_pin(path: String, pinned: bool) -> Result<(), String> {
+    crate::agents::workspaces::set_pinned(&path, pinned)
+}
+
+#[tauri::command]
+pub fn agent_task_workspace_hide(path: String, hidden: bool) -> Result<(), String> {
+    crate::agents::workspaces::set_hidden(&path, hidden)
+}
+
+#[tauri::command]
+pub fn agent_task_workspace_forget(path: String) -> Result<(), String> {
+    crate::agents::workspaces::forget(&path)
+}
+
+#[tauri::command]
+pub async fn agent_task_readiness(
+) -> Result<Vec<crate::integrations::agent_launch::AgentReadiness>, String> {
+    tokio::task::spawn_blocking(crate::integrations::agent_launch::all_readiness)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Open a harmless Terminal.app self-check. It never resolves or starts an Agent binary.
+#[tauri::command]
+pub fn agent_task_test_terminal() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let script = r#"tell application "Terminal"
+activate
+do script "printf '\\nAskHuman Terminal test succeeded.\\n'"
+end tell"#;
+        let status = std::process::Command::new("/usr/bin/osascript")
+            .args(["-e", script])
+            .status()
+            .map_err(|e| e.to_string())?;
+        return status
+            .success()
+            .then_some(())
+            .ok_or_else(|| "Terminal.app rejected the test".to_string());
+    }
+    #[cfg(not(target_os = "macos"))]
+    Err("Terminal.app test is only available on macOS".to_string())
 }
 
 /// Apply one secret's edit intent to the in-memory config field before persisting.

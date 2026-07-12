@@ -624,6 +624,9 @@ impl ConfirmRequest {
                         input.max_chars
                     ));
                 }
+                if input.max_chars > 1000 && value.is_empty() {
+                    return Err("confirm input is required".to_string());
+                }
                 (!value.is_empty()).then_some(value)
             }
             _ => None,
@@ -840,6 +843,36 @@ mod tests {
             .resolve_submission(1, Some("x".repeat(1001)), "popup")
             .unwrap_err()
             .contains("exceeds"));
+    }
+
+    #[test]
+    fn long_task_input_is_required() {
+        let mut spec = confirm_spec();
+        match &mut spec.presentation {
+            ConfirmPresentation::SingleSelectSubmit {
+                input,
+                default_action_id,
+                ..
+            } => {
+                let input = input.as_mut().unwrap();
+                input.visible_when_action_id = "approve_once".into();
+                input.max_chars = 3000;
+                *default_action_id = Some("approve_once".into());
+            }
+        }
+        let request = spec.into_request("task-1".into(), 1, 2).unwrap();
+        assert!(request
+            .resolve_submission(0, None, "slack")
+            .unwrap_err()
+            .contains("required"));
+        assert_eq!(
+            request
+                .resolve_submission(0, Some("Do work".into()), "slack")
+                .unwrap()
+                .comment
+                .as_deref(),
+            Some("Do work")
+        );
     }
 
     #[test]

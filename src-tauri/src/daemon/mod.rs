@@ -203,6 +203,31 @@ mod unix_impl {
         watch: WatchState,
         /// 通用「单选卡」子系统（spec docs/specs/im-select-card.md；MVP 仅飞书）。
         select: SelectState,
+        /// IM-created launches waiting to be associated with their lifecycle session.
+        pending_launches: Mutex<Vec<PendingLaunchWatch>>,
+    }
+
+    #[derive(Clone)]
+    struct PendingLaunchWatch {
+        id: String,
+        channel: String,
+        kind: AgentKind,
+        cwd: String,
+        task_sha256: String,
+        created_at: u64,
+    }
+
+    fn pending_launch_matches(
+        item: &PendingLaunchWatch,
+        kind: AgentKind,
+        cwd: Option<&str>,
+        launch_id: Option<&str>,
+        prompt_sha256: Option<&str>,
+    ) -> bool {
+        item.kind == kind
+            && cwd.is_some_and(|value| value == item.cwd)
+            && (launch_id.is_some_and(|value| value == item.id)
+                || prompt_sha256.is_some_and(|value| value == item.task_sha256))
     }
 
     /// 「跟底」重发节流：同一订阅两次跟底之间的最短间隔（用户定案 30s）。
@@ -332,6 +357,9 @@ mod unix_impl {
     /// 单选卡种类（决定点选后做什么；接新命令只需加一档 + 其选中动作）。
     #[derive(Clone, Copy, PartialEq, Eq, Debug)]
     enum PickerKind {
+        TaskWorkspace,
+        TaskAgent,
+        TaskPermission,
         Watch,
         Status,
         Unwatch,
@@ -373,8 +401,17 @@ mod unix_impl {
         posted_ms: u64,
     }
 
+    #[derive(Clone, serde::Serialize, serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct TaskPickerPayload {
+        #[serde(default)]
+        workspace: String,
+        #[serde(default)]
+        kind: String,
+    }
+
     /// 单选卡台账治理上限：每渠道最多留存的活动单选卡数（超出丢最旧）。
-    const SELECT_MAX_PICKERS_PER_CHANNEL: usize = 10;
+    const SELECT_MAX_PICKERS_PER_CHANNEL: usize = 20;
     /// 单选卡台账 TTL（秒）：超龄未消费即清理（兜底，避免长期累积）。
     const SELECT_PICKER_TTL_SECS: u64 = 1800;
 
@@ -576,6 +613,7 @@ mod unix_impl {
 
         // 保活模式：让 daemon 登录项（下次登录自启）与配置一致（幂等，纯文件；exe 路径变化会刷新）。
         sync_daemon_login_item();
+        crate::integrations::agent_launch::cleanup_expired_records();
 
         let state = Arc::new(ServerState {
             startup_fp,
@@ -601,6 +639,7 @@ mod unix_impl {
             warm_spawning: AtomicBool::new(false),
             watch: WatchState::default(),
             select: SelectState::default(),
+            pending_launches: Mutex::new(Vec::new()),
         });
 
         // 空闲退出检查。
@@ -972,6 +1011,8 @@ mod unix_impl {
                     pid,
                     hint_pid,
                     cwd,
+                    launch_id,
+                    prompt_sha256,
                     ts,
                     tool,
                     interject_poll,
@@ -1028,6 +1069,7 @@ mod unix_impl {
                         let resolved_pid =
                             pid.or_else(|| state.agents.resolve_pid(&session_id, kind, hint_pid));
 
+                        let event_cwd = cwd.clone();
                         let changed =
                             state
                                 .agents
@@ -1035,6 +1077,14 @@ mod unix_impl {
                         if changed {
                             state.agents.persist();
                             broadcast_agents_state(state);
+                        }
+                        if matches!(ev, LifecycleEvent::SessionStart | LifecycleEvent::TurnStart) {
+                            if let Some(ref path) = event_cwd {
+                                let _ = crate::agents::workspaces::add(
+                                    std::path::Path::new(path),
+                                    false,
+                                );
+                            }
                         }
                         if matches!(ev, LifecycleEvent::SessionEnd) {
                             state.agents.clear_pid_cache(&session_id);
@@ -1062,6 +1112,17 @@ mod unix_impl {
                         }
                         ensure_inbound_listeners(state).await;
                         state.watch.notify.notify_one();
+                        if matches!(ev, LifecycleEvent::TurnStart) {
+                            match_pending_launch_watch(
+                                state,
+                                kind,
+                                &session_id,
+                                event_cwd.as_deref(),
+                                launch_id.as_deref(),
+                                prompt_sha256.as_deref(),
+                            )
+                            .await;
+                        }
                     } else if interject_poll {
                         let _ = ipc::write_msg(
                             w,
@@ -4326,6 +4387,9 @@ mod unix_impl {
             return false;
         }
         let action = match kind {
+            PickerKind::TaskWorkspace => crate::select::SelectAction::TaskWorkspace,
+            PickerKind::TaskAgent => crate::select::SelectAction::TaskAgent,
+            PickerKind::TaskPermission => crate::select::SelectAction::TaskPermission,
             PickerKind::Watch => crate::select::SelectAction::Watch,
             PickerKind::Status => crate::select::SelectAction::Status,
             PickerKind::Unwatch => crate::select::SelectAction::Unwatch,
@@ -4351,8 +4415,53 @@ mod unix_impl {
                 posted_ms: now_ms(),
             },
         );
-        ensure_select_routes(state).await;
+        state.select.route_refresh.notify_one();
         true
+    }
+
+    async fn select_pick_task_flow(
+        state: &Arc<ServerState>,
+        channel_id: &str,
+        mid: &str,
+        selected_id: &str,
+        picker: &PickerEntry,
+        config: &AppConfig,
+        lang: Lang,
+        ack: Option<crate::confirm::transport::FsAck>,
+    ) {
+        let title = match picker.kind {
+            PickerKind::TaskWorkspace => crate::select::title_task_workspace(lang),
+            PickerKind::TaskAgent => crate::select::title_task_agent(lang),
+            PickerKind::TaskPermission => crate::select::title_task_permission(lang),
+            _ => String::new(),
+        };
+        let label = match picker.kind {
+            PickerKind::TaskWorkspace => crate::autochannel::project_name(selected_id)
+                .unwrap_or_else(|| selected_id.to_string()),
+            PickerKind::TaskAgent => AgentKind::parse(selected_id)
+                .map(|kind| kind.label().to_string())
+                .unwrap_or_else(|| selected_id.to_string()),
+            PickerKind::TaskPermission if selected_id == "agent-default" => match lang {
+                Lang::Zh => "Agent 默认",
+                Lang::En => "Agent default",
+            }
+            .into(),
+            PickerKind::TaskPermission => "YOLO".into(),
+            _ => selected_id.to_string(),
+        };
+        if channel_id == "feishu" {
+            if let Some(ack) = ack {
+                let card = crate::feishu::card::build_select_final_card(&title, &label);
+                let _ = ack.send(Some(crate::feishu::card::callback_update_card(card)));
+            }
+        } else if channel_id == "dingding" {
+            dd_finalize_select_card(config, mid, &label).await;
+        } else {
+            finalize_select_card_edit(channel_id, config, mid, &title, &label).await;
+        }
+        remove_picker(state, channel_id, mid);
+        state.select.route_refresh.notify_one();
+        continue_task_picker(state, channel_id, picker, selected_id, config, lang).await;
     }
 
     /// 本渠道已在关注的 session_id 集合（`/watch` 单选卡「· 关注中」徽标用）。
@@ -4686,6 +4795,19 @@ mod unix_impl {
         let lang = Lang::current();
         let config = AppConfig::load();
         match picker.kind {
+            PickerKind::TaskWorkspace | PickerKind::TaskAgent | PickerKind::TaskPermission => {
+                select_pick_task_flow(
+                    state,
+                    channel_id,
+                    &mid,
+                    &session_id,
+                    &picker,
+                    &config,
+                    lang,
+                    Some(ack),
+                )
+                .await;
+            }
             PickerKind::Watch => {
                 // 先完成就地变身（含卡片 ACK），再激活——避免激活的补推/回执拖慢同步 ACK。
                 select_pick_watch(state, channel_id, &mid, &session_id, &config, lang, ack).await;
@@ -4985,6 +5107,19 @@ mod unix_impl {
         let lang = Lang::current();
         let config = AppConfig::load();
         match picker.kind {
+            PickerKind::TaskWorkspace | PickerKind::TaskAgent | PickerKind::TaskPermission => {
+                select_pick_task_flow(
+                    state,
+                    "dingding",
+                    &otid,
+                    &session_id,
+                    &picker,
+                    &config,
+                    lang,
+                    None,
+                )
+                .await;
+            }
             PickerKind::Watch => {
                 dd_select_pick_watch(state, &otid, &session_id, &config, lang).await;
                 // 卡片点『关注』＝在该渠道操作 → 设为活跃槽（与 /watch 一致，用户决策）。
@@ -5308,6 +5443,19 @@ mod unix_impl {
         };
         let lang = Lang::current();
         match picker.kind {
+            PickerKind::TaskWorkspace | PickerKind::TaskAgent | PickerKind::TaskPermission => {
+                select_pick_task_flow(
+                    state,
+                    channel_id,
+                    mid,
+                    &session_id,
+                    &picker,
+                    config,
+                    lang,
+                    None,
+                )
+                .await;
+            }
             PickerKind::Watch => {
                 select_pick_watch_inplace(state, channel_id, mid, &session_id, config, lang).await;
                 // 卡片点『关注』＝在该渠道操作 → 设为活跃槽（与 /watch 一致，用户决策）。
@@ -5949,6 +6097,610 @@ mod unix_impl {
         let _ = reply_channel_text(channel_id, config, text).await;
     }
 
+    async fn start_new_task_flow(
+        state: &Arc<ServerState>,
+        channel_id: &str,
+        config: &AppConfig,
+        lang: Lang,
+    ) {
+        // `/new` always makes its source IM the active slot, independently of auto-activation.
+        let _ = set_active_channel(state, channel_id).await;
+        if !config.agent_tasks.enabled {
+            let text = match lang {
+                Lang::Zh => "尚未开启「从 IM 创建 Agent 任务」。请先在设置中开启。",
+                Lang::En => "IM Agent task creation is disabled. Enable it in Settings first.",
+            };
+            let _ = reply_channel_text(channel_id, config, text).await;
+            return;
+        }
+        if config.general.daemon_lifecycle != crate::config::DaemonLifecycleMode::KeepAlive
+            || !crate::integrations::login_item::daemon_is_installed()
+            || crate::integrations::login_item::daemon_needs_update()
+        {
+            let text = match lang {
+                Lang::Zh => "功能尚未就绪：请在设置中重新保存此功能，以启用 Daemon 保活与登录项。",
+                Lang::En => "This feature is not ready. Save it again in Settings to enable daemon keepalive and its login item.",
+            };
+            let _ = reply_channel_text(channel_id, config, text).await;
+            return;
+        }
+        if !crate::integrations::agent_launch::terminal_available() {
+            let text = match lang {
+                Lang::Zh => "当前版本仅支持 macOS 系统终端 Terminal.app。",
+                Lang::En => "This version currently requires macOS Terminal.app.",
+            };
+            let _ = reply_channel_text(channel_id, config, text).await;
+            return;
+        }
+        let (workspaces, readiness) = tokio::task::spawn_blocking(|| {
+            (
+                crate::agents::workspaces::refresh(),
+                crate::integrations::agent_launch::all_readiness(),
+            )
+        })
+        .await
+        .unwrap_or_default();
+        if workspaces.is_empty() {
+            let text = match lang {
+                Lang::Zh => "没有找到可用工作目录。请先在电脑上的 Agent 中打开一个项目，或在设置中添加目录。",
+                Lang::En => "No workspace is available. Open a project in a local Agent or add one in Settings.",
+            };
+            let _ = reply_channel_text(channel_id, config, text).await;
+            return;
+        }
+        let diagnostics = readiness
+            .iter()
+            .flat_map(|item| item.diagnostics.clone())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let ready: Vec<_> = readiness.into_iter().filter(|item| item.ready).collect();
+        if ready.is_empty() {
+            let title = match lang {
+                Lang::Zh => "没有已就绪的 Agent。",
+                Lang::En => "No Agent is ready.",
+            };
+            let _ =
+                reply_channel_text(channel_id, config, &format!("{title}\n{diagnostics}")).await;
+            return;
+        }
+        let options = task_workspace_options(workspaces, true, lang);
+        let sent = send_agent_picker(
+            state,
+            channel_id,
+            config,
+            PickerKind::TaskWorkspace,
+            crate::select::title_task_workspace(lang),
+            options,
+            Some(
+                serde_json::to_string(&TaskPickerPayload {
+                    workspace: String::new(),
+                    kind: String::new(),
+                })
+                .unwrap_or_default(),
+            ),
+            lang,
+        )
+        .await;
+        if !sent {
+            let _ = reply_channel_text(channel_id, config, "Failed to send workspace picker").await;
+        }
+    }
+
+    fn task_workspace_options(
+        workspaces: Vec<crate::agents::workspaces::Workspace>,
+        recent_only: bool,
+        lang: Lang,
+    ) -> Vec<crate::select::SelectOption> {
+        let total = workspaces.len();
+        let visible = if recent_only { total.min(5) } else { total };
+        let mut options: Vec<_> = workspaces
+            .into_iter()
+            .take(visible)
+            .map(|workspace| {
+                let parent = std::path::Path::new(&workspace.path)
+                    .parent()
+                    .map(|path| path.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                let home = crate::paths::home().to_string_lossy().to_string();
+                let parent = parent
+                    .strip_prefix(&home)
+                    .map(|rest| format!("~{rest}"))
+                    .unwrap_or(parent);
+                crate::select::SelectOption {
+                    id: workspace.path.clone(),
+                    dot: None,
+                    seq: None,
+                    primary: if workspace.pinned {
+                        format!("★ {}", workspace.label)
+                    } else {
+                        workspace.label
+                    },
+                    badge: None,
+                    elapsed: None,
+                    secondary: (!parent.is_empty()).then_some(parent),
+                }
+            })
+            .collect();
+        if recent_only && total > visible {
+            options.push(crate::select::SelectOption {
+                id: crate::select::MORE_OPTION_ID.to_string(),
+                dot: None,
+                seq: None,
+                primary: match lang {
+                    Lang::Zh => "显示更多工作目录",
+                    Lang::En => "Show more workspaces",
+                }
+                .into(),
+                badge: None,
+                elapsed: None,
+                secondary: Some(match lang {
+                    Lang::Zh => format!("还有 {} 个", total - visible),
+                    Lang::En => format!("{} more", total - visible),
+                }),
+            });
+        }
+        options
+    }
+
+    async fn continue_task_picker(
+        state: &Arc<ServerState>,
+        channel_id: &str,
+        picker: &PickerEntry,
+        selected_id: &str,
+        config: &AppConfig,
+        lang: Lang,
+    ) {
+        let mut payload: TaskPickerPayload = picker
+            .payload
+            .as_deref()
+            .and_then(|value| serde_json::from_str(value).ok())
+            .unwrap_or(TaskPickerPayload {
+                workspace: String::new(),
+                kind: String::new(),
+            });
+        match picker.kind {
+            PickerKind::TaskWorkspace => {
+                if selected_id == crate::select::MORE_OPTION_ID {
+                    let workspaces = crate::agents::workspaces::list()
+                        .into_iter()
+                        .filter(|workspace| {
+                            !workspace.hidden && std::path::Path::new(&workspace.path).is_dir()
+                        })
+                        .collect();
+                    let options = task_workspace_options(workspaces, false, lang);
+                    let _ = send_agent_picker(
+                        state,
+                        channel_id,
+                        config,
+                        PickerKind::TaskWorkspace,
+                        crate::select::title_task_workspace(lang),
+                        options,
+                        picker.payload.clone(),
+                        lang,
+                    )
+                    .await;
+                    return;
+                }
+                if !std::path::Path::new(selected_id).is_dir() {
+                    let _ =
+                        reply_channel_text(channel_id, config, "Workspace is no longer available")
+                            .await;
+                    return;
+                }
+                payload.workspace = selected_id.to_string();
+                let options = crate::integrations::agent_launch::all_readiness()
+                    .into_iter()
+                    .filter(|item| item.ready)
+                    .map(|item| crate::select::SelectOption {
+                        id: item.kind.as_str().to_string(),
+                        dot: None,
+                        seq: None,
+                        primary: item.label,
+                        badge: None,
+                        elapsed: None,
+                        secondary: Some(format!(
+                            "{} · {}",
+                            item.integration_mode,
+                            item.executable.unwrap_or_default()
+                        )),
+                    })
+                    .collect();
+                let _ = send_agent_picker(
+                    state,
+                    channel_id,
+                    config,
+                    PickerKind::TaskAgent,
+                    crate::select::title_task_agent(lang),
+                    options,
+                    Some(serde_json::to_string(&payload).unwrap_or_default()),
+                    lang,
+                )
+                .await;
+            }
+            PickerKind::TaskAgent => {
+                let Some(kind) = AgentKind::parse(selected_id) else {
+                    return;
+                };
+                if !crate::integrations::agent_launch::readiness(kind).ready {
+                    let _ =
+                        reply_channel_text(channel_id, config, "Agent is no longer ready").await;
+                    return;
+                }
+                payload.kind = kind.as_str().to_string();
+                match config.agent_tasks.permission_prompt {
+                    crate::config::AgentTaskPermission::Ask => {
+                        let options = vec![
+                            crate::select::SelectOption { id: "agent-default".into(), dot: None, seq: None, primary: match lang { Lang::Zh => "Agent 默认", Lang::En => "Agent default" }.into(), badge: None, elapsed: None, secondary: Some(match lang { Lang::Zh => "不附加权限覆盖参数", Lang::En => "Do not override Agent permissions" }.into()) },
+                            crate::select::SelectOption { id: "yolo".into(), dot: None, seq: None, primary: "YOLO".into(), badge: Some(match lang { Lang::Zh => "危险", Lang::En => "Danger" }.into()), elapsed: None, secondary: Some(match lang { Lang::Zh => "自动批准操作并绕过沙箱限制", Lang::En => "Auto-approve operations and bypass sandbox restrictions" }.into()) },
+                        ];
+                        let _ = send_agent_picker(
+                            state,
+                            channel_id,
+                            config,
+                            PickerKind::TaskPermission,
+                            crate::select::title_task_permission(lang),
+                            options,
+                            Some(serde_json::to_string(&payload).unwrap_or_default()),
+                            lang,
+                        )
+                        .await;
+                    }
+                    crate::config::AgentTaskPermission::AgentDefault => {
+                        start_task_input(
+                            state,
+                            channel_id,
+                            payload,
+                            crate::integrations::agent_launch::LaunchPermission::AgentDefault,
+                            config,
+                            lang,
+                        )
+                        .await;
+                    }
+                    crate::config::AgentTaskPermission::Yolo => {
+                        start_task_input(
+                            state,
+                            channel_id,
+                            payload,
+                            crate::integrations::agent_launch::LaunchPermission::Yolo,
+                            config,
+                            lang,
+                        )
+                        .await;
+                    }
+                }
+            }
+            PickerKind::TaskPermission => {
+                let permission = match selected_id {
+                    "agent-default" => {
+                        crate::integrations::agent_launch::LaunchPermission::AgentDefault
+                    }
+                    "yolo" => crate::integrations::agent_launch::LaunchPermission::Yolo,
+                    _ => return,
+                };
+                start_task_input(state, channel_id, payload, permission, config, lang).await;
+            }
+            _ => {}
+        }
+    }
+
+    async fn start_task_input(
+        state: &Arc<ServerState>,
+        channel_id: &str,
+        payload: TaskPickerPayload,
+        permission: crate::integrations::agent_launch::LaunchPermission,
+        config: &AppConfig,
+        lang: Lang,
+    ) {
+        use crate::models::{
+            ConfirmChoice, ConfirmDetail, ConfirmField, ConfirmFieldKind, ConfirmInput,
+            ConfirmPresentation, ConfirmSpec,
+        };
+        let Some(kind) = AgentKind::parse(&payload.kind) else {
+            return;
+        };
+        let permission_label = match permission {
+            crate::integrations::agent_launch::LaunchPermission::AgentDefault => match lang {
+                Lang::Zh => "Agent 默认",
+                Lang::En => "Agent default",
+            },
+            crate::integrations::agent_launch::LaunchPermission::Yolo => "YOLO",
+        };
+        let title = match lang {
+            Lang::Zh => "输入新任务",
+            Lang::En => "Enter the new task",
+        };
+        let workspace_label = crate::autochannel::project_name(&payload.workspace)
+            .unwrap_or_else(|| payload.workspace.clone());
+        let task_prompt = match lang {
+            Lang::Zh => format!(
+                "**请输入需要 Agent 执行的任务。**\n\n- **Agent：** {}\n- **工作目录：** {}\n- **权限模式：** {}\n\n提交后将在 Mac 上通过新 Terminal 窗口启动 Agent。",
+                kind.label(), workspace_label, permission_label
+            ),
+            Lang::En => format!(
+                "**Enter the task for the Agent to perform.**\n\n- **Agent:** {}\n- **Workspace:** {}\n- **Permission mode:** {}\n\nSubmitting starts the Agent on your Mac in a new Terminal window.",
+                kind.label(), workspace_label, permission_label
+            ),
+        };
+        let spec = ConfirmSpec {
+            title: title.into(),
+            context: vec![
+                ConfirmField {
+                    id: "agent".into(),
+                    label: "Agent".into(),
+                    value: kind.label().into(),
+                    kind: ConfirmFieldKind::Text,
+                },
+                ConfirmField {
+                    id: "workspace".into(),
+                    label: match lang {
+                        Lang::Zh => "工作目录",
+                        Lang::En => "Workspace",
+                    }
+                    .into(),
+                    value: payload.workspace.clone(),
+                    kind: ConfirmFieldKind::Path,
+                },
+                ConfirmField {
+                    id: "permission".into(),
+                    label: match lang {
+                        Lang::Zh => "权限",
+                        Lang::En => "Permission",
+                    }
+                    .into(),
+                    value: permission_label.into(),
+                    kind: ConfirmFieldKind::Text,
+                },
+            ],
+            detail: ConfirmDetail {
+                summary: task_prompt,
+                body_md: String::new(),
+            },
+            choices: vec![
+                ConfirmChoice {
+                    id: "start".into(),
+                    label: match lang {
+                        Lang::Zh => "启动任务",
+                        Lang::En => "Start task",
+                    }
+                    .into(),
+                    description: String::new(),
+                    role: crate::confirm::ActionRole::Primary,
+                },
+                ConfirmChoice {
+                    id: "cancel".into(),
+                    label: match lang {
+                        Lang::Zh => "取消",
+                        Lang::En => "Cancel",
+                    }
+                    .into(),
+                    description: String::new(),
+                    role: crate::confirm::ActionRole::Destructive,
+                },
+            ],
+            presentation: ConfirmPresentation::SingleSelectSubmit {
+                input: Some(ConfirmInput {
+                    id: "task".into(),
+                    visible_when_action_id: "start".into(),
+                    label: match lang {
+                        Lang::Zh => "任务描述",
+                        Lang::En => "Task",
+                    }
+                    .into(),
+                    placeholder: match lang {
+                        Lang::Zh => "描述要 Agent 完成的工作（最多 3000 字）",
+                        Lang::En => "Describe the work for the Agent (up to 3000 characters)",
+                    }
+                    .into(),
+                    max_chars: 3000,
+                }),
+                submit_label: match lang {
+                    Lang::Zh => "启动任务",
+                    Lang::En => "Start task",
+                }
+                .into(),
+                default_action_id: Some("start".into()),
+            },
+            dismiss_action_id: "cancel".into(),
+        };
+        let Ok((entry, mut outcome)) = request::create_internal_confirm(
+            spec,
+            channel_id,
+            lang.code(),
+            &payload.workspace,
+            kind.as_str(),
+            Duration::from_secs(30 * 60),
+        ) else {
+            let _ = reply_channel_text(channel_id, config, "Failed to create task input").await;
+            return;
+        };
+        let started = match channel_id {
+            "feishu" => ensure_fs_router(state, &config.channels.feishu)
+                .await
+                .map(|router| {
+                    crate::channels::confirm::start_feishu(
+                        entry.clone(),
+                        config.channels.feishu.clone(),
+                        router,
+                    );
+                }),
+            "dingding" => ensure_dd_router(
+                state,
+                config.channels.dingding.client_id.trim(),
+                config.channels.dingding.client_secret.trim(),
+            )
+            .await
+            .map(|router| {
+                crate::channels::confirm::start_dingtalk(
+                    entry.clone(),
+                    config.channels.dingding.clone(),
+                    router,
+                );
+            }),
+            "telegram" => ensure_tg_router(state, &config.channels.telegram)
+                .await
+                .map(|router| {
+                    crate::channels::confirm::start_telegram(
+                        entry.clone(),
+                        config.channels.telegram.clone(),
+                        router,
+                    );
+                }),
+            "slack" => ensure_sl_router(state, &config.channels.slack)
+                .await
+                .map(|router| {
+                    crate::channels::confirm::start_slack(
+                        entry.clone(),
+                        config.channels.slack.clone(),
+                        router,
+                    );
+                }),
+            _ => None,
+        }
+        .is_some();
+        if !started {
+            entry
+                .coordinator
+                .fallback(ConfirmFallbackReason::NoAvailableChannel);
+            let _ =
+                reply_channel_text(channel_id, config, "Task input channel is unavailable").await;
+            return;
+        }
+        let state = state.clone();
+        let config = config.clone();
+        let channel = channel_id.to_string();
+        tokio::spawn(async move {
+            let Some(ConfirmOutcome::Final(result)) = outcome.recv().await else {
+                return;
+            };
+            if result.action_id != "start" {
+                return;
+            }
+            let Some(task) = result.comment.filter(|value| !value.trim().is_empty()) else {
+                return;
+            };
+            let source = crate::integrations::agent_launch::LaunchSource {
+                channel: channel.clone(),
+                target: task_source_target(&config, &channel),
+            };
+            let launch = match crate::integrations::agent_launch::create_record(
+                source,
+                std::path::Path::new(&payload.workspace),
+                kind,
+                permission,
+                &task,
+            ) {
+                Ok(record) => {
+                    register_pending_launch_watch(&state, &record, &channel, &config, lang);
+                    match crate::integrations::agent_launch::open_terminal(&record) {
+                        Ok(()) => Ok(record),
+                        Err(error) => {
+                            state
+                                .pending_launches
+                                .lock()
+                                .unwrap()
+                                .retain(|item| item.id != record.id);
+                            Err(error)
+                        }
+                    }
+                }
+                Err(error) => Err(error),
+            };
+            let text = match launch {
+                Ok(_) => match lang {
+                    Lang::Zh => "已在电脑上打开新的 Terminal.app 窗口并启动任务。",
+                    Lang::En => "Opened a new Terminal.app window and started the task.",
+                }
+                .to_string(),
+                Err(error) => format!("Failed to launch task: {error:#}"),
+            };
+            let _ = reply_channel_text(&channel, &config, &text).await;
+            state.watch.notify.notify_one();
+        });
+    }
+
+    fn task_source_target(config: &AppConfig, channel_id: &str) -> String {
+        match channel_id {
+            "feishu" => config.channels.feishu.open_id.clone(),
+            "dingding" => config.channels.dingding.user_id.clone(),
+            "telegram" => config.channels.telegram.chat_id.clone(),
+            "slack" => config.channels.slack.user_id.clone(),
+            _ => String::new(),
+        }
+    }
+
+    fn register_pending_launch_watch(
+        state: &Arc<ServerState>,
+        record: &crate::integrations::agent_launch::LaunchRecord,
+        channel_id: &str,
+        config: &AppConfig,
+        lang: Lang,
+    ) {
+        state
+            .pending_launches
+            .lock()
+            .unwrap()
+            .push(PendingLaunchWatch {
+                id: record.id.clone(),
+                channel: channel_id.to_string(),
+                kind: record.kind,
+                cwd: record.cwd.clone(),
+                task_sha256: record.task_sha256.clone(),
+                created_at: now_secs(),
+            });
+        let state = state.clone();
+        let config = config.clone();
+        let id = record.id.clone();
+        let channel = channel_id.to_string();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            let expired = {
+                let mut pending = state.pending_launches.lock().unwrap();
+                let found = pending.iter().any(|item| item.id == id);
+                pending.retain(|item| item.id != id);
+                found
+            };
+            if expired {
+                let text = match lang {
+                    Lang::Zh => "Agent 已启动，但 60 秒内未检测到可关注的会话；任务不会被终止。",
+                    Lang::En => "The Agent was started, but no watchable session was detected within 60 seconds. The task was not stopped.",
+                };
+                let _ = reply_channel_text(&channel, &config, text).await;
+            }
+        });
+    }
+
+    async fn match_pending_launch_watch(
+        state: &Arc<ServerState>,
+        kind: AgentKind,
+        session_id: &str,
+        cwd: Option<&str>,
+        launch_id: Option<&str>,
+        prompt_sha256: Option<&str>,
+    ) {
+        let matched = {
+            let mut pending = state.pending_launches.lock().unwrap();
+            let now = now_secs();
+            pending.retain(|item| now.saturating_sub(item.created_at) <= 60);
+            let position = pending
+                .iter()
+                .position(|item| pending_launch_matches(item, kind, cwd, launch_id, prompt_sha256));
+            position.map(|index| pending.remove(index))
+        };
+        let Some(matched) = matched else { return };
+        let snapshot = state.agents.snapshot();
+        let seq = snapshot
+            .as_array()
+            .and_then(|items| {
+                items.iter().find(|item| {
+                    item.get("sessionId").and_then(|value| value.as_str()) == Some(session_id)
+                })
+            })
+            .and_then(|item| item.get("seq").and_then(|value| value.as_u64()));
+        let Some(seq) = seq else { return };
+        let config = AppConfig::load();
+        handle_watch_cmd(state, &matched.channel, Some(seq), &config, Lang::current()).await;
+    }
+
     /// 统一入站分派（与渠道无关），spec R3/R4：
     /// - `/status`：始终回状态文本（开关开且因此切槽时附激活回执）。
     /// - `/here`：开关开时激活+补推+回执；开关关时改回**引导文案**（不再静默忽略）。
@@ -5982,6 +6734,20 @@ mod unix_impl {
         };
 
         match classify(text) {
+            Parsed::Command(Command::New { has_args }) => {
+                if has_args {
+                    let prefix = crate::autochannel::cmd_prefix(channel_id);
+                    let text = match lang {
+                        Lang::Zh => format!("用法：{prefix}new（任务内容请在后续输入卡中填写）"),
+                        Lang::En => {
+                            format!("Usage: {prefix}new (enter the task in the following form)")
+                        }
+                    };
+                    let _ = reply_channel_text(channel_id, &config, &text).await;
+                } else {
+                    start_new_task_flow(state, channel_id, &config, lang).await;
+                }
+            }
             Parsed::Command(Command::Status(sel)) => {
                 // 状态查询是独立功能：始终响应。仅当开关开、且本次因 /status 切了活跃槽时附激活回执。
                 let (switched, n) = if auto {
@@ -7738,7 +8504,11 @@ mod unix_impl {
 
     #[cfg(test)]
     mod tests {
-        use super::InboundRegistry;
+        use super::{
+            pending_launch_matches, task_workspace_options, InboundRegistry, PendingLaunchWatch,
+        };
+        use crate::agents::AgentKind;
+        use crate::i18n::Lang;
         use std::sync::Arc;
 
         #[test]
@@ -7776,6 +8546,68 @@ mod unix_impl {
             );
             reg.release("feishu", &new);
             assert!(reg.claim("feishu").is_some());
+        }
+
+        #[test]
+        fn pending_launch_matches_id_or_prompt_hash_but_requires_kind_and_cwd() {
+            let item = PendingLaunchWatch {
+                id: "launch-1".into(),
+                channel: "feishu".into(),
+                kind: AgentKind::Codex,
+                cwd: "/tmp/project".into(),
+                task_sha256: "hash-1".into(),
+                created_at: 1,
+            };
+            assert!(pending_launch_matches(
+                &item,
+                AgentKind::Codex,
+                Some("/tmp/project"),
+                Some("launch-1"),
+                None
+            ));
+            assert!(pending_launch_matches(
+                &item,
+                AgentKind::Codex,
+                Some("/tmp/project"),
+                None,
+                Some("hash-1")
+            ));
+            assert!(!pending_launch_matches(
+                &item,
+                AgentKind::Claude,
+                Some("/tmp/project"),
+                Some("launch-1"),
+                None
+            ));
+            assert!(!pending_launch_matches(
+                &item,
+                AgentKind::Codex,
+                Some("/tmp/other"),
+                Some("launch-1"),
+                None
+            ));
+        }
+
+        #[test]
+        fn workspace_picker_starts_with_five_and_show_more() {
+            let workspaces = (0..7)
+                .map(|index| crate::agents::workspaces::Workspace {
+                    path: format!("/tmp/project-{index}"),
+                    label: format!("project-{index}"),
+                    last_used_at: 7 - index,
+                    agents: vec![],
+                    pinned: false,
+                    hidden: false,
+                })
+                .collect::<Vec<_>>();
+            let compact = task_workspace_options(workspaces.clone(), true, Lang::Zh);
+            assert_eq!(compact.len(), 6);
+            assert_eq!(compact.last().unwrap().id, crate::select::MORE_OPTION_ID);
+            let expanded = task_workspace_options(workspaces, false, Lang::Zh);
+            assert_eq!(expanded.len(), 7);
+            assert!(!expanded
+                .iter()
+                .any(|option| option.id == crate::select::MORE_OPTION_ID));
         }
     }
 }

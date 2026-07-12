@@ -13,6 +13,17 @@ use crate::integrations::{
 
 const AGENTS: [&str; 4] = ["cursor", "claude", "codex", "grok"];
 
+#[cfg(unix)]
+fn daemon_login_ready() -> bool {
+    crate::integrations::login_item::daemon_is_installed()
+        && !crate::integrations::login_item::daemon_needs_update()
+}
+
+#[cfg(not(unix))]
+fn daemon_login_ready() -> bool {
+    false
+}
+
 pub fn dispatch(args: &[String], lang: Lang) {
     let json = args.iter().any(|a| a == "--json");
     if args
@@ -163,6 +174,31 @@ fn render_text(cfg: &AppConfig, status: &Option<crate::ipc::StatusInfo>, lang: L
         ));
     }
 
+    out.push_str(&cfgio::t(lang, "\nIM Agent tasks\n", "\nIM Agent 任务\n"));
+    let workspaces = crate::agents::workspaces::list()
+        .into_iter()
+        .filter(|workspace| !workspace.hidden && std::path::Path::new(&workspace.path).is_dir())
+        .count();
+    out.push_str(&format!(
+        "  {}={} keepalive={} login-item={} terminal={} workspaces={}\n",
+        cfgio::t(lang, "enabled", "启用"),
+        yn(cfg.agent_tasks.enabled),
+        yn(cfg.general.daemon_lifecycle == crate::config::DaemonLifecycleMode::KeepAlive),
+        yn(daemon_login_ready()),
+        yn(crate::integrations::agent_launch::terminal_available()),
+        workspaces,
+    ));
+    for item in crate::integrations::agent_launch::all_readiness() {
+        out.push_str(&format!(
+            "  {:<8} ready={} cli={} lifecycle={} integration={}\n",
+            item.kind.as_str(),
+            yn(item.ready),
+            yn(item.binary_ready),
+            yn(item.lifecycle_ready),
+            yn(item.integration_ready)
+        ));
+    }
+
     out.trim_end().to_string()
 }
 
@@ -238,10 +274,23 @@ fn render_json(cfg: &AppConfig, status: &Option<crate::ipc::StatusInfo>) -> Stri
         }),
         None => serde_json::json!({ "running": false }),
     };
+    let task_readiness = crate::integrations::agent_launch::all_readiness();
+    let task_workspaces = crate::agents::workspaces::list()
+        .into_iter()
+        .filter(|workspace| !workspace.hidden && std::path::Path::new(&workspace.path).is_dir())
+        .count();
     serde_json::to_string_pretty(&serde_json::json!({
         "daemon": daemon,
         "channels": channels,
         "integrations": integrations,
+        "agentTasks": {
+            "enabled": cfg.agent_tasks.enabled,
+            "keepalive": cfg.general.daemon_lifecycle == crate::config::DaemonLifecycleMode::KeepAlive,
+            "loginItemReady": daemon_login_ready(),
+            "terminalReady": crate::integrations::agent_launch::terminal_available(),
+            "workspaceCount": task_workspaces,
+            "agents": task_readiness,
+        },
     }))
     .unwrap_or_default()
 }

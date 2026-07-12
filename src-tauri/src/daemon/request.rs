@@ -197,6 +197,58 @@ impl ConfirmEntry {
     }
 }
 
+/// Build a source-channel-only structured confirmation owned by daemon functionality rather than
+/// an Agent PermissionRequest. It deliberately bypasses the permission-specific registry checks
+/// and never exposes a popup token.
+pub fn create_internal_confirm(
+    spec: crate::models::ConfirmSpec,
+    source_channel: &str,
+    lang: &str,
+    project: &str,
+    agent_kind: &str,
+    ttl: std::time::Duration,
+) -> Result<(Arc<ConfirmEntry>, UnboundedReceiver<ConfirmOutcome>), String> {
+    let request_id = uuid::Uuid::new_v4().to_string();
+    let created_at_ms = crate::perf::now_ms() as u64;
+    let expires_at_ms = created_at_ms.saturating_add(ttl.as_millis() as u64);
+    let request = Arc::new(spec.into_request(request_id.clone(), created_at_ms, expires_at_ms)?);
+    let (final_tx, final_rx) = tokio::sync::mpsc::unbounded_channel();
+    let coordinator = ConfirmCoordinator::new(request.clone(), final_tx);
+    let show = ShowPayload {
+        request_id: request_id.clone(),
+        interaction: InteractionRequest::Confirm((*request).clone()),
+        source: source_channel.to_string(),
+        lang: lang.to_string(),
+        project: project.to_string(),
+        agent_kind: Some(agent_kind.to_string()),
+        agent_pid: None,
+        perf_id: String::new(),
+        perf_autodismiss: false,
+        created_at_ms,
+    };
+    let entry = Arc::new(ConfirmEntry {
+        request_id,
+        seq: 0,
+        token: String::new(),
+        coordinator,
+        request,
+        show,
+        source: source_channel.to_string(),
+        lang: lang.to_string(),
+        project: project.to_string(),
+        agent_kind: agent_kind.to_string(),
+        agent_session_id: String::new(),
+        caller_pid: 0,
+        deadline: tokio::time::Instant::now() + ttl,
+        delivery: Mutex::new(HashMap::new()),
+        gui: Arc::new(Mutex::new(None)),
+        gui_connected: AtomicBool::new(false),
+        cancel: Arc::new(Notify::new()),
+    });
+    entry.start_delivery(source_channel);
+    Ok((entry, final_rx))
+}
+
 #[derive(Default)]
 struct Inner {
     by_id: HashMap<String, Arc<RequestEntry>>,

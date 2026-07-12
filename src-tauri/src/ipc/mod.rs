@@ -320,6 +320,12 @@ pub enum ClientMsg {
         /// 工作目录（可空）。
         #[serde(default)]
         cwd: Option<String>,
+        /// Optional inherited id for an IM-created terminal launch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        launch_id: Option<String>,
+        /// SHA-256 of the initial user prompt. Raw prompt text never crosses lifecycle IPC.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prompt_sha256: Option<String>,
         /// 事件时间（unix 秒，0 表示由 daemon 取当前时间）。
         #[serde(default)]
         ts: u64,
@@ -795,6 +801,8 @@ mod tests {
             pid: None,
             hint_pid: None,
             cwd: None,
+            launch_id: None,
+            prompt_sha256: None,
             ts: 0,
             tool: None,
             interject_poll: false,
@@ -809,6 +817,8 @@ mod tests {
             pid: None,
             hint_pid: None,
             cwd: None,
+            launch_id: None,
+            prompt_sha256: None,
             ts: 0,
             tool: None,
             interject_poll: true,

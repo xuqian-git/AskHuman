@@ -1,3 +1,4 @@
+pub mod agent_launch;
 pub mod agent_lifecycle;
 pub mod agent_mode;
 pub mod agent_permission;

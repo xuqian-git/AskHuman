@@ -15,6 +15,19 @@ use std::collections::HashSet;
 
 /// 单卡最多渲染的选项数（超出截断并在标题追加说明）。日常 agent 数一般 < 10。
 pub const SELECT_MAX_OPTIONS: usize = 20;
+pub const MORE_OPTION_ID: &str = "__askhuman_show_more__";
+
+pub fn option_button_label(option: &SelectOption, action: SelectAction, lang: Lang) -> String {
+    if option.id == MORE_OPTION_ID {
+        match lang {
+            Lang::En => "Show more",
+            Lang::Zh => "显示更多",
+        }
+        .to_string()
+    } else {
+        action.button_label(lang)
+    }
+}
 
 /// 选项状态圆点（agent 场景）。渲染器映射到各渠道的颜色/字符（飞书 = markdown 彩色 `●`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,6 +41,9 @@ pub enum SelectDot {
 /// 单选卡的动作种类（整卡统一）：决定每行触发按钮的文案与样式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SelectAction {
+    TaskWorkspace,
+    TaskAgent,
+    TaskPermission,
     Watch,
     Status,
     Unwatch,
@@ -45,6 +61,9 @@ impl SelectAction {
     /// 按钮本地化文案。
     pub fn button_label(self, lang: Lang) -> String {
         let key = match self {
+            SelectAction::TaskWorkspace => "select.btnChoose",
+            SelectAction::TaskAgent => "select.btnChoose",
+            SelectAction::TaskPermission => "select.btnChoose",
             SelectAction::Watch => "select.btnWatch",
             SelectAction::Status => "select.btnStatus",
             SelectAction::Unwatch => "select.btnUnwatch",
@@ -133,6 +152,30 @@ pub fn title_stage(lang: Lang) -> String {
 }
 pub fn title_transcript(lang: Lang) -> String {
     i18n::tr(lang, "select.titleTranscript").to_string()
+}
+
+pub fn title_task_workspace(lang: Lang) -> String {
+    match lang {
+        Lang::En => "Choose a workspace",
+        Lang::Zh => "选择工作目录",
+    }
+    .to_string()
+}
+
+pub fn title_task_agent(lang: Lang) -> String {
+    match lang {
+        Lang::En => "Choose an Agent",
+        Lang::Zh => "选择 Agent",
+    }
+    .to_string()
+}
+
+pub fn title_task_permission(lang: Lang) -> String {
+    match lang {
+        Lang::En => "Choose a permission mode",
+        Lang::Zh => "选择权限模式",
+    }
+    .to_string()
 }
 
 /// 由一条注册表快照记录组装选项字段（`dot / seq / primary=类型·工作目录名 / elapsed=已运行时长 /
@@ -441,6 +484,19 @@ mod tests {
         assert_eq!(SelectAction::Diff.button_label(Lang::Zh), "差异");
         assert_eq!(SelectAction::Stage.button_label(Lang::Zh), "暂存");
         assert_eq!(SelectAction::Transcript.button_label(Lang::Zh), "会话");
+        let more = SelectOption {
+            id: MORE_OPTION_ID.into(),
+            dot: None,
+            seq: None,
+            primary: "more".into(),
+            badge: None,
+            elapsed: None,
+            secondary: None,
+        };
+        assert_eq!(
+            option_button_label(&more, SelectAction::TaskWorkspace, Lang::Zh),
+            "显示更多"
+        );
     }
 
     #[test]

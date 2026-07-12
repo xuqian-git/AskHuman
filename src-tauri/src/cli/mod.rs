@@ -182,6 +182,16 @@ pub fn dispatch() {
             }
             exit(0);
         }
+        // Hidden one-time bridge used only by a newly opened Terminal.app window.
+        "__agent-launch" => {
+            #[cfg(unix)]
+            if let Err(error) = crate::integrations::agent_launch::run_helper(&argv[2..]) {
+                eprintln!("AskHuman: {error:#}");
+                exit(1);
+            }
+            #[cfg(not(unix))]
+            exit(1);
+        }
         // Hidden Stop confirmation hook. Failures emit `{}` so the agent can stop normally.
         "__stop-hook" => {
             #[cfg(unix)]

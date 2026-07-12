@@ -46,7 +46,7 @@ AskHuman/
     views/PopupView.vue      提问与回答弹窗
     views/AgentsView.vue     Agent 生命周期状态窗口
     views/InterjectView.vue  Agent 插话编辑器
-    views/SettingsView.vue   通用、Agent、渠道与高级设置
+    views/SettingsView.vue   通用、Agent、渠道、高级与实验设置
     views/HistoryView.vue    回复历史列表、搜索与筛选
     components/HistoryDetail.vue  单条历史的只读详情
     lib/history.ts           历史记录展示相关纯函数
@@ -99,6 +99,7 @@ AskHuman/
       confirm/               跨渠道双动作确认模型与传输
       export/                diff/transcript 附件渲染
       agents/transcript_full.rs  四家 Agent 完整会话解析
+      agents/workspaces.rs       IM 新任务的最近工作目录索引与四家冷扫描
       dingtalk/confirm.rs    钉钉双动作确认卡
       sound.rs               跨平台弹窗提示音
       commands.rs            前端调用的 Tauri command 集合
@@ -153,6 +154,7 @@ AskHuman/
         cursor_hook.rs       Cursor 超时 Hook 管理
         claude_hook.rs       Claude Code 超时 Hook 管理
         agent_lifecycle.rs   四家 Agent 生命周期 Hook 管理
+        agent_launch.rs      Agent readiness、一次性启动记录与 Terminal.app helper
         agent_rules.rs       Agent 全局 Rules 管理
         grok_skill.rs        Grok interaction-protocol skill 管理
         mcp_config.rs        四家 MCP server 配置管理
@@ -232,14 +234,15 @@ Popup 的窗口、附件、来源标题与交互实现地图见 `docs/overview-p
 ## 配置
 
 `~/.askhuman/config.json` 是主配置文件，模型与默认值在 `src-tauri/src/config.rs`；新位置缺失时自动回退旧 `~/.humaninloop/config.json`。
-顶层分为 `general`、`channels` 和 `experimental`；缺字段走默认、未知字段忽略。完整字段地图见 `docs/overview-configuration.md`，用户向说明见 `docs/wiki/`。
+顶层分为 `general`、`channels`、`agentTasks` 和 `experimental`；缺字段走默认、未知字段忽略。完整字段地图见 `docs/overview-configuration.md`，用户向说明见 `docs/wiki/`。
 
 ### IM 命令与主动交互
 
 四种 IM 共用 Daemon 内的入站命令层，平台模块只负责传输、渲染和回调；Daemon 存活时即持续监听消息，不要求已有提问。详细能力与代码入口见 `docs/overview-im-commands.md`。
 
 - `channels.autoActivation` 关闭时向所有启用 IM 投放，开启时以当前活跃槽为主；切槽会补推在途请求，watch 渠道仍会加入对应 Agent 新提问的投放并集。
-- 共享命令包括 `/help`、`/here`、`/status`、`/watch`、`/unwatch`、`/msg`、`/msg-clear`、`/diff`、`/stage` 和 `/transcript`；Slack 使用 `!` 作为可输入的备用前缀。
+- 共享命令包括 `/new`、`/help`、`/here`、`/status`、`/watch`、`/unwatch`、`/msg`、`/msg-clear`、`/diff`、`/stage` 和 `/transcript`；Slack 使用 `!` 作为可输入的备用前缀。
+- macOS 开启 `agentTasks` 后，`/new` 依次选择 workspace、已就绪 Agent 与权限，在新的 Terminal.app 窗口启动真实交互会话；Daemon 只负责启动前流程，之后复用 lifecycle/watch。
 - Agent 数字编号在 daemon 生命周期内稳定，供状态、关注、插话和 Git/会话导出共用；无参目标选择复用跨渠道单选卡模型。
 - Watch 订阅持久化并就地更新原卡；`/stage` 必须经过跨渠道 Confirm，不能直接执行暂存。
 

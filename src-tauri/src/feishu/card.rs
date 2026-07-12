@@ -552,6 +552,9 @@ const SELECT_ACTION_KEY: &str = "select";
 fn select_button_type(action: crate::select::SelectAction) -> &'static str {
     match action {
         crate::select::SelectAction::Watch
+        | crate::select::SelectAction::TaskWorkspace
+        | crate::select::SelectAction::TaskAgent
+        | crate::select::SelectAction::TaskPermission
         | crate::select::SelectAction::Msg
         | crate::select::SelectAction::Stage => "primary",
         crate::select::SelectAction::Status
@@ -593,9 +596,10 @@ fn select_option_markdown(opt: &crate::select::SelectOption) -> String {
 /// 分隔线分隔 +（截断时）灰色小字说明。用户定稿「方案A」（`docs/specs/im-select-card.md`）。
 pub fn build_select_card(v: &crate::select::SelectView) -> Value {
     let btn_type = select_button_type(v.action);
-    let btn_label = v.action.button_label(crate::i18n::Lang::current());
+    let lang = crate::i18n::Lang::current();
     let mut elements: Vec<Value> = Vec::new();
     for (i, opt) in v.options.iter().enumerate() {
+        let btn_label = crate::select::option_button_label(opt, v.action, lang);
         if i > 0 {
             elements.push(json!({ "tag": "hr", "margin": "2px 0px 2px 0px" }));
         }

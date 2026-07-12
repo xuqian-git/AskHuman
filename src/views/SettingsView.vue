@@ -1,10 +1,18 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { applyLanguage } from "../i18n";
 import {
   agentModeStatus,
+  agentTaskReadiness,
+  agentTaskTestTerminal,
+  agentTaskWorkspaceAdd,
+  agentTaskWorkspaceForget,
+  agentTaskWorkspaceHide,
+  agentTaskWorkspacePick,
+  agentTaskWorkspacePin,
+  agentTaskWorkspaces,
   agentModeSet,
   agentModeUpdate,
   agentModeUpdateArtifact,
@@ -65,6 +73,8 @@ import type {
   AgentKind,
   AgentMode,
   AgentModeStatus,
+  AgentTaskReadiness,
+  AgentTaskWorkspace,
   AppConfig,
   DaemonLifecycleMode,
   LifecycleStatus,
@@ -97,6 +107,141 @@ type Tab = "general" | "integration" | "channel" | "advanced" | "experimental";
 
 const config = ref<AppConfig | null>(null);
 const activeTab = ref<Tab>("general");
+
+const taskWorkspaces = ref<AgentTaskWorkspace[]>([]);
+const taskReadiness = ref<AgentTaskReadiness[]>([]);
+const taskSettingsBusy = ref(false);
+const taskSettingsMessage = ref("");
+const workspacePanelOpen = ref(false);
+const workspaceMenuPath = ref<string | null>(null);
+
+async function refreshAgentTaskSettings(scan = false) {
+  taskSettingsBusy.value = true;
+  taskSettingsMessage.value = "";
+  try {
+    [taskWorkspaces.value, taskReadiness.value] = await Promise.all([
+      agentTaskWorkspaces(scan),
+      agentTaskReadiness(),
+    ]);
+  } catch (e) {
+    taskSettingsMessage.value = String(e);
+  } finally {
+    taskSettingsBusy.value = false;
+  }
+}
+
+async function toggleAgentTasks() {
+  if (!config.value) return;
+  if (config.value.agentTasks.enabled) {
+    config.value.general.daemonLifecycle = "keepalive";
+  }
+  await persist();
+  await refreshAgentTaskSettings(false);
+}
+
+async function pickTaskWorkspace() {
+  if (taskSettingsBusy.value) return;
+  taskSettingsBusy.value = true;
+  taskSettingsMessage.value = "";
+  try {
+    const path = await agentTaskWorkspacePick();
+    if (!path) return;
+    await agentTaskWorkspaceAdd(path);
+    await refreshAgentTaskSettings(false);
+  } catch (e) {
+    taskSettingsMessage.value = String(e);
+  } finally {
+    taskSettingsBusy.value = false;
+  }
+}
+
+async function mutateTaskWorkspace(action: "pin" | "hide" | "forget", workspace: AgentTaskWorkspace) {
+  workspaceMenuPath.value = null;
+  taskSettingsMessage.value = "";
+  try {
+    if (action === "pin") await agentTaskWorkspacePin(workspace.path, !workspace.pinned);
+    if (action === "hide") await agentTaskWorkspaceHide(workspace.path, !workspace.hidden);
+    if (action === "forget") await agentTaskWorkspaceForget(workspace.path);
+    await refreshAgentTaskSettings(false);
+  } catch (e) {
+    taskSettingsMessage.value = String(e);
+  }
+}
+
+function openWorkspacePanel() {
+  workspaceMenuPath.value = null;
+  taskSettingsMessage.value = "";
+  workspacePanelOpen.value = true;
+}
+
+function closeWorkspacePanel() {
+  workspaceMenuPath.value = null;
+  workspacePanelOpen.value = false;
+}
+
+function toggleWorkspaceMenu(path: string) {
+  workspaceMenuPath.value = workspaceMenuPath.value === path ? null : path;
+}
+
+function workspaceAgents(workspace: AgentTaskWorkspace): string {
+  if (workspace.agents.length === 0) return t("settings.agentTasks.manuallyAdded");
+  const labels: Record<AgentKind, string> = {
+    claude: "Claude Code",
+    codex: "Codex",
+    cursor: "Cursor",
+    grok: "Grok",
+  };
+  return workspace.agents.map((kind) => labels[kind]).join(" · ");
+}
+
+function workspaceLastUsed(workspace: AgentTaskWorkspace): string {
+  if (!workspace.lastUsedAt) return "";
+  return t("settings.agentTasks.lastUsed", {
+    time: new Date(workspace.lastUsedAt * 1000).toLocaleString(),
+  });
+}
+
+type ReadinessIssue = "binary" | "lifecycle" | "integration";
+const settingsTargetHighlight = ref("");
+let settingsTargetTimer: number | undefined;
+const AGENT_INSTALL_DOCS: Record<AgentKind, string> = {
+  claude: "https://docs.anthropic.com/en/docs/claude-code/getting-started",
+  codex: "https://developers.openai.com/codex/cli/",
+  cursor: "https://cursor.com/docs/cli/installation",
+  grok: "https://docs.x.ai/build/overview",
+};
+
+async function openReadinessIssue(kind: AgentKind, issue: ReadinessIssue) {
+  if (issue === "binary") {
+    await openPath(AGENT_INSTALL_DOCS[kind]);
+    return;
+  }
+
+  const target = `${issue}-${kind}`;
+  activeTab.value = issue === "lifecycle" ? "advanced" : "integration";
+  await nextTick();
+  settingsTargetHighlight.value = target;
+  document.getElementById(target)?.scrollIntoView({ behavior: "smooth", block: "center" });
+  if (settingsTargetTimer) window.clearTimeout(settingsTargetTimer);
+  settingsTargetTimer = window.setTimeout(() => {
+    settingsTargetHighlight.value = "";
+    settingsTargetTimer = undefined;
+  }, 2200);
+}
+
+onBeforeUnmount(() => {
+  if (settingsTargetTimer) window.clearTimeout(settingsTargetTimer);
+});
+
+async function testAgentTaskTerminal() {
+  taskSettingsMessage.value = "";
+  try {
+    await agentTaskTestTerminal();
+    taskSettingsMessage.value = t("settings.agentTasks.terminalTestDone");
+  } catch (e) {
+    taskSettingsMessage.value = String(e);
+  }
+}
 
 // Secrets are never loaded into the UI; we only know whether each is configured (for the
 // placeholder) and track an explicit "cleared" intent until the next save.
@@ -132,6 +277,9 @@ function onTabClick(tab: Tab, e: MouseEvent) {
   tabDown.value = null;
   if (d && Math.hypot(e.screenX - d.x, e.screenY - d.y) > 4) return;
   activeTab.value = tab;
+  // Readiness can change in the Advanced/Agents tabs or in another process. Refresh whenever the
+  // experimental page becomes visible so it never keeps the mount-time snapshot.
+  if (tab === "experimental" && isMac) void refreshAgentTaskSettings(false);
 }
 const prompt = ref("");
 const promptCopied = ref(false);
@@ -747,6 +895,7 @@ async function toggleLifecycle(kind: AgentKind, on: boolean) {
     if (on) await agentLifecycleInstall(kind);
     else await agentLifecycleUninstall(kind);
     lifecycleStatus.value[kind] = await agentLifecycleStatus(kind);
+    if (isMac) await refreshAgentTaskSettings(false);
   } catch (e) {
     lifecycleError.value[kind] = String(e);
     // 回滚到后端真实状态，避免开关与实际不一致。
@@ -768,6 +917,7 @@ async function updateLifecycle(kind: AgentKind) {
   try {
     await agentLifecycleInstall(kind);
     lifecycleStatus.value[kind] = await agentLifecycleStatus(kind);
+    if (isMac) await refreshAgentTaskSettings(false);
   } catch (e) {
     lifecycleError.value[kind] = String(e);
   } finally {
@@ -775,7 +925,7 @@ async function updateLifecycle(kind: AgentKind) {
   }
 }
 
-// 打开「实验」开关时显露实验 Tab（现为空态）；关闭时若停留在实验 Tab 则退回通用。
+// 打开「实验」开关时显露实验 Tab；关闭时若停留在实验 Tab 则退回通用。
 async function toggleExperimental() {
   if (!config.value) return;
   if (!config.value.experimental.enabled && activeTab.value === "experimental") {
@@ -1022,6 +1172,7 @@ onMounted(async () => {
   await Promise.all(AGENTS.map((a) => refreshMode(a.id)));
   // 生命周期追踪已迁至「高级」Tab（仅 macOS/Linux，不再受「实验性功能」开关门控）。
   if (!isWindows) await refreshLifecycle();
+  if (isMac) await refreshAgentTaskSettings(true);
   if (isMac) {
     try {
       glassSupported.value = await isGlassSupported();
@@ -1678,7 +1829,11 @@ onBeforeUnmount(() => unlistenProgress?.());
           <hr class="divider" />
           <template v-for="(kind, i) in LIFECYCLE_KINDS" :key="kind">
             <hr v-if="i > 0" class="divider" />
-            <div class="row">
+            <div
+              :id="`lifecycle-${kind}`"
+              class="row readiness-target-row"
+              :class="{ 'settings-target-highlight': settingsTargetHighlight === `lifecycle-${kind}` }"
+            >
               <div class="col">
                 <span class="label">{{ lifecycleLabel(kind) }}</span>
                 <p
@@ -1813,9 +1968,96 @@ onBeforeUnmount(() => unlistenProgress?.());
         </div>
       </template>
 
-      <!-- 实验性功能（功能已迁往「高级」/「通用」，暂为空态） -->
+      <!-- 实验性功能 -->
       <template v-else-if="activeTab === 'experimental'">
-        <div class="empty-state">
+        <div v-if="isMac" class="card">
+          <div class="row">
+            <div class="col">
+              <p class="card-title">{{ t("settings.agentTasks.title") }}</p>
+              <p class="card-desc">{{ t("settings.agentTasks.description") }}</p>
+            </div>
+            <span class="spacer"></span>
+            <label class="switch">
+              <input
+                type="checkbox"
+                v-model="config.agentTasks.enabled"
+                @change="toggleAgentTasks"
+              />
+              <span class="track"></span>
+            </label>
+          </div>
+          <template v-if="config.agentTasks.enabled">
+            <hr class="divider" />
+            <div class="row">
+              <span class="label">{{ t("settings.agentTasks.permission") }}</span>
+              <span class="spacer"></span>
+              <select class="select" v-model="config.agentTasks.permissionPrompt" @change="persist">
+                <option value="ask">{{ t("settings.agentTasks.permissionAsk") }}</option>
+                <option value="agent-default">{{ t("settings.agentTasks.permissionDefault") }}</option>
+                <option value="yolo">{{ t("settings.agentTasks.permissionYolo") }}</option>
+              </select>
+            </div>
+            <p v-if="config.agentTasks.permissionPrompt === 'yolo'" class="result err">
+              {{ t("settings.agentTasks.yoloWarning") }}
+            </p>
+            <hr class="divider" />
+            <div class="row">
+              <span class="label">Terminal.app</span>
+              <span class="spacer"></span>
+              <button class="btn" type="button" @click="testAgentTaskTerminal">
+                {{ t("settings.agentTasks.testTerminal") }}
+              </button>
+              <button class="btn" type="button" :disabled="taskSettingsBusy" @click="refreshAgentTaskSettings(true)">
+                {{ t("settings.agentTasks.refresh") }}
+              </button>
+            </div>
+            <hr class="divider" />
+            <p class="label">{{ t("settings.agentTasks.readiness") }}</p>
+            <div v-for="item in taskReadiness" :key="item.kind" class="row agent-row">
+              <span class="label">{{ item.label }}</span>
+              <span class="badge"><span class="dot" :class="item.ready ? 'on' : 'off'"></span>{{ item.ready ? t("settings.agentTasks.ready") : t("settings.agentTasks.notReady") }}</span>
+              <span class="spacer"></span>
+              <span class="card-desc readiness-conditions">
+                <span v-if="item.binaryReady">CLI ✓</span>
+                <button
+                  v-else
+                  type="button"
+                  :title="t('settings.agentTasks.openInstallDocs')"
+                  @click="openReadinessIssue(item.kind, 'binary')"
+                >CLI ×</button>
+                <span class="readiness-separator">·</span>
+                <span v-if="item.lifecycleReady">Lifecycle ✓</span>
+                <button
+                  v-else
+                  type="button"
+                  :title="t('settings.agentTasks.goToSetting')"
+                  @click="openReadinessIssue(item.kind, 'lifecycle')"
+                >Lifecycle ×</button>
+                <span class="readiness-separator">·</span>
+                <span v-if="item.integrationReady">Integration ✓</span>
+                <button
+                  v-else
+                  type="button"
+                  :title="t('settings.agentTasks.goToSetting')"
+                  @click="openReadinessIssue(item.kind, 'integration')"
+                >Integration ×</button>
+              </span>
+            </div>
+            <hr class="divider" />
+            <div class="row">
+              <div class="col">
+                <span class="label">{{ t("settings.agentTasks.workspaces") }}</span>
+                <span class="card-desc">{{ t("settings.agentTasks.workspaceCount", { n: taskWorkspaces.length }) }}</span>
+              </div>
+              <span class="spacer"></span>
+              <button class="btn" type="button" @click="openWorkspacePanel">
+                {{ t("settings.agentTasks.manageWorkspaces") }}
+              </button>
+            </div>
+            <p v-if="taskSettingsMessage" class="result">{{ taskSettingsMessage }}</p>
+          </template>
+        </div>
+        <div v-else class="empty-state">
           <p class="empty-title">{{ t("settings.experimental.emptyTitle") }}</p>
           <p class="empty-desc">{{ t("settings.experimental.emptyDesc") }}</p>
         </div>
@@ -1830,6 +2072,7 @@ onBeforeUnmount(() => unlistenProgress?.());
         ></div>
         <p class="section-intro">{{ t("settings.integration.overviewDesc") }}</p>
 
+        <div class="integration-manual">
         <!-- 手动集成：参考提示词（CLI / MCP 双版本 + MCP 配置示例） -->
         <p class="section-title">{{ t("settings.integration.manualTitle") }}</p>
         <div class="card">
@@ -1909,6 +2152,8 @@ onBeforeUnmount(() => unlistenProgress?.());
           </template>
         </div>
 
+        </div>
+        <div class="integration-auto">
         <!-- 自动集成：每个 Agent 一张卡，CLI | MCP | 未集成 三态切换 -->
         <p class="section-title">{{ t("settings.integration.autoTitle") }}</p>
 
@@ -1953,7 +2198,13 @@ onBeforeUnmount(() => unlistenProgress?.());
           </div>
         </div>
 
-        <div v-for="a in AGENTS" :key="a.id" class="card agent-card">
+        <div
+          v-for="a in AGENTS"
+          :id="`integration-${a.id}`"
+          :key="a.id"
+          class="card agent-card"
+          :class="{ 'settings-target-highlight': settingsTargetHighlight === `integration-${a.id}` }"
+        >
           <div class="row agent-row">
             <p class="card-title">{{ a.title }}</p>
             <span class="spacer"></span>
@@ -2343,6 +2594,7 @@ onBeforeUnmount(() => unlistenProgress?.());
           >
             {{ modeMessage[a.id] }}
           </p>
+        </div>
         </div>
       </template>
 
@@ -2930,6 +3182,104 @@ onBeforeUnmount(() => unlistenProgress?.());
         </div>
       </template>
     </div>
+
+    <div v-if="workspacePanelOpen" class="workspace-panel-backdrop">
+      <section
+        class="workspace-panel"
+        role="dialog"
+        aria-modal="true"
+        :aria-label="t('settings.agentTasks.workspacePanelTitle')"
+      >
+        <header class="workspace-panel-toolbar">
+          <button class="workspace-toolbar-done" type="button" @click="closeWorkspacePanel">
+            {{ t("settings.agentTasks.done") }}
+          </button>
+          <h2>{{ t("settings.agentTasks.workspacePanelTitle") }}</h2>
+          <button
+            class="workspace-toolbar-icon"
+            type="button"
+            :disabled="taskSettingsBusy"
+            :aria-label="t('settings.agentTasks.chooseWorkspace')"
+            :title="t('settings.agentTasks.chooseWorkspace')"
+            @click="pickTaskWorkspace"
+          >
+            <svg viewBox="0 0 20 20" aria-hidden="true">
+              <path d="M10 3.5v13M3.5 10h13" />
+            </svg>
+          </button>
+        </header>
+
+        <div class="workspace-panel-content">
+          <div v-if="taskWorkspaces.length" class="workspace-list">
+            <div
+              v-for="workspace in taskWorkspaces"
+              :key="workspace.path"
+              class="workspace-list-row"
+              :class="{ 'is-hidden': workspace.hidden }"
+            >
+              <span class="workspace-folder-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M3.5 7.5h6l1.8 2h9.2v8.25a2.25 2.25 0 0 1-2.25 2.25H5.75a2.25 2.25 0 0 1-2.25-2.25V7.5Z" />
+                  <path d="M3.5 8V6.25A2.25 2.25 0 0 1 5.75 4h3.4l1.8 2h7.3a2.25 2.25 0 0 1 2.25 2.25V9" />
+                </svg>
+              </span>
+              <div class="workspace-list-copy">
+                <div class="workspace-list-title">
+                  <span>{{ workspace.label }}</span>
+                  <span v-if="workspace.pinned" class="workspace-status-badge">{{ t("settings.agentTasks.pinned") }}</span>
+                  <span v-if="workspace.hidden" class="workspace-status-badge muted">{{ t("settings.agentTasks.hidden") }}</span>
+                </div>
+                <span class="workspace-list-path" :title="workspace.path">{{ workspace.path }}</span>
+                <span class="workspace-list-meta">
+                  {{ workspaceAgents(workspace) }}
+                  <template v-if="workspaceLastUsed(workspace)"> · {{ workspaceLastUsed(workspace) }}</template>
+                </span>
+              </div>
+              <div class="workspace-row-menu">
+                <button
+                  class="workspace-more-button"
+                  type="button"
+                  :aria-label="t('settings.agentTasks.workspaceActions')"
+                  @click.stop="toggleWorkspaceMenu(workspace.path)"
+                >
+                  <svg viewBox="0 0 20 20" aria-hidden="true">
+                    <circle cx="4" cy="10" r="1.35" />
+                    <circle cx="10" cy="10" r="1.35" />
+                    <circle cx="16" cy="10" r="1.35" />
+                  </svg>
+                </button>
+                <div v-if="workspaceMenuPath === workspace.path" class="workspace-menu-pop">
+                  <button class="menu-item" type="button" @click="mutateTaskWorkspace('pin', workspace)">
+                    {{ workspace.pinned ? t("settings.agentTasks.unpin") : t("settings.agentTasks.pin") }}
+                  </button>
+                  <button class="menu-item" type="button" @click="mutateTaskWorkspace('hide', workspace)">
+                    {{ workspace.hidden ? t("settings.agentTasks.show") : t("settings.agentTasks.hide") }}
+                  </button>
+                  <button class="menu-item workspace-menu-danger" type="button" @click="mutateTaskWorkspace('forget', workspace)">
+                    {{ t("settings.agentTasks.forget") }}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div v-else class="workspace-panel-empty">
+            <span class="workspace-empty-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24">
+                <path d="M3.5 7.5h6l1.8 2h9.2v8.25a2.25 2.25 0 0 1-2.25 2.25H5.75a2.25 2.25 0 0 1-2.25-2.25V7.5Z" />
+              </svg>
+            </span>
+            <p>{{ t("settings.agentTasks.noWorkspaces") }}</p>
+            <span>{{ t("settings.agentTasks.noWorkspacesHint") }}</span>
+          </div>
+          <p v-if="taskSettingsMessage" class="result workspace-panel-result">{{ taskSettingsMessage }}</p>
+        </div>
+        <div
+          v-if="workspaceMenuPath"
+          class="workspace-menu-backdrop"
+          @click="workspaceMenuPath = null"
+        ></div>
+      </section>
+    </div>
   </div>
 </template>
 
@@ -2940,6 +3290,262 @@ onBeforeUnmount(() => unlistenProgress?.());
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+/* Agent-task workspace manager: a macOS-style sheet with one consistent action menu per row. */
+.workspace-panel-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 28px;
+  background: rgba(0, 0, 0, 0.24);
+  backdrop-filter: blur(5px);
+}
+.workspace-panel {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: min(590px, 100%);
+  height: min(540px, calc(100vh - 56px));
+  min-height: 340px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--bg);
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.3), 0 2px 8px rgba(0, 0, 0, 0.16);
+}
+.workspace-panel-toolbar {
+  display: grid;
+  grid-template-columns: 72px 1fr 72px;
+  align-items: center;
+  min-height: 50px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg-elevated) 72%, var(--bg));
+}
+.workspace-panel-toolbar h2 {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 600;
+  text-align: center;
+}
+.workspace-toolbar-done,
+.workspace-toolbar-icon,
+.workspace-more-button {
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  cursor: default;
+}
+.workspace-toolbar-done {
+  justify-self: start;
+  padding: 6px 4px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.workspace-toolbar-icon {
+  justify-self: end;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 5px;
+  border-radius: 7px;
+}
+.workspace-toolbar-icon:hover,
+.workspace-more-button:hover {
+  background: var(--bg-elevated);
+}
+.workspace-toolbar-icon:disabled {
+  opacity: 0.4;
+}
+.workspace-toolbar-icon svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+}
+.workspace-panel-content {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px;
+}
+.workspace-list {
+  overflow: visible;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--card-bg);
+}
+.workspace-list-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 70px;
+  padding: 10px 10px 10px 12px;
+}
+.workspace-list-row + .workspace-list-row {
+  border-top: 1px solid var(--border);
+}
+.workspace-list-row.is-hidden .workspace-folder-icon,
+.workspace-list-row.is-hidden .workspace-list-copy {
+  opacity: 0.58;
+}
+.workspace-folder-icon,
+.workspace-empty-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  color: var(--accent);
+}
+.workspace-folder-icon {
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 13%, transparent);
+}
+.workspace-folder-icon svg,
+.workspace-empty-icon svg {
+  width: 23px;
+  height: 23px;
+  fill: color-mix(in srgb, var(--accent) 18%, transparent);
+  stroke: currentColor;
+  stroke-width: 1.45;
+  stroke-linejoin: round;
+}
+.workspace-list-copy {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  gap: 2px;
+}
+.workspace-list-title {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 6px;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 600;
+}
+.workspace-list-title > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workspace-status-badge {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 16px;
+}
+.workspace-status-badge.muted {
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+}
+.workspace-list-path,
+.workspace-list-meta {
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workspace-list-path {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+}
+.workspace-row-menu {
+  position: relative;
+  z-index: 114;
+  flex: none;
+}
+.workspace-more-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 6px;
+  border-radius: 7px;
+  color: var(--text-secondary);
+}
+.workspace-more-button svg {
+  width: 18px;
+  height: 18px;
+  fill: currentColor;
+}
+.workspace-menu-pop {
+  position: absolute;
+  top: calc(100% + 3px);
+  right: 0;
+  z-index: 114;
+  min-width: 148px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
+}
+.workspace-menu-danger {
+  color: #ff453a;
+}
+.workspace-menu-danger:hover {
+  background: #ff453a;
+  color: #fff;
+}
+.workspace-menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 113;
+}
+.workspace-panel-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 270px;
+  color: var(--text-secondary);
+  text-align: center;
+}
+.workspace-empty-icon {
+  width: 44px;
+  height: 44px;
+  margin-bottom: 8px;
+  opacity: 0.75;
+}
+.workspace-empty-icon svg {
+  width: 36px;
+  height: 36px;
+}
+.workspace-panel-empty p {
+  margin: 0 0 4px;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 600;
+}
+.workspace-panel-empty > span:last-child {
+  max-width: 300px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.workspace-panel-result {
+  margin: 12px 0 0;
 }
 /* 实验区：标签 + 说明纵向堆叠的行内列 */
 .row .col {
@@ -3025,6 +3631,15 @@ onBeforeUnmount(() => unlistenProgress?.());
   flex: 1 1 auto;
   overflow-y: auto;
   padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+}
+.integration-auto { order: 1; }
+.integration-manual { order: 2; }
+.integration-auto,
+.integration-manual { width: 100%; }
+.integration-manual .section-title {
+  margin-top: var(--space-4);
 }
 /* 子设置项：缩进 + 左侧竖线，表明从属于上方的父开关（如「自动结束 watch」属「按需发送」） */
 .sub-setting {
@@ -3101,6 +3716,49 @@ onBeforeUnmount(() => unlistenProgress?.());
   font-size: 11px;
   color: var(--text-secondary, #888);
   word-break: break-all;
+}
+.readiness-conditions {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0;
+  white-space: nowrap;
+}
+.readiness-conditions button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.readiness-conditions button:hover {
+  text-decoration-color: var(--accent);
+}
+.readiness-separator {
+  color: var(--text-secondary);
+  opacity: 0.65;
+}
+.readiness-target-row {
+  margin-right: -6px;
+  margin-left: -6px;
+  padding: 4px 6px;
+  border-radius: 8px;
+  transition: background 0.2s ease, box-shadow 0.2s ease;
+}
+.readiness-target-row.settings-target-highlight {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 42%, transparent);
+}
+.agent-card {
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+.agent-card.settings-target-highlight {
+  border-color: color-mix(in srgb, var(--accent) 62%, var(--border));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
 }
 .agent-hint {
   margin-top: 4px;

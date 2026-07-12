@@ -64,6 +64,12 @@ fn reason_label(lang: Lang) -> &'static str {
     }
 }
 
+fn is_task_input_form(request: &ConfirmRequest) -> bool {
+    request.presentation.input().is_some_and(|input| {
+        input.max_chars > 1000 && request.presentation.default_action_id().is_some()
+    })
+}
+
 pub(crate) fn compact_tool_markdown(request: &ConfirmRequest, max: usize, lang: Lang) -> String {
     let mut body = String::new();
     if !request.detail.summary.trim().is_empty() {
@@ -117,6 +123,14 @@ pub(crate) fn tool_name(request: &ConfirmRequest) -> &str {
 }
 
 fn feishu_tool_elements(request: &ConfirmRequest, lang: Lang) -> Vec<Value> {
+    if is_task_input_form(request) {
+        let mut content = request.detail.summary.clone();
+        if !request.detail.body_md.trim().is_empty() {
+            content.push_str("\n\n");
+            content.push_str(&request.detail.body_md);
+        }
+        return vec![json!({ "tag": "markdown", "content": bounded(&content, 12_000) })];
+    }
     let mut elements = Vec::new();
     if !request.detail.summary.trim().is_empty() {
         elements.push(json!({
@@ -156,25 +170,27 @@ pub fn feishu_card(
 ) -> Value {
     let mut elements = feishu_tool_elements(request, lang);
     elements.push(json!({ "tag": "hr", "margin": "0px 0px 0px 0px" }));
-    for (index, choice) in request.choices.iter().enumerate() {
-        let checked = selected == Some(index);
-        let color = if checked {
-            Some(if choice.role == ActionRole::Destructive {
-                "red"
+    if !is_task_input_form(request) {
+        for (index, choice) in request.choices.iter().enumerate() {
+            let checked = selected == Some(index);
+            let color = if checked {
+                Some(if choice.role == ActionRole::Destructive {
+                    "red"
+                } else {
+                    "blue"
+                })
             } else {
-                "blue"
-            })
-        } else {
-            None
-        };
-        elements.push(crate::feishu::card::styled_checker(
-            &format!("confirm_choice_{index}"),
-            &feishu_choice_text(choice),
-            checked,
-            false,
-            Some(json!({ "confirm": "select", "index": index })),
-            color,
-        ));
+                None
+            };
+            elements.push(crate::feishu::card::styled_checker(
+                &format!("confirm_choice_{index}"),
+                &feishu_choice_text(choice),
+                checked,
+                false,
+                Some(json!({ "confirm": "select", "index": index })),
+                color,
+            ));
+        }
     }
     let mut form_elements = Vec::new();
     if let Some(input) = input_for_selected(request, selected) {
@@ -279,25 +295,41 @@ pub fn slack_blocks(
     lang: Lang,
 ) -> Value {
     let mut blocks = vec![crate::slack::blockkit::title_block(&request.title)];
-    if !request.detail.summary.trim().is_empty() {
+    if is_task_input_form(request) {
+        let mut content = slack_escape(&request.detail.summary);
+        if !request.detail.body_md.trim().is_empty() {
+            content.push_str("\n\n");
+            content.push_str(&crate::slack::markdown::to_mrkdwn(&bounded(
+                &request.detail.body_md,
+                2800,
+            )));
+        }
+        blocks.push(crate::slack::blockkit::mrkdwn_section(&content));
+    } else {
+        if !request.detail.summary.trim().is_empty() {
+            blocks.push(crate::slack::blockkit::mrkdwn_section(&format!(
+                "*{}* {}",
+                slack_escape(reason_label(lang)),
+                slack_escape(&request.detail.summary)
+            )));
+        }
         blocks.push(crate::slack::blockkit::mrkdwn_section(&format!(
-            "*{}* {}",
-            slack_escape(reason_label(lang)),
-            slack_escape(&request.detail.summary)
+            "*{}*",
+            slack_escape(tool_name(request))
         )));
-    }
-    blocks.push(crate::slack::blockkit::mrkdwn_section(&format!(
-        "*{}*",
-        slack_escape(tool_name(request))
-    )));
-    if !request.detail.body_md.trim().is_empty() {
-        blocks.push(crate::slack::blockkit::mrkdwn_section(
-            &crate::slack::markdown::to_mrkdwn(&bounded(&request.detail.body_md, 2800)),
-        ));
+        if !request.detail.body_md.trim().is_empty() {
+            blocks.push(crate::slack::blockkit::mrkdwn_section(
+                &crate::slack::markdown::to_mrkdwn(&bounded(&request.detail.body_md, 2800)),
+            ));
+        }
     }
 
     // Security-relevant scope details stay static and untruncated by radio option limits.
-    for choice in &request.choices {
+    for choice in request
+        .choices
+        .iter()
+        .filter(|_| !is_task_input_form(request))
+    {
         let inline_detail = choice.description.replace('\n', " · ");
         if inline_detail.chars().count() > 75 || choice.label.chars().count() > 75 {
             let mut detail = format!("*{}*", slack_escape(&choice.label));
@@ -334,16 +366,18 @@ pub fn slack_blocks(
     if let Some(index) = selected.filter(|index| *index < request.choices.len()) {
         radio["initial_option"] = radio["options"][index].clone();
     }
-    blocks.push(json!({
-        "type": "input",
-        "block_id": "confirm_choice_block",
-        "optional": true,
-        "label": {
-            "type": "plain_text",
-            "text": if lang == Lang::Zh { "决定" } else { "Decision" },
-        },
-        "element": radio,
-    }));
+    if !is_task_input_form(request) {
+        blocks.push(json!({
+            "type": "input",
+            "block_id": "confirm_choice_block",
+            "optional": true,
+            "label": {
+                "type": "plain_text",
+                "text": if lang == Lang::Zh { "决定" } else { "Decision" },
+            },
+            "element": radio,
+        }));
+    }
 
     if let Some(input) = request.presentation.input() {
         blocks.push(json!({
@@ -352,11 +386,7 @@ pub fn slack_blocks(
             "optional": true,
             "label": {
                 "type": "plain_text",
-                "text": if lang == Lang::Zh {
-                    "拒绝原因（可选，仅拒绝时发送）"
-                } else {
-                    "Denial reason (optional; sent only when denying)"
-                },
+                "text": if is_task_input_form(request) { input.label.as_str() } else if lang == Lang::Zh { "拒绝原因（可选，仅拒绝时发送）" } else { "Denial reason (optional; sent only when denying)" },
             },
             "element": {
                 "type": "plain_text_input",
@@ -382,21 +412,27 @@ pub fn slack_blocks(
 
 pub fn slack_final_blocks(request: &ConfirmRequest, status: &str, lang: Lang) -> Value {
     let mut blocks = vec![crate::slack::blockkit::title_block(&request.title)];
-    if !request.detail.summary.trim().is_empty() {
-        blocks.push(crate::slack::blockkit::mrkdwn_section(&format!(
-            "*{}* {}",
-            slack_escape(reason_label(lang)),
-            slack_escape(&request.detail.summary)
+    if is_task_input_form(request) {
+        blocks.push(crate::slack::blockkit::mrkdwn_section(&slack_escape(
+            &request.detail.summary,
         )));
-    }
-    blocks.push(crate::slack::blockkit::mrkdwn_section(&format!(
-        "*{}*",
-        slack_escape(tool_name(request))
-    )));
-    if !request.detail.body_md.trim().is_empty() {
-        blocks.push(crate::slack::blockkit::mrkdwn_section(
-            &crate::slack::markdown::to_mrkdwn(&bounded(&request.detail.body_md, 2800)),
-        ));
+    } else {
+        if !request.detail.summary.trim().is_empty() {
+            blocks.push(crate::slack::blockkit::mrkdwn_section(&format!(
+                "*{}* {}",
+                slack_escape(reason_label(lang)),
+                slack_escape(&request.detail.summary)
+            )));
+        }
+        blocks.push(crate::slack::blockkit::mrkdwn_section(&format!(
+            "*{}*",
+            slack_escape(tool_name(request))
+        )));
+        if !request.detail.body_md.trim().is_empty() {
+            blocks.push(crate::slack::blockkit::mrkdwn_section(
+                &crate::slack::markdown::to_mrkdwn(&bounded(&request.detail.body_md, 2800)),
+            ));
+        }
     }
     blocks.push(json!({
         "type": "context",
@@ -490,17 +526,28 @@ pub fn telegram_html(
 ) -> String {
     use crate::telegram::markdown::{escape_html, to_html};
     let mut out = format!("<b>❓ {}</b>", escape_html(&request.title));
-    if !request.detail.summary.trim().is_empty() {
+    if is_task_input_form(request) {
         out.push_str(&format!(
-            "\n\n<b>{}</b> {}",
-            escape_html(reason_label(lang)),
-            escape_html(&request.detail.summary)
+            "\n\n{}",
+            to_html(&bounded(&request.detail.summary, 2200))
         ));
-    }
-    out.push_str(&format!("\n\n<b>{}</b>", escape_html(tool_name(request))));
-    if !request.detail.body_md.trim().is_empty() {
-        out.push_str("\n\n");
-        out.push_str(&to_html(&bounded(&request.detail.body_md, 2200)));
+        if !request.detail.body_md.trim().is_empty() {
+            out.push_str("\n\n");
+            out.push_str(&to_html(&bounded(&request.detail.body_md, 1200)));
+        }
+    } else {
+        if !request.detail.summary.trim().is_empty() {
+            out.push_str(&format!(
+                "\n\n<b>{}</b> {}",
+                escape_html(reason_label(lang)),
+                escape_html(&request.detail.summary)
+            ));
+        }
+        out.push_str(&format!("\n\n<b>{}</b>", escape_html(tool_name(request))));
+        if !request.detail.body_md.trim().is_empty() {
+            out.push_str("\n\n");
+            out.push_str(&to_html(&bounded(&request.detail.body_md, 2200)));
+        }
     }
     let full_labels = telegram_uses_full_labels(request);
     let show_choice_list = !full_labels
@@ -508,7 +555,7 @@ pub fn telegram_html(
             .choices
             .iter()
             .any(|choice| !choice.description.trim().is_empty());
-    if show_choice_list {
+    if show_choice_list && !is_task_input_form(request) {
         for (index, choice) in request.choices.iter().enumerate() {
             let marker = if full_labels {
                 "•".to_string()
@@ -535,9 +582,13 @@ pub fn telegram_html(
         }
     }
     if status.is_none() && comment.trim().is_empty() && request.presentation.input().is_some() {
-        let hint = match lang {
-            Lang::Zh => "如需说明拒绝原因，请先回复本消息，再点“拒绝”。",
-            Lang::En => "To include a denial reason, reply to this message before tapping Deny.",
+        let hint = match (is_task_input_form(request), lang) {
+            (true, Lang::Zh) => "请直接回复本消息输入任务。",
+            (true, Lang::En) => "Reply directly to this message with the task.",
+            (false, Lang::Zh) => "如需说明拒绝原因，请先回复本消息，再点“拒绝”。",
+            (false, Lang::En) => {
+                "To include a denial reason, reply to this message before tapping Deny."
+            }
         };
         out.push_str(&format!("\n\n<i>{}</i>", escape_html(hint)));
     }
@@ -649,6 +700,39 @@ mod tests {
         }
         .into_request("r1".into(), 1, 2)
         .unwrap()
+    }
+
+    fn task_request() -> ConfirmRequest {
+        let mut request = request();
+        request.title = "Enter task".into();
+        request.presentation = ConfirmPresentation::SingleSelectSubmit {
+            input: Some(ConfirmInput {
+                id: "task".into(),
+                visible_when_action_id: "approve_once".into(),
+                label: "Task".into(),
+                placeholder: "Describe the task".into(),
+                max_chars: 3000,
+            }),
+            submit_label: "Start task".into(),
+            default_action_id: Some("approve_once".into()),
+        };
+        request
+    }
+
+    #[test]
+    fn task_input_forms_hide_semantic_choice_controls() {
+        let request = task_request();
+        let feishu = feishu_card(&request, Some(0), "", Lang::En).to_string();
+        assert!(!feishu.contains("confirm_choice_0"));
+        assert!(feishu.contains("Start task"));
+
+        let slack = slack_blocks(&request, Some(0), "", Lang::En).to_string();
+        assert!(!slack.contains("radio_buttons"));
+        assert!(slack.contains("plain_text_input"));
+
+        let telegram = telegram_html(&request, Some(0), "", None, Lang::En);
+        assert!(!telegram.contains("full scope"));
+        assert!(telegram.contains("Reply directly to this message with the task"));
     }
 
     #[test]

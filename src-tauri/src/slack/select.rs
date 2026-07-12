@@ -26,7 +26,12 @@ fn dot_emoji(dot: Option<SelectDot>) -> &'static str {
 /// 按钮样式（watch=primary、status=默认、unwatch=danger，对齐飞书）。
 fn button_style(action: SelectAction) -> Option<&'static str> {
     match action {
-        SelectAction::Watch | SelectAction::Msg | SelectAction::Stage => Some("primary"),
+        SelectAction::Watch
+        | SelectAction::TaskWorkspace
+        | SelectAction::TaskAgent
+        | SelectAction::TaskPermission
+        | SelectAction::Msg
+        | SelectAction::Stage => Some("primary"),
         SelectAction::Status | SelectAction::Diff | SelectAction::Transcript => None,
         SelectAction::Unwatch => Some("danger"),
     }
@@ -42,9 +47,9 @@ pub fn build_select_blocks(view: &SelectView, lang: Lang) -> (Value, String) {
     }
     blocks.push(json!({ "type": "section", "text": { "type": "mrkdwn", "text": title } }));
 
-    let label = view.action.button_label(lang);
     let style = button_style(view.action);
     for (idx, opt) in view.options.iter().enumerate() {
+        let label = crate::select::option_button_label(opt, view.action, lang);
         let mut text = String::from(dot_emoji(opt.dot));
         if let Some(seq) = opt.seq {
             text.push_str(&format!(" *[{}]*", seq));
@@ -63,7 +68,7 @@ pub fn build_select_blocks(view: &SelectView, lang: Lang) -> (Value, String) {
             "type": "button",
             "action_id": format!("{}{}", ACTION_SELECT_PREFIX, idx),
             "value": idx.to_string(),
-            "text": { "type": "plain_text", "text": label.clone() },
+            "text": { "type": "plain_text", "text": label },
         });
         if let Some(s) = style {
             button["style"] = json!(s);

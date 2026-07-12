@@ -34,10 +34,10 @@ const MESSAGE_SETTLE_DELAY: Duration = Duration::from_millis(1000);
 
 /// 内置默认卡片模板 ID（设置项 `cardTemplateId` 留空时使用）。
 /// D15 定稿模板：`options=[{id,md}]` + `single` + `allow_input` 变量条件渲染（单/多选、严格）。
-const DEFAULT_CARD_TEMPLATE_ID: &str = "d5dc7ac5-1fca-443a-8230-d33ce63e837f.schema";
+pub const DEFAULT_CARD_TEMPLATE_ID: &str = "d5dc7ac5-1fca-443a-8230-d33ce63e837f.schema";
 
 /// 取生效的卡片模板 ID：配置非空用配置，否则用内置默认。
-fn effective_template_id(config: &DingTalkChannelConfig) -> &str {
+pub fn effective_template_id(config: &DingTalkChannelConfig) -> &str {
     let t = config.card_template_id.trim();
     if t.is_empty() {
         DEFAULT_CARD_TEMPLATE_ID

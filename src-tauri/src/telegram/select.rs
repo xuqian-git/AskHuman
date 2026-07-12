@@ -52,15 +52,29 @@ pub fn render_select_html(view: &SelectView) -> String {
 
 /// inline keyboard：每个选项一枚按钮「<动作> [编号]」，每按钮独占一行，`callback_data=sel:<idx>`。
 pub fn inline_keyboard(view: &SelectView, lang: Lang) -> Value {
-    let label = view.action.button_label(lang);
     let rows: Vec<Value> = view
         .options
         .iter()
         .enumerate()
         .map(|(idx, opt)| {
+            let label = crate::select::option_button_label(opt, view.action, lang);
             let text = match opt.seq {
                 Some(seq) => format!("{} [{}]", label, seq),
-                None => label.clone(),
+                None if matches!(
+                    view.action,
+                    crate::select::SelectAction::TaskWorkspace
+                        | crate::select::SelectAction::TaskAgent
+                        | crate::select::SelectAction::TaskPermission
+                ) && opt.id != crate::select::MORE_OPTION_ID =>
+                {
+                    opt.primary.clone()
+                }
+                None => label,
+            };
+            let text = if text.chars().count() > 48 {
+                format!("{}…", text.chars().take(47).collect::<String>())
+            } else {
+                text
             };
             json!([{ "text": text, "callback_data": format!("{}{}", CB_PREFIX, idx) }])
         })
@@ -147,6 +161,38 @@ mod tests {
         assert_eq!(rows[0][0]["text"], "关注 [2]");
         assert_eq!(rows[0][0]["callback_data"], "sel:0");
         assert_eq!(rows[1][0]["callback_data"], "sel:1");
+    }
+
+    #[test]
+    fn task_workspace_buttons_use_workspace_names() {
+        let view = build_view(
+            "选择工作目录".into(),
+            vec![
+                SelectOption {
+                    id: "/tmp/alpha".into(),
+                    dot: None,
+                    seq: None,
+                    primary: "alpha".into(),
+                    badge: None,
+                    elapsed: None,
+                    secondary: Some("/tmp".into()),
+                },
+                SelectOption {
+                    id: crate::select::MORE_OPTION_ID.into(),
+                    dot: None,
+                    seq: None,
+                    primary: "显示更多工作目录".into(),
+                    badge: None,
+                    elapsed: None,
+                    secondary: None,
+                },
+            ],
+            SelectAction::TaskWorkspace,
+            Lang::Zh,
+        );
+        let kb = inline_keyboard(&view, Lang::Zh);
+        assert_eq!(kb["inline_keyboard"][0][0]["text"], "alpha");
+        assert_eq!(kb["inline_keyboard"][1][0]["text"], "显示更多");
     }
 
     #[test]

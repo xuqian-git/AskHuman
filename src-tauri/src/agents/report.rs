@@ -16,6 +16,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 use super::detect;
 use super::AgentKind;
@@ -57,6 +58,13 @@ pub fn run(args: &[String]) {
         }
     };
     let cwd = resolve_cwd(&env, stdin.as_ref());
+    let launch_id = env
+        .get(crate::integrations::agent_launch::LAUNCH_ID_ENV)
+        .cloned();
+    let prompt_sha256 = matches!(event, super::LifecycleEvent::TurnStart)
+        .then(|| initial_prompt(stdin.as_ref()))
+        .flatten()
+        .map(|prompt| format!("{:x}", Sha256::digest(prompt.as_bytes())));
 
     // 仅 activity 事件（Pre/PostToolUse）才尝试解析工具信息；其余事件无工具。
     let tool = if matches!(event, super::LifecycleEvent::Activity) {
@@ -79,6 +87,8 @@ pub fn run(args: &[String]) {
         pid: None,
         hint_pid,
         cwd,
+        launch_id,
+        prompt_sha256,
         ts: 0,
         tool,
         interject_poll,
@@ -119,10 +129,21 @@ pub(super) fn report_simple_event(
         pid: None,
         hint_pid,
         cwd,
+        launch_id: std::env::var(crate::integrations::agent_launch::LAUNCH_ID_ENV).ok(),
+        prompt_sha256: None,
         ts: 0,
         tool: None,
         interject_poll: false,
     });
+}
+
+fn initial_prompt(value: Option<&Value>) -> Option<&str> {
+    let value = value?;
+    ["prompt", "user_prompt", "userPrompt", "message"]
+        .into_iter()
+        .find_map(|key| value.get(key).and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
 }
 
 /// 输出各家 PreToolUse 的 deny JSON（stdout，随后调用方 exit 0；spec agent-interject D3）。

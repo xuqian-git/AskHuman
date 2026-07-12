@@ -342,11 +342,39 @@ pub struct ExperimentalConfig {
     pub vertical_questions: bool,
 }
 
+/// IM-created Agent task settings. The feature is opt-in because enabling it also requires the
+/// daemon to remain available while no local Agent is running.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AgentTasksConfig {
+    pub enabled: bool,
+    pub permission_prompt: AgentTaskPermission,
+}
+
+impl Default for AgentTasksConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            permission_prompt: AgentTaskPermission::Ask,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum AgentTaskPermission {
+    #[default]
+    Ask,
+    AgentDefault,
+    Yolo,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct AppConfig {
     pub general: GeneralConfig,
     pub channels: ChannelsConfig,
+    pub agent_tasks: AgentTasksConfig,
     /// 实验性功能开关区（spec D15）。
     pub experimental: ExperimentalConfig,
 }
@@ -570,6 +598,8 @@ mod tests {
         // 「按需发送」默认关；子开关「自动结束 watch」默认开。
         assert!(!c.channels.auto_activation);
         assert!(c.channels.auto_end_watch);
+        assert!(!c.agent_tasks.enabled);
+        assert_eq!(c.agent_tasks.permission_prompt, AgentTaskPermission::Ask);
     }
 
     #[test]

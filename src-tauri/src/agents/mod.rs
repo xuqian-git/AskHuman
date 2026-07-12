@@ -19,6 +19,7 @@ pub mod report;
 pub mod stop;
 pub mod title;
 pub mod transcript_full;
+pub mod workspaces;
 
 use serde::{Deserialize, Serialize};
 

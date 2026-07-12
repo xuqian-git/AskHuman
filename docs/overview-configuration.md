@@ -19,11 +19,13 @@
   - `daemonLifecycle`（`activity|keepalive`，默认 `activity`，Unix）
 - `channels.popup`：`enabled`、`width`、`height`、`rememberSize`
 - `channels.telegram`：`enabled`、`botToken`、`chatId`、`apiBaseUrl`
-- `channels.dingding`：`enabled`、`clientId`、`clientSecret`、`userId`、三种卡片模板 ID，以及文本附件内联/转 docx 开关
+- `channels.dingding`：`enabled`、`clientId`、`clientSecret`、`userId`、普通提问/确认/权限卡片模板 ID，以及文本附件内联/转 docx 开关；Agent 任务输入复用普通提问模板
 - `channels.feishu`：`enabled`、`appId`、`appSecret`、`openId`、`baseUrl`
 - `channels.slack`：`enabled`、`botToken`、`appToken`、`userId`
 - `channels.autoActivation`：IM 渠道按需发送，默认 `false`
 - `channels.autoEndWatch`：切离活跃 IM 后自动结束该渠道 watch，默认 `true`，仅在 `autoActivation` 开启时生效
+- `agentTasks.enabled`：从 IM 创建电脑端 Agent 任务，默认 `false`；开启会强制 `daemonLifecycle=keepalive` 并同步 daemon 登录项
+- `agentTasks.permissionPrompt`：`ask|agent-default|yolo`，默认 `ask`
 - `experimental.enabled`：显示实验区，默认 `false`
 - `experimental.verticalQuestions`：多问题纵向显示，默认 `false`
 
@@ -34,3 +36,6 @@
 - `AppConfig::save()` 负责原子写入，并将受管密钥迁移或写入系统钥匙串；只持有非密钥配置的调用不会清空既有密钥。
 
 密钥存储和 macOS 会话边界见 `docs/specs/secret-storage-keychain.md`。
+
+Agent 任务的 workspace 索引独立存于 `~/.askhuman/agent-workspaces.json`，一次性启动记录存于
+`~/.askhuman/state/agent-launches/`；二者都不是 `AppConfig`。

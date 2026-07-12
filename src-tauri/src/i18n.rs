@@ -434,6 +434,7 @@ pub fn tr(lang: Lang, key: &'static str) -> &'static str {
         // `{p}` 为渠道命令前缀：Slack 客户端拦截一切 `/` 输入，故 Slack 提示 `!` 前缀，其余渠道 `/`。
         "autoChannel.helpTitle" => pick(lang, "AskHuman is running. You can:", "AskHuman 正在运行，你可以："),
         "autoChannel.helpCmdStatus" => pick(lang, "• {p}status — list agents (working/idle)\n• {p}status <n> — what agent n is doing now", "• {p}status — 列出 agent（工作中/空闲）\n• {p}status <编号> — 查看该 agent 当前在做什么"),
+        "autoChannel.helpCmdNew" => pick(lang, "• {p}new — create a new Agent task on your computer", "• {p}new — 在电脑上创建新的 Agent 任务"),
         "autoChannel.helpCmdWatch" => pick(
             lang,
             "• {p}watch <n> — follow agent n with a live status card ({p}unwatch to stop)",
@@ -624,6 +625,7 @@ pub fn tr(lang: Lang, key: &'static str) -> &'static str {
         "select.btnDiff" => pick(lang, "Diff", "差异"),
         "select.btnStage" => pick(lang, "Stage", "暂存"),
         "select.btnTranscript" => pick(lang, "Transcript", "会话"),
+        "select.btnChoose" => pick(lang, "Choose", "选择"),
         "select.titleDiff" => pick(
             lang,
             "Pick an agent for unstaged diff:",

@@ -335,9 +335,39 @@ export interface ExperimentalConfig {
   verticalQuestions: boolean;
 }
 
+export type AgentTaskPermission = "ask" | "agent-default" | "yolo";
+
+export interface AgentTasksConfig {
+  enabled: boolean;
+  permissionPrompt: AgentTaskPermission;
+}
+
+export interface AgentTaskWorkspace {
+  path: string;
+  label: string;
+  lastUsedAt: number;
+  agents: AgentKind[];
+  pinned: boolean;
+  hidden: boolean;
+}
+
+export interface AgentTaskReadiness {
+  kind: AgentKind;
+  label: string;
+  command: string;
+  executable: string | null;
+  binaryReady: boolean;
+  lifecycleReady: boolean;
+  integrationReady: boolean;
+  integrationMode: string;
+  ready: boolean;
+  diagnostics: string[];
+}
+
 export interface AppConfig {
   general: GeneralConfig;
   channels: ChannelsConfig;
+  agentTasks: AgentTasksConfig;
   experimental: ExperimentalConfig;
 }
 
