@@ -5,7 +5,7 @@
 
 use crate::agents::AgentKind;
 use crate::config::AgentTaskPermission;
-use crate::integrations::agent_rules::{self, AgentTarget, Variant};
+use crate::integrations::agent_rules::{self, AgentTarget};
 use crate::integrations::mcp_config;
 use crate::integrations::{agent_lifecycle, agent_mode};
 use crate::paths;
@@ -85,8 +85,7 @@ pub fn readiness(kind: AgentKind) -> AgentReadiness {
     let lifecycle = agent_lifecycle::status(kind);
     let target = target(kind);
     let mode = agent_mode::current(target);
-    let integration_ready =
-        mode != agent_mode::Mode::None && !integration_needs_update(target, mode);
+    let integration_ready = !integration_unavailable(target, mode);
     let binary_ready = executable.is_some();
     let lifecycle_ready = lifecycle.supported && lifecycle.installed && !lifecycle.outdated;
     let mut diagnostics = Vec::new();
@@ -104,7 +103,7 @@ pub fn readiness(kind: AgentKind) -> AgentReadiness {
     }
     if !integration_ready {
         diagnostics.push(format!(
-            "{} AskHuman integration is disabled or outdated",
+            "{} AskHuman integration is disabled or unavailable",
             kind.label()
         ));
     }
@@ -122,24 +121,35 @@ pub fn readiness(kind: AgentKind) -> AgentReadiness {
     }
 }
 
-/// Integration freshness for task readiness deliberately excludes the independent PermissionRequest
-/// preference. Permission capability is diagnostic-only and must not hide an otherwise ready Agent.
-fn integration_needs_update(target: AgentTarget, mode: agent_mode::Mode) -> bool {
+/// Task readiness requires the active AskHuman transport to exist and be current. Prompt text and
+/// Subagent Guard drift stay visible in integration settings but do not block `/new`.
+fn integration_unavailable(target: AgentTarget, mode: agent_mode::Mode) -> bool {
+    integration_unavailable_from(
+        mode,
+        agent_rules::is_installed(target),
+        agent_mode::timeout_hook_supported(target),
+        agent_mode::timeout_hook_is_installed(target),
+        agent_mode::timeout_hook_needs_update(target),
+        mcp_config::is_installed(target),
+        mcp_config::needs_update(target),
+    )
+}
+
+fn integration_unavailable_from(
+    mode: agent_mode::Mode,
+    rule_installed: bool,
+    timeout_supported: bool,
+    timeout_installed: bool,
+    timeout_outdated: bool,
+    mcp_installed: bool,
+    mcp_outdated: bool,
+) -> bool {
     match mode {
         agent_mode::Mode::None => true,
         agent_mode::Mode::Cli => {
-            !agent_rules::is_installed(target)
-                || agent_rules::needs_update_variant(target, Variant::Cli)
-                || (agent_mode::timeout_hook_supported(target)
-                    && (!agent_mode::timeout_hook_is_installed(target)
-                        || agent_mode::timeout_hook_needs_update(target)))
+            !rule_installed || (timeout_supported && (!timeout_installed || timeout_outdated))
         }
-        agent_mode::Mode::Mcp => {
-            !agent_rules::is_installed(target)
-                || agent_rules::needs_update_variant(target, Variant::Mcp)
-                || !mcp_config::is_installed(target)
-                || mcp_config::needs_update(target)
-        }
+        agent_mode::Mode::Mcp => !rule_installed || !mcp_installed || mcp_outdated,
     }
 }
 
@@ -479,5 +489,45 @@ mod tests {
             sha256(b"hello"),
             "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
         );
+    }
+
+    #[test]
+    fn readiness_ignores_prompt_and_guard_freshness_but_requires_transport() {
+        assert!(!integration_unavailable_from(
+            agent_mode::Mode::Cli,
+            true,
+            true,
+            true,
+            false,
+            false,
+            false,
+        ));
+        assert!(!integration_unavailable_from(
+            agent_mode::Mode::Mcp,
+            true,
+            false,
+            false,
+            false,
+            true,
+            false,
+        ));
+        assert!(integration_unavailable_from(
+            agent_mode::Mode::Cli,
+            true,
+            true,
+            false,
+            false,
+            false,
+            false,
+        ));
+        assert!(integration_unavailable_from(
+            agent_mode::Mode::Mcp,
+            true,
+            false,
+            false,
+            false,
+            true,
+            true,
+        ));
     }
 }

@@ -142,9 +142,9 @@ AgentLaunchAdapter {
    - `$SHELL` 无效时回退 daemon PATH + 已知用户 bin 目录的固定文件检查。
 2. lifecycle probe：`agent_lifecycle::status(kind)` 必须 supported + installed + !outdated。
    - daemon 启动既有 `migrate_outdated` 先执行；若仍 outdated 则 unavailable，不在 `/new` 隐式改配置。
-3. integration probe：`agent_mode::current(target)` 必须为 CLI 或 MCP，且
-   `agent_mode::needs_update(target) == false`。None → integration_off；当前模式的受管产物缺失/过期 →
-   integration_outdated。这里只检查，不在 `/new` 自动 install/update。
+3. integration probe：`agent_mode::current(target)` 必须为 CLI 或 MCP，Rule/skill 必须已安装，且
+   CLI timeout Hook / MCP config 通道产物必须已安装并 current。Rule/skill 正文和 Subagent Guard
+   过期只保留集成更新提示，不阻止 `/new`；这里只检查，不自动 install/update。
 4. ready = binary && lifecycle && integration；PermissionRequest capability 与认证状态只作诊断，不门控。
 5. `readiness_all()` 并行探测四家，返回稳定 reason code：binary_missing、lifecycle_off、
    lifecycle_outdated、integration_off、integration_outdated、ready。
