@@ -2,7 +2,9 @@
 
 ## Before a complex task
 
-Read [`docs/overview.md`](docs/overview.md) first to understand the architecture and project layout. When the task is complete, update `docs/overview.md` so it stays accurate.
+Read [`docs/overview.md`](docs/overview.md) first to understand the architecture and project layout.
+Its [“文档边界”](docs/overview.md#文档边界) section defines what belongs in the main overview versus supplementary overview, spec, and plan documents.
+When the task is complete, check whether the change made any overview or referenced spec inaccurate and update only the appropriate document; do not edit the main overview when the repository-wide map and invariants are unchanged.
 
 ## Git worktree / parallel development
 

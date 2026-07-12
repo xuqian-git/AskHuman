@@ -1,12 +1,17 @@
 # 需求：引入常驻 Daemon 架构（CLI 瘦客户端 + Daemon + GUI Helper）
 
-> 状态：设计已确认（review 后按计划实现）
+> 状态：Unix 主路径已实现；非 Unix 仍走单进程回退，Windows named pipe Daemon 尚未落地。
 > 关联计划：`docs/plans/daemon-architecture.md`
 > 影响面：**全局架构级**。这不是单一渠道需求，会重塑运行模型，影响后续所有需求。
 
+> **当前实现补充（2026-07）**：本文保留最初迁移决策与协议设计。后续已加入 Slack Router、Popup
+> 预热、graceful drain、主动 IM 入站和统一 GUI Host；当前代码地图见 `docs/overview.md`，专项边界见
+> `docs/specs/popup-prewarm.md`、`docs/specs/daemon-graceful-drain.md`、`docs/specs/menu-bar-tray.md`。
+> 本文 §6 的示例帧是设计期协议草图，当前消息真值以 `src-tauri/src/ipc/mod.rs` 为准。
+
 ## 1. 背景与动机
 
-当前 `AskHuman` 是**单进程**模型：每次 CLI 调用都是一个独立进程，进程内按配置并行启动各 Channel（本地弹窗 popup / Telegram / 钉钉 / 飞书），首个终态结果生效（抢答），输出后退出。
+迁移前 `AskHuman` 是**单进程**模型：每次 CLI 调用都是一个独立进程，进程内按配置并行启动各 Channel（本地弹窗 popup / Telegram / 钉钉 / 飞书），首个终态结果生效（抢答），输出后退出。
 
 这个模型有两类根本性问题：
 
@@ -18,7 +23,7 @@
 
 ## 2. 目标
 
-- 把 IM 类 Channel（Telegram / 钉钉 / 飞书）与抢答协调器迁入常驻 Daemon；每种长连接全局仅一条、常热复用。
+- 把 IM 类 Channel（Telegram / 钉钉 / 飞书 / Slack）与抢答协调器迁入常驻 Daemon；每种长连接全局仅一条、常热复用。
 - `AskHuman` CLI 退化为**瘦客户端**：解析入参 → 提交任务给 Daemon → 流式取回结果打到 stdout → 按终态映射退出码。
 - 弹窗 GUI 拆为**独立的短命进程 GUI Helper**，使 Daemon 自身不必跑 GUI 事件循环。
 - 维持**单一可执行文件**：同一二进制按子命令/参数切换角色。
@@ -27,7 +32,8 @@
 
 ## 3. 架构总览
 
-三类进程（均为同一个 `AskHuman` 二进制的不同角色），经本地 IPC 通信：
+核心提问链路的三类进程（均为同一个 `AskHuman` 二进制的不同角色），经本地 IPC 通信。后续增加的
+GUI Host 负责设置、历史、Agent、Interject 窗口与托盘，不进入每次提问的数据面：
 
 ```
                  钉钉 Stream        飞书 WS        Telegram
@@ -90,8 +96,8 @@
 | A11 | 请求上下文（D-B） | `-f` 解析留在 CLI（输出绝对路径 → **不传 cwd**，并保留「文件不存在即退 1」）；**硬性上送 source name**（来自调用方环境变量 `ASKHUMAN_ENV_SOURCE_NAME`）；上送 CLI 解析好的 `lang`（使 `auto` 跟随调用方而非 Daemon）；`request_id` 由 **Daemon 分配**（权威，用于临时目录）。 |
 | A12 | 配置实时生效（D-F） | Daemon **监听 `~/.askhuman/config.json`**（`notify`，去抖、处理原子写/rename）：变更即重载 + 比对差异重连/增删 IM 连接 + 刷新缓存；并经 Daemon↔GUI IPC 向活动 GUI Helper 下发 `configChanged` → 弹窗实时切主题/语言。独立设置窗口仍在自身进程内更新自己。 |
 | P1 | 自启 + 单实例 | CLI 连不上 socket → detach 拉起 `daemon run`，轮询等可连再连。`daemon run` 启动先抢 `flock(daemon.lock)`：抢不到=已有活 Daemon → 退出（`start` 幂等）。抢到后清理 stale socket 再 bind。 |
-| P2 | 版本治理 | 两层并存：`protocol_version`（手动维护，管 IPC 不兼容时强制换）+ **二进制指纹**（`current_exe()` 的 `mtime+size`，自动，管「改了逻辑但没 bump 版本」的 dev 日常）。指纹/协议不一致 → Daemon drain 后退出、CLI 用新二进制重新拉起。开关 `ASKHUMAN_DAEMON_AUTORESTART=0` 可关闭自动换新。 |
-| P3 | 空闲退出 | 默认按需 + 空闲退出：无活动请求且无已连客户端，持续 **5 分钟**后自动退（退出前发 WS Close、清理锁/socket）。人在环里的题算「活动请求」，不会被空闲计时杀掉。未来「渠道主动发起任务」开启时转为常驻（`daemon start --resident` 或由配置控制）。 |
+| P2 | 版本治理 | 两层并存：`protocol_version`（管 IPC 不兼容）+ **二进制内容指纹**（内容哈希，按路径/mtime/size 缓存，路径或时间变化不等于内容变化）。指纹/协议不一致 → Daemon graceful drain 后退出，CLI 用新二进制重新拉起。开关 `ASKHUMAN_DAEMON_AUTORESTART=0` 可关闭自动换新。 |
+| P3 | 空闲退出 | 默认 `general.daemonLifecycle=activity`：无在途请求、无工作中 Agent、无活跃 watch/需保活窗口连接时按空闲策略退出；人在环里的题不会被空闲计时杀掉。`keepalive` 模式跳过空闲退出并安装登录项。 |
 | P4 | 崩溃中途 | Daemon 在请求中途意外死亡 → CLI 连接断开 → 该请求判失败，CLI **退出码 3 + 明确报错**（不静默重试交互题）。 |
 
 ## 5. 进程角色详述

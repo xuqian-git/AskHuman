@@ -1,8 +1,12 @@
 # 需求：弹窗预热（方案6 —— 进程池压「WebView/页面加载」大头）
 
-> 状态：设计已与用户对齐（2026-06，访谈两轮 + 机制确认），待计划评审后实施。
+> 状态：已实现（Unix，默认开启；无显示、池空或并发请求透明回退冷路径）。
 > 关联：`docs/specs/popup-launch-performance.md`（§4 方案6、§6.3 预热分析、§7 度量方法论）。
 > 实现计划：`docs/plans/popup-prewarm.md`。
+
+> **实现期补充**：热 helper 的 `AppState` 是待命期只读托管态，不回写领用请求上下文；本次请求的
+> `project/source/agent_*` 保存在 `WarmPopup.show`。`popup_init`、`open_history` 等需要上下文的 command
+> 必须优先读取该领用槽，再回退 `AppState`。这条边界避免热弹窗误用空项目或旧上下文。
 
 ## 1. 背景与目标
 

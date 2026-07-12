@@ -1,8 +1,13 @@
 # 需求：菜单栏状态图标 + 统一 GUI 宿主进程
 
-> 状态：方案访谈完成，待审（定稿）
+> 状态：已实现（macOS/Linux 桌面；Windows 不支持）。
 > 关联计划：`docs/plans/menu-bar-tray.md`
-> 影响面：新增单实例 **GUI 宿主进程**（隐藏角色 `--gui-host`，承载托盘图标 + 设置/历史/Agent 窗口）；改造既有窗口入口（CLI `--settings`/`--history`/`agents monitor` 与弹窗导航按钮）为「路由到宿主」；daemon 生命周期（按需拉起宿主）与 IPC 协议（增量，PROTOCOL_VERSION 不变）；`config.rs` 新增三态 `general.menuBarIcon`；新增宿主自有 IPC（`gui-host.sock`）；新增登录项集成（仅「一直显示」）；新增菜单栏图标资源；设置页「通用」Tab。**不改**正常提问流程的 stdout 契约、退出码语义、既有 IPC 兼容性。
+> 影响面：新增单实例 **GUI 宿主进程**（隐藏角色 `--gui-host`，承载托盘图标 + 设置/历史/Agent/Interject 窗口）；改造既有窗口入口（CLI `--settings`/`--history`/`agents monitor` 与弹窗导航按钮）为「路由到宿主」；daemon 生命周期（按需拉起宿主）与 IPC 协议（增量，PROTOCOL_VERSION 不变）；`config.rs` 新增三态 `general.menuBarIcon`；新增宿主自有 IPC（`gui-host.sock`）；新增登录项集成（仅「一直显示」）；新增菜单栏图标资源；设置页「通用」Tab。**不改**正常提问流程的 stdout 契约、退出码语义、既有 IPC 兼容性。
+
+> **实现期补充（2026-07）**：GUI Host 后续增加每 session 唯一的 Interject 窗口；`TrayState` 增加待答
+> 请求与 Agent 摘要，使菜单可聚焦 Popup、打开插话 composer 或聚焦终端。托盘菜单由 `app/tray_menu.rs`
+> 按稳定 key 做最小 diff，daemon socket 用文件监听唤醒重连。`general.daemonLifecycle=keepalive` 是与
+> `menuBarIcon` 正交的 daemon 常驻策略，GUI Host 与 daemon 使用各自登录项。
 
 ## 1. 背景与动机
 
@@ -16,14 +21,14 @@ daemon 是**刻意「无 GUI」**的：不初始化 AppKit/GTK、不占主线程
 
 ## 2. 目标（一句话）
 
-提供一个默认关闭的**三态**开关（关 / 活动时显示 / 一直显示）；开启后在菜单栏/托盘显示状态图标并提供状态与快捷操作；同时由一个**单实例 GUI 宿主进程**统一承载设置/历史/Agent 窗口，保证全局每类唯一。
+提供一个默认关闭的**三态**开关（关 / 活动时显示 / 一直显示）；开启后在菜单栏/托盘显示状态图标并提供状态与快捷操作；同时由一个**单实例 GUI 宿主进程**统一承载设置/历史/Agent/Interject 窗口，保证全局每类唯一。
 
 ## 3. 已确认决策
 
 | 编号 | 决策项 | 结论 |
 |---|---|---|
 | D1 | 平台范围 | **macOS + Linux 桌面**（Tauri 跨平台托盘）。Windows **不支持**（无 daemon，单进程回退），设置项隐藏。Linux 为 **best-effort**：需图形会话（DISPLAY/Wayland）+ 托盘宿主（StatusNotifierItem/appindicator）；headless 服务器无图标、不报错、不影响 daemon。 |
-| D2 | 统一 GUI 宿主进程 | 新增**单实例**宿主进程（隐藏角色 `AskHuman --gui-host`），全局承载**设置 / 历史 / Agent 状态**窗口（每类唯一）+ 菜单栏状态项。daemon 保持无 GUI、不承载任何窗口。用 **Tauri 2 tray-icon**（原生菜单）。macOS 设 **accessory**（不占 Dock/Cmd-Tab）。 |
+| D2 | 统一 GUI 宿主进程 | 新增**单实例**宿主进程（隐藏角色 `AskHuman --gui-host`），全局承载**设置 / 历史 / Agent 状态 / Interject**窗口（每类或每 session 唯一）+ 菜单栏状态项。daemon 保持无 GUI、不承载任何窗口。用 **Tauri 2 tray-icon**（原生菜单）。macOS 设 **accessory**（不占 Dock/Cmd-Tab）。 |
 | D3 | 彻底路由（全局单窗，Q2=彻底） | 所有打开窗口的入口都路由到宿主：CLI `AskHuman --settings`/`--history`/`agents monitor`、**弹窗导航栏「设置/历史」按钮**、托盘菜单项。宿主在则聚焦/新建对应窗口，不再各开进程。 |
 | D4 | 三态开关 | `general.menuBarIcon` ∈ `off`(默认) \| `active` \| `always`。设置「通用」Tab；Windows 隐藏。<br>• **off**：无图标（宿主仍按需承载窗口，保证单窗）。<br>• **active（活动时显示）**：daemon 运行时显示图标；无窗口且 daemon 空闲退出后图标消失、宿主退出；不装登录项。<br>• **always（一直显示）**：图标常驻（宿主开机自启 + 常驻）。**图标本身不给 daemon 保活**，daemon 仍按空闲规则退出；退出后图标仍在但显示「停止」态，宿主被动重连，daemon 再次运行即恢复实时态。 |
 | D5 | 窗口续命 daemon（统一规则） | **任意 GUI 窗口打开期间**给（**正在运行的**）daemon 续命；**最后一个窗口关闭后** daemon 重新计时、到点空闲退出。**图标本身从不续命**。打开窗口**不会主动启动** daemon（Agent 状态窗口除外——它需要 daemon 数据，会 `ensure_running` 拉起）。该规则与 tray 模式、与是否显示图标无关。 |

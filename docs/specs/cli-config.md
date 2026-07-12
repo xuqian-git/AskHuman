@@ -1,5 +1,7 @@
 # CLI 配置与 Agent 集成（无 GUI / headless 场景）— 需求
 
+> 状态：已实现；后续新增 `agents stop`，其余命令面保持本文设计。
+
 ## 背景与动机
 
 当前「渠道配置」「Agent 集成（Rules / 超时 Hook / 生命周期 Hook）安装」都只能通过 GUI
@@ -42,8 +44,9 @@
 - `agents update [<agent>]` —— 更新单家或全部当前非 None / 有托管残留的整包。
 - `agents permission <claude|codex> [on|off]` —— 查询或设置独立 PermissionRequest 审批 capability。
 - `agents lifecycle <agent> [on|off]` —— 查询或设置独立生命周期追踪 capability。
+- `agents stop <claude|codex|cursor> [on|off]` —— 查询或设置自然 Stop 时的结束确认；Grok 不支持。
 - `agents show [<agent>]` —— **手动集成**：打印参考提示词 + 粘贴位置 + mode/rules/timeout/
-  permission/MCP/lifecycle 状态。
+  permission/MCP/lifecycle/stop 状态。
 - agent ∈ cursor | claude | codex | grok（grok 仅 none|mcp）。旧 `install/uninstall` 和逐产物写 flags
   已移除：不得部分执行，非零退出并给 mode/update/permission/lifecycle 迁移提示。
 

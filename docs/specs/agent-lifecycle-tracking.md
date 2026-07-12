@@ -1,10 +1,15 @@
 # 需求：Agent 生命周期追踪 + 状态窗口（实验性功能）
 
-> 状态：方案设计（待评审）
+> 状态：已实现（Unix），当前覆盖 Claude Code / Codex / Cursor / Grok。
 > 关联计划：`docs/plans/agent-lifecycle-tracking.md`
 > 关联调研：`demo/agent-lifecycle/FINDINGS.md`（三家 hook 事件/env、Cursor 双触发去重、进程存活轮询为唯一不漏的结束信号、身份相关结论、各家标题来源——全部实测）
 > 影响面：daemon（新增 agent 注册表 + 存活轮询 + 持久化 + 闲退守卫 + 订阅推送）、IPC（`ipc/mod.rs` 新增消息）、CLI（`cli/mod.rs` 新增 `__agent-hook` 与 `agents` 子命令）、客户端（`client/` ask 顺带上报活动）、新 GUI 窗口（`?view=agents` + `app` 角色 + `commands`）、Hook 集成（新增三家 lifecycle hook 安装/卸载/状态 + Codex 信任哈希 Rust 实现）、配置（`config.rs` 新增 `experimental`）、设置前端（`SettingsView.vue` 实验区 + 新 Tab）、i18n。
 > **不改**：stdout 洁净契约、退出码语义（0/1/3）、既有 timeout hook 行为、IM 渠道与弹窗逻辑、graceful-drain 既有判据。daemon 协议仅增量演进、向后兼容。
+
+> **当前实现补充（2026-07）**：设置入口已移到常显的「高级」Tab，不再受实验开关门控；状态窗口命令为
+> `AskHuman agents monitor` 并由统一 GUI Host 承载。生命周期状态现被 IM `/status`、watch、插话、托盘和
+> daemon 闲退共同消费；Grok 的兼容 Hook 双触发由 `agents/report.rs` 去重。后文保留最初三家方案的决策过程，
+> D25–D27 与 §8 是 Codex shared app-server 的现行补充。
 
 ## 1. 背景
 

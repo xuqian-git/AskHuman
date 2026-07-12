@@ -1,6 +1,6 @@
 # 需求：Dev Instance —— 多 WorkTree 并行开发隔离
 
-> 状态：设计讨论中（已落部分决策，计划见 `docs/plans/dev-instance-parallel.md`）
+> 状态：已实现；操作与 Agent 约束见 `docs/agent-worktree-setup.md`。
 > 影响面：路径解析（`paths`）、CLI 入口改道、daemon 生命周期与配置/密钥加载、`install.sh`、可选 `dev` 子命令；**不改**主环境默认「每用户单 Daemon + 生产渠道」契约。
 
 ## 1. 背景

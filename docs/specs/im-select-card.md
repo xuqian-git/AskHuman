@@ -1,5 +1,13 @@
 # 通用「单选卡」+ /watch·/status·/unwatch 可点选（IM）
 
+> 状态：四渠道均已实现；钉钉使用固定模板，飞书/Telegram/Slack 支持就地刷新或变身。
+>
+> **后续演进（2026-07）**：同一抽象已扩展到 `/msg <内容>` 目标选择，并为工作中 Agent 显示运行时长；
+> Watch 跟底只在 picker 仍是会话最后一条消息时抑制，避免忘选旧卡长期阻塞。`autoActivation` 开启时，
+> watch/status/msg 等点选会按 `docs/specs/im-auto-end-watch.md` 激活当前渠道。详见
+> `docs/plans/im-msg-select-card.md`。下文的“MVP/后续”和“点选不改活跃槽”是最初分期记录，不再代表
+> 当前支持范围。
+
 > IM 里 `/watch`、`/status`、`/unwatch` **无参**时，不再回一段纯文本编号列表（需用户肉眼找编号、再
 > 重敲一次带编号的命令），而是**推一张「单选卡」**：卡上把可选 agent 列成一组**可点按钮**，用户
 > **单击某个 agent 即触发**对应动作（开始 watch / 查看 status / 取消 unwatch）。
@@ -7,8 +15,8 @@
 > 「单选卡」被设计为一个**与具体命令无关的通用组件**（用户明确要求：后续还有别的命令会复用同一张
 > 卡）。命令侧只提供「选项列表 + 选中后做什么」，卡片渲染 / 点击回调路由是共享的。
 >
-> **分期**：飞书先做完整 MVP；Telegram / Slack / 钉钉后续批次接同一套抽象（钉钉因卡片模板绑定有
-> 特殊处理，见「渠道差异」）。
+> **实现分期（历史记录）**：飞书先做完整 MVP，随后 Telegram / Slack / 钉钉接入同一套抽象；钉钉因
+> 卡片模板绑定采用特殊处理，见「渠道差异」。当前四渠道均已完成。
 
 ## 决策记录（用户经 AskHuman 定案）
 
@@ -131,7 +139,7 @@
 
 ## 渠道差异（同一 `select` 抽象，各渠道渲染器 + 传输）
 
-| 维度 | 飞书（MVP） | Telegram（后续） | Slack（后续） | 钉钉（后续，需模板） |
+| 维度 | 飞书 | Telegram | Slack | 钉钉（固定模板） |
 |---|---|---|---|---|
 | 载体 | 卡片 JSON 2.0，每选项一个 `button`（callback `{select:idx}`） | inline keyboard（每选项一行按钮，`callback_data=select:idx`） | Block Kit `actions`（button，`action_id=select`、`value=idx`；单块 ≤25） | 互动卡片高级版**专用模板**（变量含选项列表/按钮 — 需新建） |
 | 点选就地变 watch 卡 | ✅ oneshot 同步回卡（消息内容自由重写） | ✅ `editMessageText` 重写 | ✅ `chat.update` 重写 | ❌ 模板绑定 → **另发 watch 卡 + 单选卡定格「已选择 [n]」** |

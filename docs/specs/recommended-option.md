@@ -1,6 +1,6 @@
 # 需求：推荐选项显式声明（`-o!`）
 
-> 状态：已实现（待用新版二进制实测）
+> 状态：已实现并覆盖 Popup、历史与四个 IM 渠道。
 > 关联计划：`docs/plans/recommended-option.md`
 > 影响面：CLI 入参（`cli/args.rs`、`cli/mod.rs`、`cli/help.rs`）、数据模型（`models.rs` + TS 类型）、弹窗 / 历史详情 UI、四个 IM 渠道的选项展示、i18n、参考提示词（`prompts.rs`）。**不改** stdout 结果区块契约、退出码语义、daemon 协议结构（仅 `Question` 内字段演进且向后兼容）。
 

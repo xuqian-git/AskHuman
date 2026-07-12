@@ -1,7 +1,12 @@
 # Agent 插话（Interject）：工作中主动向 agent 发消息
 
-> 状态：需求 + 调研结论 + 设计定案（2026-07-06，与用户四轮 AskHuman 问答定形）
+> 状态：已实现（Claude Code / Codex / Cursor；Grok 不支持）。
 > 实现计划见 `docs/plans/agent-interject.md`。
+
+> **实现期补充（2026-07）**：GUI composer、状态窗口、托盘和 IM `/msg` 均已接入；发送入口收敛为
+> **仅工作中、非 Grok**。`/msg <内容>` 可按唯一 watch 目标直发，否则复用通用单选卡选择工作中的 Agent。
+> 排队消息真正被 PreToolUse hook 消费后，Daemon 向原 IM 来源回推“已阅读”回执；即时送达、撤回、覆盖或
+> 会话结束时未消费的消息不回执。
 
 ## 1. 需求
 
@@ -154,10 +159,10 @@ Cursor 若按其文档语义改用 `agent_message` 也不断；代价是 Cursor 
 
 ### D7 入口与 composer 窗口
 
-- **AgentsView**：每个非 grok、非 ended 的 agent 卡片加「发送消息」按钮；有待送达时显示徽标 + 撤回。
+- **AgentsView**：每个工作中、非 grok 的 agent 卡片加「发送消息」按钮；有待送达时显示徽标 + 撤回。
 - **托盘**：「Agent 状态（工作 w · 空闲 i）」父项改为**子菜单**——首项「打开状态窗口」（原点击行为）
   + 分隔线 + 逐 agent 子菜单（标签＝类型+项目名，工作中在前，ended 不列）；每个 agent 下挂：
-  **发送消息**（非 grok）、**聚焦终端**（沿用现有 pid+受支持终端条件）。「置为空闲」需二次确认，
+  **发送消息**（仅工作中、非 grok）、**聚焦终端**（沿用现有 pid+受支持终端条件）。「置为空闲」需二次确认，
   不进托盘、仍留状态窗口。`TrayState` 扩展 agent 摘要列表；菜单 diff 机制（`tray_menu.rs`）沿用。
 - **composer 窗口**：GUI 宿主新窗口类型（`WindowKind::Interject`，URL 带 session 参数），
   **每 session 全局唯一**（聚焦或新建），观感按弹窗风格做；托盘/AgentsView 都经宿主路由
@@ -172,7 +177,7 @@ Cursor 若按其文档语义改用 `agent_message` 也不断；代价是 Cursor 
 （composer_open 是连接态不持久化）；daemon 换新（graceful drain 升级为常态）/重启后恢复，
 会话结束清理对应条目。
 
-### D9 IM `/msg`（后续里程碑）
+### D9 IM `/msg`（已实现）
 
 命令语义见 D2。与 `/status` 同门控（daemon 存活即可用、不依赖 autoActivation 开关）；编号复用
 `/status` 的稳定 seq；grok 会话回「该 agent 不支持插话」。help 文案按渠道前缀规则（Slack 用 `!`）。

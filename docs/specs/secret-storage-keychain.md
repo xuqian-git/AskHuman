@@ -4,19 +4,26 @@
 > 关联计划：`docs/plans/secret-storage-keychain.md`
 > 影响面：配置读写、设置页、daemon 配置热重载、构建/发布签名。不改对外任务契约与渠道协议。
 
+> **当前实现补充（2026-07）**：密钥范围已由三项扩为五项，加入 Slack `botToken` / `appToken`。
+> 非密钥路径使用 `AppConfig::load_without_secrets()`，避免帮助、版本、主题等操作触发钥匙串读取。
+> macOS 钥匙串读取还依赖 Aqua 安全会话：非 Aqua 来源启动 daemon 时经用户 GUI launchd 域拉起，
+> 使后台 daemon 能静默读取登录钥匙串。本地安装签名确定性优先 `Developer ID Application`。
+
 ## 1. 背景与动机
 
-`AskHuman` 把渠道凭据保存在 `~/.askhuman/config.json`。其中三项是**真正的密钥**：
+`AskHuman` 把渠道凭据保存在 `~/.askhuman/config.json`。其中五项是**真正的密钥**：
 
 - 钉钉 `channels.dingding.clientSecret`（AppSecret）
 - 飞书 `channels.feishu.appSecret`（App Secret）
 - Telegram `channels.telegram.botToken`（Bot Token）
+- Slack `channels.slack.botToken`（Bot Token）
+- Slack `channels.slack.appToken`（App-Level Token）
 
 问题：这些密钥以**明文**写在固定路径。任何能读到该文件的程序即可直接拿到密钥。最典型的威胁是「用户自己安装的第三方/恶意程序，直接读固定配置路径」。
 
 参考做法（OpenClaw 钉钉插件）：插件本身不存密钥，而是用 **SecretRef 间接层**（`env`/`file`/`exec`）把「密钥存哪、怎么保护」交给宿主/用户，并对字段做 UI/日志脱敏。其核心思想是**不要把密钥明文写进配置**。
 
-本需求采用对 GUI 用户更友好的等价方案：把三项密钥迁入**操作系统密钥库**（macOS 钥匙串 / Windows 凭据管理器 / Linux Secret Service），配置文件不再保存密钥真值。
+本需求采用对 GUI 用户更友好的等价方案：把五项密钥迁入**操作系统密钥库**（macOS 钥匙串 / Windows 凭据管理器 / Linux Secret Service），配置文件不再保存密钥真值。
 
 ## 2. 已完成的前置项（阶段 A，本需求的一部分）
 
@@ -27,7 +34,7 @@
 
 ## 3. 目标
 
-- 三项密钥（钉钉 AppSecret、飞书 App Secret、Telegram Bot Token）迁入系统密钥库；`config.json` 在密钥库模式下这些字段**留空**。
+- 五项密钥（钉钉 AppSecret、飞书 App Secret、Telegram Bot Token、Slack Bot/App Token）迁入系统密钥库；`config.json` 在密钥库模式下这些字段**留空**。
 - 现有读取密钥的代码（渠道连接、配置热重载比对等）**无需大改**：内存中的 `AppConfig` 始终携带「解析后的密钥真值」。
 - **自动迁移**：启动时若发现 `config.json` 里还有明文密钥，搬进密钥库并清空字段。
 - **优雅回退**：密钥库不可用（如无 Secret Service 的 Linux/无头环境）时，密钥写回 `config.json`（0600 明文）并告警，保证功能可用。
@@ -44,7 +51,7 @@
 ## 5. 密钥库存储与解析模型（关键设计）
 
 ### 5.1 范围
-仅三项密钥进密钥库；ID 类（clientId/appId/chatId/openId/userId）与 base_url/api_base_url、各开关仍留 `config.json`。
+仅五项密钥进密钥库；ID 类（clientId/appId/chatId/openId/userId）与 base_url/api_base_url、各开关仍留 `config.json`。
 
 ### 5.2 条目命名
 - 服务名（service）：`com.naituw.humaninloop`（与 bundle identifier 一致）。
@@ -52,6 +59,8 @@
   - `channels.dingding.clientSecret`
   - `channels.feishu.appSecret`
   - `channels.telegram.botToken`
+  - `channels.slack.botToken`
+  - `channels.slack.appToken`
 
 ### 5.3 解析优先级（读取）
 对每个密钥，按以下顺序取「有效值」：
@@ -75,7 +84,7 @@
 
 ## 6. 设置页交互
 
-- 加载设置时，后端返回的配置中三项密钥**为空**，另返回「是否已配置」标志（每项一个布尔）。前端据此显示占位「已保存 / Saved」。
+- 加载设置时，后端返回的配置中五项密钥**为空**，另返回「是否已配置」标志（每项一个布尔）。前端据此显示占位「已保存 / Saved」。
 - 保存时区分三种意图：**不变**（用户没动，留占位/空）、**覆盖**（用户输入了新值）、**清除**（用户点「清除」按钮）。
   - 不变：不动密钥库与字段。
   - 覆盖：按 5.4 写入。
@@ -123,7 +132,7 @@ macOS 密钥库按「指定要求（DR）」判断调用方可信。用稳定证
 
 ## 10. 验收标准
 
-- 三项密钥保存后，`config.json` 中对应字段为空，密钥库中存在对应条目；功能（钉钉/飞书/Telegram 收发）正常。
+- 五项密钥保存后，`config.json` 中对应字段为空，密钥库中存在对应条目；功能（钉钉/飞书/Telegram/Slack 收发）正常。
 - 历史明文配置启动后被自动迁移（字段清空、条目就位）。
 - 临时禁用/移除密钥库（模拟不可用）→ 回退明文 0600 + 告警，功能仍可用。
 - 设置页：已配置显示「已保存」；留空保存不改密钥；输入覆盖；清除删除条目。

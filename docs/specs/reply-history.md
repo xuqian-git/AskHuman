@@ -1,7 +1,12 @@
 # 需求：回复历史记录（弹窗查看「我最近的回复」）
 
-> 状态：已确认（待按计划实现）
+> 状态：已实现；后续搜索、来源上下文与 GUI Host 演进见下方实现补充。
 > 关联计划：`docs/plans/reply-history.md`
+
+> **当前实现补充（2026-07）**：历史窗口现由统一 GUI Host 承载并监听 `history.jsonl` 跨进程刷新；
+> 搜索覆盖 message、题干、回答、附件、workspace、Agent、来源与渠道。记录新增可选 `agentKind`，普通 CLI
+> 取调用环境，MCP 来源可在 daemon 异步探测后于 Coordinator 落盘前回填；旧记录缺字段时按 `source`
+> best-effort 兼容。以下“独立窗口”指独立 WebView 窗口，不再要求独立进程。
 
 ## 1. 背景
 

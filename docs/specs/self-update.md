@@ -1,12 +1,16 @@
 # 需求：版本自更新机制（self-update）
 
-> 状态：方案访谈完成，待审
+> 状态：已实现；Direct/npm 更新、Daemon 推送与 drain 生效链路已落地。
 > 关联计划：`docs/plans/self-update.md`
 > 影响面：新增 `update/` 模块；daemon 生命周期与 IPC 协议（增量，PROTOCOL_VERSION 不变）；前端弹窗 `PopupView` 与设置 `SettingsView`；`commands.rs`；`release.yml` + 新增 `cliff.toml`；发布流程（更新日志生成）。**不改**正常提问流程的 stdout 契约、退出码语义。
 
+> **实现期补充**：GitHub API 客户端支持 `ASKHUMAN_GITHUB_TOKEN` / `GITHUB_TOKEN` 鉴权，403/429
+> 统一标记为 rate-limited 并向前端给出手动下载/配置 token 的友好提示；普通 npm registry 与资产下载
+> 客户端不携带该鉴权头。
+
 ## 1. 背景与动机
 
-当前升级只能靠手动重装（`npm i -g` 或 `install.sh`）。希望应用内自带「检查更新 + 一键更新」，并在弹窗中提示新版本；同时更新**不能打断**用户正在进行的作答。
+设计本功能时，升级只能靠手动重装（`npm i -g` 或 `install.sh`）。本功能为应用增加「检查更新 + 一键更新」，并在弹窗中提示新版本；同时更新**不能打断**用户正在进行的作答。
 
 幸运的是，daemon 已具备**优雅排空换新（graceful drain）**：盘上二进制内容指纹一变，daemon 会在「在途请求全部完结后」自动退出，由下一个请求拉起新二进制（见 `docs/specs/daemon-graceful-drain.md`）。因此**自更新的核心只是把新二进制写到盘上**，「答完所有弹窗后再换新、不打断在途」由既有 drain 天然完成——**不调用进程 restart**。
 

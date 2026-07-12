@@ -1,6 +1,6 @@
 # 需求：多问题弹窗改「纵向列表」
 
-> 状态：已确认（待按计划实现）
+> 状态：已实现，由 `experimental.verticalQuestions` 门控，默认关闭。
 > 关联计划：`docs/plans/multi-question-vertical.md`
 > 关联既有：`docs/specs/multi-question.md`（多问题基础能力）
 

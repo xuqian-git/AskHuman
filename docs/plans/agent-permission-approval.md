@@ -1,6 +1,6 @@
 # Agent 权限请求经本地弹窗 / IM 审批
 
-> 状态：计划已确认（2026-07-11）  
+> 状态：已实现（2026-07）
 > 范围：macOS / Linux；Claude Code + Codex 原生 `PermissionRequest` 闭环  
 > 实现前提：只代答原本即将出现的权限弹窗；除原样应用 Claude 提供的 allow suggestion 外，
 > AskHuman 不自行构造或改写 Agent 权限规则

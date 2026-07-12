@@ -1,6 +1,6 @@
 # 需求：Daemon 优雅排空换新（graceful drain）
 
-> 状态：方案已确认，计划待审
+> 状态：已实现并用于 Daemon 换新、stop 与 restart。
 > 关联计划：`docs/plans/daemon-graceful-drain.md`
 > 影响面：Daemon 生命周期（`daemon/mod.rs`）、IPC 协议消息（`ipc/mod.rs`，仅增量字段/枚举值，PROTOCOL_VERSION 不变）、CLI 客户端（`client/mod.rs`）、`daemon stop/restart/status` 子命令、`scripts/install.sh`（及 `install-windows.ps1`）。**不改**正常提问流程的任何行为、stdout 契约、退出码语义。
 

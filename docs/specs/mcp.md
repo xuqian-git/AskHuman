@@ -1,8 +1,14 @@
-# 需求：MCP 模式支持（Codex / Claude Code / Cursor）
+# 需求：MCP 模式支持（Codex / Claude Code / Cursor / Grok）
 
-> 状态：设计已与用户对齐，待审（未开工）
+> 状态：已实现，覆盖 Codex / Claude Code / Cursor / Grok。
 > 关联计划：`docs/plans/mcp.md`
-> 影响面：新增 `AskHuman mcp` 子命令（STDIO MCP server）、新增 MCP 版参考提示词、新增 MCP 配置集成（三家配置文件读写）、设置「Agent」Tab 自动集成改为三态模式选择、`agents`/`doctor` CLI 子命令纳入 MCP 状态、i18n、新增依赖 `rmcp`。**不改** stdout 结果区块契约、退出码语义、daemon IPC 协议、四个 IM 渠道、弹窗与历史逻辑。
+> 影响面：新增 `AskHuman mcp` 子命令（STDIO MCP server）、新增 MCP 版参考提示词、新增 MCP 配置集成（四家配置文件读写）、设置「Agent」Tab 自动集成改为三态模式选择、`agents`/`doctor` CLI 子命令纳入 MCP 状态、i18n、新增依赖 `rmcp`。**不改** stdout 结果区块契约、退出码语义、daemon IPC 协议、四个 IM 渠道、弹窗与历史逻辑。
+
+> **实现期补充（2026-07）**：Grok 仅支持 None/MCP，产物为 interaction-protocol skill +
+> `~/.grok/config.toml`，并写 per-tool `ask` 超时。MCP 客户端可能清空 Agent 环境变量，子 CLI 因此把
+> caller pid 上送 Daemon；Daemon 进程树探测只按 pid 刷新**已有** lifecycle session，绝不新建会话。
+> rmcp cancellation 会终止子 CLI，socket EOF 再取消 Daemon 请求。Codex 配置还把 `mcp__askhuman`
+> 最小加入 Code Mode `direct_only_tool_namespaces`，确保 ask 在顶层阻塞；所有权记录防止卸载用户原有项。
 
 ## 1. 背景与动机
 
@@ -16,7 +22,7 @@
 - **Rust 官方 SDK `rmcp`**（0.16，`server` + `transport-io` + 宏）可低成本实现 STDIO server。
 - **MCP（STDIO）拿不到 turn 级生命周期**：MCP server 由客户端在 **session 期间**拉起常驻，协议无 turn-start/turn-end 通知，server 只在「工具被调用」时知情。故 MCP **替代不了** lifecycle hook 的 turn 追踪。
 
-因此本需求为三家 Agent 增加 **MCP 模式**，与现有 **CLI 模式**互斥（同一 agent 二选一）。
+因此本需求为四家 Agent 增加 **MCP 模式**，与现有 **CLI 模式**互斥；Grok 因 CLI harness 限制仅提供 MCP。
 
 ## 2. 目标形态
 
@@ -34,8 +40,8 @@
 | D3 | 启动方式 | 新增 busybox 角色子命令 `AskHuman mcp`（与 `daemon`/`--popup`/`__agent-hook` 并列），用 `rmcp` 跑 STDIO server |
 | D4 | 工具与 Schema | 单工具 `ask`，精简入参：`message`（**渲染为 Markdown**）、`questions[{question, options[{text, recommended}]}]`、`files[]`（见 §5）。`markdown`/`single`/`selectOnly` 三个开关**不在 MCP 暴露**：`markdown` 恒为 on，`single`/`selectOnly` 属脚本/纯文本场景，不适合 MCP 模型自助。`questions` / `options` 的 item schema 必须直接内联，`ask.inputSchema` 不得依赖本地 `$ref`，避免部分客户端 / Code Mode 把嵌套数组退化为 `Array<unknown>` |
 | D5 | 输出（结构化 + 图片直返）| `ask` 工具**声明 output schema** 并返回**结构化 JSON**（`action`/`channel`/`status?`/`answers[{questionIndex, selectedOptions, userInput?, files[]}]`）：内部子进程以 `--output json` 调用、解析后规整为 `structuredContent`（**剔除仅供脚本用的 `selectedIndices`**），并按 MCP 规范在 `content` 里附一段序列化 JSON 文本（向后兼容）。**取消时（`action:"cancel"`）顶层带 `status` 引导文案**（必须重新确认直到用户明确答复，不得当作放行），该字段同时落进 CLI `--output json`（见 §5）。人类回复中的图片读出后以 `ImageContent`(base64+mimeType) 一并放入 `content` 数组直返模型；非图片文件以路径出现在 JSON `files` 中 |
-| D6 | 超时 | MCP 模式**不需要超时 Hook**，但需按各家机制配置工具超时（否则长等待被取消）：**Codex** 写 `tool_timeout_sec=86400`(秒)+`startup_timeout_sec=30`；**Claude Code(CLI)** 默认 60s（MCP TS SDK `DEFAULT_REQUEST_TIMEOUT_MSEC`），故在 `mcpServers.askhuman` 写 `timeout=86400000`(**毫秒**,24h) 覆盖；**Cursor** 工具/elicitation 超时 ~60s **硬编码不可配置**（社区实测），无法支撑长等待，不写 timeout（Cursor 推荐 CLI 模式） |
-| D7 | MCP 配置落点 | **用户级全局**（与现有 Rules/Hook 一致）：Codex `~/.codex/config.toml`、Claude `~/.claude.json`（top-level `mcpServers`）、Cursor `~/.cursor/mcp.json` |
+| D6 | 超时 | MCP 模式**不需要超时 Hook**，但需按各家机制配置工具超时（否则长等待被取消）：**Codex** 写 `tool_timeout_sec=86400`(秒)+`startup_timeout_sec=30`；**Grok** 另写 `tool_timeouts = { ask = 86400 }`；**Claude Code(CLI)** 在 `mcpServers.askhuman` 写 `timeout=86400000`(**毫秒**,24h)；**Cursor** 工具/elicitation 超时 ~60s **硬编码不可配置**，不写 timeout（Cursor 推荐 CLI 模式） |
+| D7 | MCP 配置落点 | **用户级全局**（与现有 Rules/Hook 一致）：Codex `~/.codex/config.toml`、Grok `~/.grok/config.toml`、Claude `~/.claude.json`（top-level `mcpServers`）、Cursor `~/.cursor/mcp.json` |
 | D8 | 模式切换 | **一键切换**：切到另一模式时自动卸载旧模式全部产物，再安装新模式。选「未集成」= 卸载当前模式全部产物 |
 | D9 | turn 生命周期 | 保持**正交**：turn 追踪仍只靠现有实验性 lifecycle hook，可与 MCP 模式并行独立开启，互不影响（MCP 拿不到 turn 周期） |
 | D10 | 双版本提示词 | 新增 `prompts::mcp_reference()`：把「用 Shell 调 AskHuman、设 24h 超时、先跑 --agent-help」改为「调用 MCP 工具 `ask`」；其余交互纪律（必须提问、推荐选项、附件、结束前回执等）保留。手动集成卡支持 CLI/MCP 切换显示 |
