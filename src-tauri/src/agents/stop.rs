@@ -158,27 +158,18 @@ fn cursor_last_message_under(input: &Value, root: &Path) -> Option<String> {
     super::activity::resolve_last_assistant_text_from_path_raw(AgentKind::Cursor, &path)
 }
 
-/// Detect the end-turn marker on any independent line (line.trim() == marker).
+/// Detect the end-turn marker anywhere in the last assistant message.
 ///
-/// Agents sometimes put more text after the marker even though the prompt asks for a final line.
-/// Matching only a strict suffix caused Stop cards to reappear despite the marker being present.
-/// Same-line prefixes/suffixes and markdown wrapping still do not match.
+/// The prompt still asks agents to put it on a final independent line, but in practice they wrap
+/// it in markdown, glue punctuation, or write more text after it. Any occurrence of the exact
+/// marker substring is treated as user-confirmed end so the Stop card is not shown again.
 fn strip_confirmed_end_turn_marker(text: &str) -> (String, bool) {
     let marker = crate::prompts::USER_CONFIRMED_END_TURN_MARKER;
-    let mut found = false;
-    let mut kept: Vec<&str> = Vec::new();
-    for line in text.lines() {
-        if line.trim() == marker {
-            found = true;
-            continue;
-        }
-        kept.push(line);
-    }
-    if !found {
+    if !text.contains(marker) {
         return (text.to_string(), false);
     }
-    // Preserve interior newlines; drop trailing blank lines left by marker removal.
-    let cleaned = kept.join("\n").trim_end().to_string();
+    // Remove every occurrence; trim edges left by marker-only lines.
+    let cleaned = text.replace(marker, "").trim().to_string();
     (cleaned, true)
 }
 
@@ -394,7 +385,7 @@ mod tests {
     }
 
     #[test]
-    fn confirmed_end_turn_marker_matches_any_independent_line_and_is_stripped() {
+    fn confirmed_end_turn_marker_matches_any_substring_occurrence_and_is_stripped() {
         let marker = crate::prompts::USER_CONFIRMED_END_TURN_MARKER;
         for kind in [AgentKind::Claude, AgentKind::Codex] {
             let confirmed = last_assistant_message(
@@ -405,42 +396,37 @@ mod tests {
             assert_eq!(confirmed.display.as_deref(), Some("final report"));
         }
 
-        // Independent line with surrounding whitespace still counts.
-        let padded = last_assistant_message(
-            AgentKind::Codex,
-            &json!({"last_assistant_message": format!("done\n  {marker}  \n")}),
-        );
-        assert!(padded.user_confirmed_end_turn);
-        assert_eq!(padded.display.as_deref(), Some("done"));
-
-        // Marker need not be last: agents sometimes write more after it.
-        let mid = last_assistant_message(
-            AgentKind::Claude,
-            &json!({
-                "last_assistant_message": format!(
-                    "你已确认可以结束，这次就到这里。\n\n{marker}\n\n（后续补充不应再弹 Stop 卡）"
-                )
-            }),
-        );
-        assert!(mid.user_confirmed_end_turn);
-        assert_eq!(
-            mid.display.as_deref(),
-            Some("你已确认可以结束，这次就到这里。\n\n\n（后续补充不应再弹 Stop 卡）")
-        );
-
-        // Same-line glue / markdown wrapping must not count.
+        // Anywhere in the body counts — including markdown glue and text after the marker.
         for text in [
+            format!("done\n  {marker}  \n"),
             format!("prefix {marker}"),
             format!("quoted `{marker}`"),
             format!("**{marker}**"),
             format!("{marker}-suffix"),
+            format!("结束。\n\n{marker}\n\n后面还有字"),
         ] {
             let message =
                 last_assistant_message(AgentKind::Codex, &json!({"last_assistant_message": text}));
+            assert!(message.user_confirmed_end_turn, "should match: {text:?}");
             assert!(
-                !message.user_confirmed_end_turn,
-                "should not match: {text:?}"
+                !message
+                    .display
+                    .as_deref()
+                    .unwrap_or("")
+                    .contains(marker),
+                "marker should be stripped from display: {text:?}"
             );
+        }
+
+        // Near-misses without the exact substring must not count.
+        for text in [
+            "user_confirmed_end_turn".to_string(),
+            "[user_confirmed_end]".to_string(),
+            "no marker here".to_string(),
+        ] {
+            let message =
+                last_assistant_message(AgentKind::Codex, &json!({"last_assistant_message": text}));
+            assert!(!message.user_confirmed_end_turn, "should not match: {text:?}");
         }
 
         let long = format!("{}\n{marker}", "你".repeat(2_001));
