@@ -1088,6 +1088,8 @@ mod tests {
         assert!(event_time(&v).is_some());
     }
 
+    /// Optional smoke against a local Claude transcript. CI runners have no
+    /// `~/.claude/projects`, so skip instead of failing the Linux-only `cargo test` job.
     #[test]
     fn real_claude_file_has_times() {
         let home = dirs::home_dir().expect("home");
@@ -1111,7 +1113,10 @@ mod tests {
                 }
             }
         }
-        let path = found.expect("need a claude jsonl sample");
+        let Some(path) = found else {
+            eprintln!("skip real_claude_file_has_times: no ~/.claude/projects/*.jsonl sample");
+            return;
+        };
         let doc = load_path(AgentKind::Claude, &path).expect("load");
         let with_time = doc
             .events
