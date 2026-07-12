@@ -376,7 +376,6 @@ export default {
     selectHint: "Select an entry to view its details.",
     statusSubmitted: "Submitted via {channel}",
     statusCancelled: "Cancelled via {channel}",
-    cancelledNote: "This request was cancelled; no answers were recorded.",
     unanswered: "Not answered",
     questionIndexed: "Question {i}/{n}",
     question: "Question",
@@ -399,6 +398,8 @@ export default {
       feishu: "Feishu",
       telegram: "Telegram",
       slack: "Slack",
+      caller: "Caller",
+      system: "System",
       unknown: "Unknown",
     },
     time: {

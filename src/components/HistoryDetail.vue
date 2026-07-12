@@ -112,11 +112,6 @@ function buildPlainText(): string {
     for (const f of e.message.files) lines.push(`- ${f.name}`);
   }
 
-  if (isCancel.value) {
-    lines.push("", t("history.cancelledNote"));
-    return lines.join("\n");
-  }
-
   e.questions.forEach((q, i) => {
     lines.push("");
     lines.push(
@@ -126,12 +121,8 @@ function buildPlainText(): string {
     );
     if (q.message.trim()) lines.push(q.message.trimEnd());
 
-    const a = answerOf(i);
-    if (isAnswerEmpty(a)) {
-      lines.push(t("history.unanswered"));
-      return;
-    }
     if (q.predefinedOptions.length) {
+      const a = answerOf(i);
       const sel = a?.selectedOptions ?? [];
       lines.push(t("history.copyOptions"));
       for (const opt of q.predefinedOptions) {
@@ -139,6 +130,11 @@ function buildPlainText(): string {
         const rec = opt.recommended ? ` (${t("popup.recommended")})` : "";
         lines.push(`- [${mark}] ${opt.text}${rec}`);
       }
+    }
+    const a = answerOf(i);
+    if (isAnswerEmpty(a)) {
+      lines.push(t("history.unanswered"));
+      return;
     }
     if ((a?.userInput ?? "").trim()) {
       lines.push(t("history.copyReply"), (a?.userInput ?? "").trimEnd());
@@ -438,80 +434,75 @@ watch(
       </div>
     </template>
 
-    <!-- Cancelled: no answers -->
-    <p v-if="isCancel" class="cancelled-note">{{ t("history.cancelledNote") }}</p>
+    <!-- Per-question + answer (read-only). Cancelled requests still show the original prompt. -->
+    <div
+      v-for="(q, i) in entry.questions"
+      :key="i"
+      class="q-block"
+      :class="{ 'with-divider': showMessage || isMulti || i > 0 }"
+    >
+      <div class="q-header">
+        <span class="q-label">{{
+          isMulti
+            ? t("history.questionIndexed", { i: i + 1, n: entry.questions.length })
+            : t("history.question")
+        }}</span>
+      </div>
 
-    <!-- Per-question + answer (read-only) -->
-    <template v-else>
       <div
-        v-for="(q, i) in entry.questions"
-        :key="i"
-        class="q-block"
-        :class="{ 'with-divider': showMessage || isMulti || i > 0 }"
-      >
-        <div class="q-header">
-          <span class="q-label">{{
-            isMulti
-              ? t("history.questionIndexed", { i: i + 1, n: entry.questions.length })
-              : t("history.question")
-          }}</span>
+        v-if="entry.isMarkdown && q.message"
+        class="markdown-body"
+        v-html="questionHtml(q.message)"
+        @click="onContentClick"
+      ></div>
+      <pre v-else-if="q.message" class="plain-body">{{ q.message }}</pre>
+
+      <!-- Options (selected highlighted, read-only) -->
+      <div v-if="q.predefinedOptions.length" class="options">
+        <div
+          v-for="(opt, oi) in q.predefinedOptions"
+          :key="oi"
+          class="option"
+          :class="{ selected: (answerOf(i)?.selectedOptions ?? []).includes(opt.text) }"
+        >
+          <span class="check">{{ (answerOf(i)?.selectedOptions ?? []).includes(opt.text) ? "✓" : "" }}</span>
+          <span class="label"><span v-if="opt.recommended" class="rec-badge"><span class="rec-badge-pill"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3z"></path><path d="M7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"></path></svg>{{ t("popup.recommended") }}</span></span>{{ opt.text }}</span>
+        </div>
+      </div>
+
+      <!-- Unanswered -->
+      <p v-if="isAnswerEmpty(answerOf(i))" class="unanswered">{{ t("history.unanswered") }}</p>
+
+      <template v-else>
+        <!-- Reply text -->
+        <div v-if="(answerOf(i)?.userInput ?? '').trim()" class="reply-block">
+          <div class="reply-caption">{{ t("history.reply") }}</div>
+          <pre class="reply-text">{{ answerOf(i)?.userInput }}</pre>
         </div>
 
-        <div
-          v-if="entry.isMarkdown && q.message"
-          class="markdown-body"
-          v-html="questionHtml(q.message)"
-          @click="onContentClick"
-        ></div>
-        <pre v-else-if="q.message" class="plain-body">{{ q.message }}</pre>
-
-        <!-- Unanswered -->
-        <p v-if="isAnswerEmpty(answerOf(i))" class="unanswered">{{ t("history.unanswered") }}</p>
-
-        <template v-else>
-          <!-- Options (selected highlighted, read-only) -->
-          <div v-if="q.predefinedOptions.length" class="options">
-            <div
-              v-for="(opt, oi) in q.predefinedOptions"
-              :key="oi"
-              class="option"
-              :class="{ selected: (answerOf(i)?.selectedOptions ?? []).includes(opt.text) }"
-            >
-              <span class="check">{{ (answerOf(i)?.selectedOptions ?? []).includes(opt.text) ? "✓" : "" }}</span>
-              <span class="label"><span v-if="opt.recommended" class="rec-badge"><span class="rec-badge-pill"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3z"></path><path d="M7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"></path></svg>{{ t("popup.recommended") }}</span></span>{{ opt.text }}</span>
-            </div>
+        <!-- Reply images -->
+        <div v-if="(answerOf(i)?.images ?? []).length" class="thumbs">
+          <div v-for="(img, ii) in answerOf(i)?.images ?? []" :key="ii" class="thumb" :title="img" @click="open(img)">
+            <img v-if="thumbs[img]" :src="thumbs[img]" alt="" />
+            <div v-else class="thumb-missing">{{ t("history.imageUnavailable") }}</div>
           </div>
+        </div>
 
-          <!-- Reply text -->
-          <div v-if="(answerOf(i)?.userInput ?? '').trim()" class="reply-block">
-            <div class="reply-caption">{{ t("history.reply") }}</div>
-            <pre class="reply-text">{{ answerOf(i)?.userInput }}</pre>
+        <!-- Reply files -->
+        <div v-if="(answerOf(i)?.files ?? []).length" class="reply-files">
+          <div
+            v-for="(f, fi) in answerOf(i)?.files ?? []"
+            :key="fi"
+            class="reply-file"
+            :title="f"
+            @click="open(f)"
+          >
+            <span class="rf-icon">📄</span>
+            <span class="rf-name">{{ fileName(f) }}</span>
           </div>
-
-          <!-- Reply images -->
-          <div v-if="(answerOf(i)?.images ?? []).length" class="thumbs">
-            <div v-for="(img, ii) in answerOf(i)?.images ?? []" :key="ii" class="thumb" :title="img" @click="open(img)">
-              <img v-if="thumbs[img]" :src="thumbs[img]" alt="" />
-              <div v-else class="thumb-missing">{{ t("history.imageUnavailable") }}</div>
-            </div>
-          </div>
-
-          <!-- Reply files -->
-          <div v-if="(answerOf(i)?.files ?? []).length" class="reply-files">
-            <div
-              v-for="(f, fi) in answerOf(i)?.files ?? []"
-              :key="fi"
-              class="reply-file"
-              :title="f"
-              @click="open(f)"
-            >
-              <span class="rf-icon">📄</span>
-              <span class="rf-name">{{ fileName(f) }}</span>
-            </div>
-          </div>
-        </template>
-      </div>
-    </template>
+        </div>
+      </template>
+    </div>
   </div>
 </template>
 
@@ -772,10 +763,6 @@ watch(
   color: var(--text-primary);
   white-space: pre-wrap;
   word-break: break-word;
-}
-.cancelled-note {
-  font-size: 13px;
-  color: var(--text-secondary);
 }
 /* Thumbs */
 .thumbs {

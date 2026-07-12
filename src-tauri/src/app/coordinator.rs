@@ -264,9 +264,10 @@ impl Coordinator {
 
     /// Cancel the whole request (CLI disconnected / `daemon stop`): interrupt every channel as
     /// `Cancelled(source)` so all cards finalize to a cancelled state and the popup closes.
-    /// Unlike `submit`, this does not render or deliver a result (no one is waiting). No-op if a
-    /// result was already submitted. `source` is the localized cancel source ("Caller"; empty = generic).
-    pub fn cancel_request(&self, source: String) {
+    /// Unlike `submit`, this does not render or deliver a result (no one is waiting), but it does
+    /// preserve the original prompt in reply history. No-op if a result was already submitted.
+    /// `source` is the localized cancel source; `source_channel_id` is its stable history id.
+    pub fn cancel_request(&self, source: String, source_channel_id: &str) {
         if !self.terminal.try_set(()) {
             return;
         }
@@ -280,6 +281,13 @@ impl Coordinator {
                 }
             }
         }
+        // A disconnected caller still created a real request. Keep its prompt and predefined
+        // options in history just like a human-initiated Cancel; only answers are empty.
+        self.record_history(
+            &inner.request,
+            &ChannelResult::cancel(source_channel_id),
+            &[],
+        );
     }
 
     /// 一个落败渠道完成收尾时调用：未归零则减一（用于提前结束收尾窗口）。
@@ -334,9 +342,8 @@ impl Coordinator {
 
     /// Append a reply-history entry for this terminal result (best-effort side channel).
     ///
-    /// Every result reaching `finish` is user-initiated (a Send, or a popup/IM Cancel); system
-    /// cancels go through `cancel_request` and carry no result, so they never get here — which is
-    /// exactly the "only user-initiated cancels" policy. Image/file values are stored as paths.
+    /// `finish` records user-initiated terminal results; caller/system cancellation records the
+    /// same request snapshot through `cancel_request`. Image/file values are stored as paths.
     fn record_history(
         &self,
         request: &AskRequest,

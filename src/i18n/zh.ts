@@ -360,7 +360,6 @@ export default {
     selectHint: "选择一条记录查看详情。",
     statusSubmitted: "由 {channel} 提交",
     statusCancelled: "由 {channel} 取消",
-    cancelledNote: "该请求已被取消，未记录回答。",
     unanswered: "未作答",
     questionIndexed: "问题 {i}/{n}",
     question: "问题",
@@ -383,6 +382,8 @@ export default {
       feishu: "飞书",
       slack: "Slack",
       telegram: "Telegram",
+      caller: "调用方",
+      system: "系统",
       unknown: "未知",
     },
     time: {

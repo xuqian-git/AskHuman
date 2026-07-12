@@ -533,7 +533,7 @@ impl RequestRegistry {
     pub fn cancel_all_requests(&self) -> usize {
         let inner = self.inner.lock().unwrap();
         for entry in inner.by_id.values() {
-            entry.coordinator.cancel_request(String::new());
+            entry.coordinator.cancel_request(String::new(), "system");
             entry.cancel.notify_waiters();
         }
         for entry in inner.confirm_by_id.values() {

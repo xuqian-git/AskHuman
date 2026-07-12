@@ -115,7 +115,7 @@ AskHuman/
                              cursor_mcp_json/claude_json（MCP 配置）
                              + gui_host_sock/gui_host_lock（统一 GUI 宿主自有 socket / 单实例锁）
       project.rs             项目识别：从 cwd 向上找首个 .git 根，回退 cwd（回复历史归类）
-      history.rs             回复历史存储：~/.askhuman/history.jsonl（每行一条 JSON，追加写 + 文件锁裁剪/清空）
+      history.rs             回复历史存储：~/.askhuman/history.jsonl（每行一条 JSON，追加写 + 文件锁裁剪/清空；取消记录同样保留原问题和预设选项，回答为空）
       prompts.rs             参考提示词：`cli_reference()`（CLI 版，含 24h 超时/`--agent-help` 等 shell 指引）+
                              `mcp_reference()`（MCP 版，去 shell 指引、改引用 `ask` MCP 工具）
       mcp/                   `AskHuman mcp` STDIO MCP server（rmcp）：mod.rs(tokio runtime + serve) /

@@ -1464,7 +1464,7 @@ mod unix_impl {
                 // The IM finalize runs in the channels' own tasks (which outlive this entry), so the
                 // daemon need not wait here — it stays alive.
                 let caller = crate::i18n::tr(lang, "channel.sourceCaller").to_string();
-                entry.coordinator.cancel_request(caller);
+                entry.coordinator.cancel_request(caller, "caller");
                 entry.cancel.notify_waiters();
                 state.registry.remove(&request_id);
                 // 不标记扰动：取消只是就地 PATCH 提问卡定格，不产生新消息（不淹没 watch 卡）。
