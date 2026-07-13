@@ -2,6 +2,11 @@
 
 按具体任务 / 需求记录待办与当前进展。任务 / 需求完成后删除其 section（历史留在 git）。
 
+## 【进行中】落实项目 review 的 P0+P1 优化（分支 chore/project-review-2026-07）
+
+报告见 `docs/investigations/project-review-2026-07.md`。用户定案：P0+P1 全做，
+rmcp 直接迁 2.x、前端 dev 链 major 实际升级。P2 留待择机。
+
 ## 待办：Cursor 全局 Rules 迁移为用户级 always-on Skill
 
 调查与候选设计见 `docs/investigations/cursor-global-rule-user-skill.md`。无 workspace folder 的 Cursor IDE
