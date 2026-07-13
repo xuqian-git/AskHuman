@@ -33,9 +33,8 @@
   /* 推荐 Badge 文字色：浅色下用更鲜艳但仍清晰的绿（比 #34c759 更沉、比 #1a7f37 更亮更显眼）。 */
   --rec-badge-fg: #1c9b41;
 
-  /* 毛玻璃色罩：叠在系统材质上加深底色。0.3 时用户反馈文字看不清，加深到 0.45
-     （仍保留通透感；再高会接近实底失去玻璃质感）。 */
-  --vibrancy-tint: rgba(255, 255, 255, 0.45);
+  /* 毛玻璃色罩：叠在系统材质上加深底色。0.3 时用户反馈文字看不清；0.45 偏深，定为 0.4。 */
+  --vibrancy-tint: rgba(255, 255, 255, 0.4);
 
   /* Markdown 配色（对齐 Swift HTMLMarkdownRenderer） */
   --md-link: #0a84ff;
@@ -63,7 +62,7 @@
   /* 深色下亮绿在深底上对比度已足够，沿用 accent-green。 */
   --rec-badge-fg: #30d158;
 
-  --vibrancy-tint: rgba(0, 0, 0, 0.45);
+  --vibrancy-tint: rgba(0, 0, 0, 0.4);
 
   --md-link: #4ea1ff;
   --md-code-bg: rgba(255, 255, 255, 0.12);
@@ -90,7 +89,7 @@
     --accent-green: #30d158;
     --rec-badge-fg: #30d158;
 
-    --vibrancy-tint: rgba(0, 0, 0, 0.45);
+    --vibrancy-tint: rgba(0, 0, 0, 0.4);
 
     --md-link: #4ea1ff;
     --md-code-bg: rgba(255, 255, 255, 0.12);
