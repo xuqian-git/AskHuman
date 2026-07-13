@@ -56,6 +56,66 @@ AskHuman "…"                           # auto re-exec into this instance
 
 Default instance config is popup-only and never reads the main keychain. Optional machine-level channel presets live in `~/.askhuman/dev-presets/` with exclusive leases.
 
+## Checklist: adding a new IM channel
+
+There is no single `Channel` trait yet — a new channel touches many match arms. Grep an
+existing channel (`slack` is the newest and most complete) and mirror every hit. Roughly:
+
+**Rust backend**
+
+- [ ] `src-tauri/src/<channel>/` — client crate-module: API client (`client.rs`; wrap the
+  unified request exits with `track()` reporting to `channels::health`), long-connection
+  router (`router.rs` / `ws.rs`), watch cards (`watch.rs`), select cards (`select.rs`),
+  confirm adapter (`confirm.rs`), markdown conversion if the platform needs it.
+- [ ] `src-tauri/src/channels/<channel>.rs` — ask/answer channel adapter (message + file
+  delivery, card building, conversation binding), declared in `channels/mod.rs`.
+- [ ] `src-tauri/src/config.rs` — `channels.<channel>` config struct + defaults.
+- [ ] `src-tauri/src/secrets.rs` — keychain migration/storage for the channel's secrets
+  (and update the module doc comment listing managed secrets).
+- [ ] `src-tauri/src/autochannel.rs` — channel id/label, auto-activation participation.
+- [ ] `src-tauri/src/daemon/unix_impl/` — `mod.rs` `ensure_<channel>_router` (report/clear
+  channel health on connect), plus per-channel arms in `detect.rs`, `watch.rs`,
+  `select.rs`, `inbound.rs`.
+- [ ] `src-tauri/src/confirm/` — `transport.rs` / `choice_cards.rs` arms.
+- [ ] `src-tauri/src/i18n.rs` — channel label + user-visible strings (en/zh).
+- [ ] `src-tauri/src/cli/` — `channel_cmd.rs`, `config_cmd.rs`, `cfgio.rs`, `output.rs`,
+  `help.rs` mentions; `dev_presets.rs` if dev-instance presets should cover it.
+
+**Frontend**
+
+- [ ] `src/lib/types.ts` — config type mirror; `src/lib/ipc.ts` if a test command exists.
+- [ ] `src/views/SettingsView.vue` — channel card (enable switch, credential fields, test
+  button, R7 issue banner via `channelIssueText`, "Setup guide" link via
+  `CHANNEL_SETUP_DOCS`) **and** entries in the settings search index (`searchIndex`).
+- [ ] `src/i18n/zh.ts` + `src/i18n/en.ts` — settings strings.
+
+**Docs**
+
+- [ ] `docs/wiki/<channel>-setup.md` + `.en.md`, linked from both READMEs.
+- [ ] `docs/overview-configuration.md` field map; `docs/overview.md` if the repo-wide map
+  changes; a spec under `docs/specs/` for non-trivial platform behaviors.
+
+## Checklist: adding a new agent family
+
+`AgentKind` is a closed enum matched in many places. Grep an existing kind (`grok` is the
+newest) and mirror every hit. Roughly:
+
+- [ ] `src-tauri/src/agents/mod.rs` — `AgentKind` variant + `as_str`/`label`/`parse`.
+- [ ] `src-tauri/src/agents/` — per-kind logic in `detect.rs` (process-chain detection),
+  `title.rs`, `transcript_full.rs`, `activity.rs`, `registry.rs`, `report.rs`, `stop.rs`.
+- [ ] `src-tauri/src/agents/interject.rs` — decide whether the family supports interjection
+  (grok is excluded: no reliable relay channel).
+- [ ] `src-tauri/src/integrations/` — `agent_lifecycle.rs` (hook install paths),
+  `agent_stop.rs`, `agent_launch.rs` (IM `/new` agent tasks), rules/skills installers.
+- [ ] `src-tauri/src/prompts.rs` — interaction-protocol artifact for the family.
+- [ ] `src-tauri/src/cli/` — `doctor.rs` readiness checks, `agents_cmd.rs`.
+- [ ] `src-tauri/src/app/gui_host.rs` — nothing usually (labels go through
+  `AgentKind::label`), but verify tray agent submenu renders the new kind.
+- [ ] Frontend: `src/views/SettingsView.vue` integration tab (install docs URL in
+  `AGENT_INSTALL_DOCS`, hook/rule cards), `src/i18n/*`, `src/lib/types.ts` if the kind
+  appears in typed payloads.
+- [ ] Docs: `docs/overview.md` agent integration section, wiki page if setup differs.
+
 ## Release
 
 Versions across the repo are kept in sync by `scripts/bump-version.mjs` (writes `Cargo.toml`, `tauri.conf.json`, root `package.json`, the npm main package, and the platform subpackages, including the main package's lock on subpackage versions):
