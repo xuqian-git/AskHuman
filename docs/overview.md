@@ -43,10 +43,10 @@ AskHuman/
     index.html               前端入口、首帧关键样式与平台探测
     main.ts                  挂载 App、引入全局样式
     App.vue                  按 URL 路由 popup/settings/history/agents/interject
-    views/PopupView.vue      提问与回答弹窗
+    views/PopupView.vue      提问与回答弹窗（编排层；状态与区块组件在 views/popup/）
     views/AgentsView.vue     Agent 生命周期状态窗口
     views/InterjectView.vue  Agent 插话编辑器
-    views/SettingsView.vue   通用、Agent、渠道、高级与实验设置
+    views/SettingsView.vue   设置页（编排层；各 tab 组件与域逻辑在 views/settings/）
     views/HistoryView.vue    回复历史列表、搜索与筛选
     components/HistoryDetail.vue  单条历史的只读详情
     lib/history.ts           历史记录展示相关纯函数
