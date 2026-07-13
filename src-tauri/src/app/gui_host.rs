@@ -124,6 +124,9 @@ pub struct HostState {
     pub agents_sub: Mutex<Option<Arc<Notify>>>,
     /// 启动时的二进制指纹（盘上内容变化即触发宿主换新）。
     pub startup_fp: Fingerprint,
+    /// 盘上二进制已与启动时不同（由 15s 轮询维护）：有窗口挡住自动换新时，
+    /// 托盘显示「重启以完成更新」项（B2）；也作为关最后一个窗口即刻换新的提示（B1）。
+    pub binary_stale: AtomicBool,
 }
 
 impl HostState {
@@ -169,6 +172,7 @@ pub fn setup(app: &mut tauri::App, config: &AppConfig) -> tauri::Result<()> {
         keepalive: Mutex::new(None),
         agents_sub: Mutex::new(None),
         startup_fp: lifecycle::current_fingerprint(),
+        binary_stale: AtomicBool::new(false),
     });
 
     // 初始活动策略（macOS）：有图标 → accessory（不占 Dock/Cmd-Tab）；off → regular（窗口正常入坞）。
@@ -306,9 +310,11 @@ pub fn refresh_tray(app: &AppHandle) {
     let lang = state.lang();
     // 是否有任一家开启了生命周期追踪：未开启时隐藏 Agent 状态相关菜单项（入口 + 忙闲行）。
     let lifecycle_on = crate::integrations::agent_lifecycle::any_installed();
+    // 盘上二进制已换新但被打开的窗口挡住自动 re-exec → 菜单出现「重启以完成更新」项（B2）。
+    let stale = state.binary_stale.load(Ordering::SeqCst);
 
     // 内容签名：与上次相同 → 整次跳过，不触碰托盘（连 diff 都省，确保展开的菜单纹丝不动）。
-    let sig = menu_signature(up, lang, &data, lifecycle_on);
+    let sig = menu_signature(up, lang, &data, lifecycle_on, stale);
     if state.menu_sig.lock().unwrap().as_deref() == Some(sig.as_str()) {
         return;
     }
@@ -321,7 +327,7 @@ pub fn refresh_tray(app: &AppHandle) {
     // 菜单：把期望节点列表 diff 应用到**同一个**菜单对象——文字变化只 set_text、结构变化才最小增删，
     // 绝不整段重建（整段重建会关掉已展开菜单）。
     if let Some(tm) = state.tray_menu.lock().unwrap().as_mut() {
-        tm.apply(build_specs(up, lang, &data, lifecycle_on));
+        tm.apply(build_specs(up, lang, &data, lifecycle_on, stale));
     }
     let tip = if up {
         i18n::tr(lang, "tray.tooltipRunning").to_string()
@@ -336,7 +342,7 @@ pub fn refresh_tray(app: &AppHandle) {
 /// 决定菜单/图标渲染结果的全部输入拼成的签名：与上次相同即「整次跳过」（菜单已是正确状态，连 diff 都省，
 /// 确保展开的菜单纹丝不动）；不同才进入 diff。**必须覆盖 `build_specs` 与图标/tooltip 的每个输入**，
 /// 否则真变化会被误跳过。uptime 取分钟级文案，避免秒级微变把每次推送都判为「有变化」。
-fn menu_signature(up: bool, lang: Lang, data: &TrayData, lifecycle_on: bool) -> String {
+fn menu_signature(up: bool, lang: Lang, data: &TrayData, lifecycle_on: bool, stale: bool) -> String {
     // 待答子菜单内容（id+预览）也入签名：列表/预览变化即触发 diff。
     let pending: String = data
         .pending_requests
@@ -371,7 +377,7 @@ fn menu_signature(up: bool, lang: Lang, data: &TrayData, lifecycle_on: bool) -> 
         .collect::<Vec<_>>()
         .join(";");
     format!(
-        "{:?}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+        "{:?}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
         lang,
         up as u8,
         data.version,
@@ -390,6 +396,7 @@ fn menu_signature(up: bool, lang: Lang, data: &TrayData, lifecycle_on: bool) -> 
         },
         lifecycle_on as u8,
         data.pending as u8,
+        stale as u8,
         pending,
         agents,
         issues,
@@ -425,7 +432,7 @@ fn fmt_uptime(secs: u64) -> String {
 /// 生成「期望的托盘菜单节点列表」（声明式，spec D7）：状态区只读条目 + 操作区可点条目。
 /// 每个节点带稳定 `key`（可点条目的 `key` 即事件路由 id）；由 `TrayMenu::apply` diff 应用——
 /// 文字变化只 `set_text`、结构变化才最小增删，绝不整段重建（整段重建会关掉已展开菜单）。
-fn build_specs(up: bool, lang: Lang, data: &TrayData, lifecycle_on: bool) -> Vec<Node> {
+fn build_specs(up: bool, lang: Lang, data: &TrayData, lifecycle_on: bool, stale: bool) -> Vec<Node> {
     let mut nodes: Vec<Node> = Vec::new();
 
     // —— 状态区（只读）——
@@ -618,6 +625,14 @@ fn build_specs(up: bool, lang: Lang, data: &TrayData, lifecycle_on: bool) -> Vec
             true,
         ));
     }
+    // 盘上二进制已换新但窗口开着（自动换新被挡）→ 用户可主动重启宿主完成更新（B2）。
+    if stale {
+        nodes.push(Node::item(
+            "host_restart",
+            i18n::tr(lang, "tray.restartHost").to_string(),
+            true,
+        ));
+    }
     nodes.push(Node::separator("sep.daemon"));
     if up {
         nodes.push(Node::item(
@@ -780,6 +795,14 @@ pub fn on_menu_event(app: &AppHandle, id: &str) {
                 }
             });
         }
+        // B2：用户主动重启宿主完成二进制换新（窗口开着也重启——用户已知情选择）。
+        "host_restart" => {
+            let mode = app
+                .try_state::<HostState>()
+                .map(|s| s.mode())
+                .unwrap_or(MenuBarIconMode::Active);
+            restart_host(app, mode);
+        }
         "start_daemon" => {
             tauri::async_runtime::spawn(async {
                 let _ = crate::client::ensure_running().await;
@@ -881,6 +904,11 @@ pub fn recount_windows(app: &AppHandle) {
         stop_agents_subscription(app);
     }
     update_keepalive(app);
+    // B1：最后一个窗口关闭时立即检查二进制换新（不等 15s 轮询），避免长命宿主拿旧版
+    // 继续服务。off 模式除外——下方 evaluate_exit 本来就会退出，re-exec 徒增一次空跑。
+    if n == 0 && state.mode() != MenuBarIconMode::Off {
+        maybe_refresh_binary(app);
+    }
     evaluate_exit(app);
 }
 
@@ -1278,9 +1306,22 @@ fn start_binary_watch(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         loop {
             tokio::time::sleep(Duration::from_secs(15)).await;
+            update_binary_stale(&app);
             maybe_refresh_binary(&app);
         }
     });
+}
+
+/// 维护「盘上二进制已换新」标记；发生翻转时重绘托盘——有窗口挡住自动换新时，
+/// 菜单会出现「重启以完成更新」项（B2），换新完成后自动消失。
+fn update_binary_stale(app: &AppHandle) {
+    let Some(state) = app.try_state::<HostState>() else {
+        return;
+    };
+    let stale = lifecycle::current_fingerprint() != state.startup_fp;
+    if state.binary_stale.swap(stale, Ordering::SeqCst) != stale {
+        refresh_tray(app);
+    }
 }
 
 /// 盘上二进制内容变化且无打开窗口 → 换到新版（不打断在用窗口）。
@@ -1295,11 +1336,14 @@ fn maybe_refresh_binary(app: &AppHandle) {
     if lifecycle::current_fingerprint() == state.startup_fp {
         return;
     }
-    let mode = state.mode();
+    restart_host(app, state.mode());
+}
+
+/// 用盘上（新）二进制重启宿主：释放单实例锁；always 交 launchd KeepAlive 重启，其它自我 re-exec。
+fn restart_host(app: &AppHandle, mode: MenuBarIconMode) {
     release_lock(); // 让新实例可抢锁。
     #[cfg(target_os = "macos")]
     {
-        // always：交 launchd KeepAlive 用新二进制重启；其它：自我 re-exec。
         if mode == MenuBarIconMode::Always {
             app.exit(0);
             return;

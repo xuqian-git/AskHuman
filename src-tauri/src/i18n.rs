@@ -922,6 +922,12 @@ pub fn tr(lang: Lang, key: &'static str) -> &'static str {
             "Update to v{v} (applies after answering)",
             "更新到 v{v}（答完后生效）",
         ),
+        // 盘上二进制已换新但窗口开着（自动换新被挡）时的宿主重启项（B2）。
+        "tray.restartHost" => pick(
+            lang,
+            "Restart Menu Bar App to Finish Update",
+            "重启菜单栏应用以完成更新",
+        ),
         "tray.startDaemon" => pick(lang, "Start Daemon", "启动 daemon"),
         "tray.restartDaemon" => pick(lang, "Restart Daemon", "重启 daemon"),
         "tray.stopDaemon" => pick(lang, "Stop Daemon", "停止 daemon"),
