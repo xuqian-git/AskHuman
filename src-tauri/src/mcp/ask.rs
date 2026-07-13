@@ -18,7 +18,7 @@
 use base64::Engine;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{CallToolResult, Content, Implementation, ServerCapabilities, ServerInfo};
+use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerInfo};
 use rmcp::{tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -172,7 +172,7 @@ structured content; any images the human attaches are returned as image content.
             Ok(o) => o,
             Err(CaptureError::Cancelled) => {
                 // Caller abort — not a human cancel. Do not invent answers or action:"cancel".
-                return Ok(CallToolResult::error(vec![Content::text(
+                return Ok(CallToolResult::error(vec![ContentBlock::text(
                     "AskHuman request was cancelled by the MCP client (not by the human).",
                 )]));
             }
@@ -198,7 +198,7 @@ structured content; any images the human attaches are returned as image content.
                 } else {
                     format!("AskHuman failed (exit code {code}): {}", stderr.trim())
                 };
-                return Ok(CallToolResult::error(vec![Content::text(msg)]));
+                return Ok(CallToolResult::error(vec![ContentBlock::text(msg)]));
             }
         };
 
@@ -225,7 +225,7 @@ structured content; any images the human attaches are returned as image content.
                     let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
                     tool_result
                         .content
-                        .push(Content::image(b64, mime.to_string()));
+                        .push(ContentBlock::image(b64, mime.to_string()));
                 }
                 // 读不到就跳过；路径仍在 structuredContent.answers[].files 中可供模型参考。
                 Err(_) => continue,
@@ -299,7 +299,7 @@ impl ServerHandler for AskServer {
             "AskHuman bridges the agent and a human operator. Call the `ask` tool whenever you \
 need the human to decide, clarify, review, or approve something; it blocks until they reply.",
         );
-        // `from_build_env()` 的名字/版本来自 rmcp crate（"rmcp"/"1.7.0"），改成本应用的品牌名与版本。
+        // `from_build_env()` 的名字/版本来自 rmcp crate 自身，改成本应用的品牌名与版本。
         let mut implementation = Implementation::from_build_env();
         implementation.name = "AskHuman".to_string();
         implementation.version = env!("CARGO_PKG_VERSION").to_string();
