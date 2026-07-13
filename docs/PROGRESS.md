@@ -4,10 +4,11 @@
 
 ## 待办：项目 review 的 P2 项（择机）
 
-报告见 `docs/investigations/project-review-2026-07.md`。P0+P1 已在分支
-`chore/project-review-2026-07` 完成；P2 剩余：daemon.log 轮转、SettingsView/PopupView
+报告见 `docs/investigations/project-review-2026-07.md`。P0+P1 与第二轮 R1/R2/R3 已在分支
+`chore/project-review-2026-07` 完成；剩余择机项：daemon.log 轮转、SettingsView/PopupView
 组件拆分、types.ts 改为从 Rust 派生（ts-rs/specta）、secrets.rs 注释修正、
-gitutil 测试噪音、TS 7 升级（等 vue-tsc 支持）。
+gitutil 测试噪音、TS 7 升级（等 vue-tsc 支持）、前端主 bundle 瘦身（R4，需 perf 基线）、
+agents.snapshot() typed 化 + pnpm/Node 版本对齐（R5）。
 
 ## 待办：Cursor 全局 Rules 迁移为用户级 always-on Skill
 
