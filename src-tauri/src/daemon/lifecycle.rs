@@ -150,6 +150,31 @@ pub fn log_path() -> PathBuf {
     crate::paths::config_dir().join("daemon.log")
 }
 
+/// daemon.log 轮转阈值：超过即把现有内容挪到 `daemon.log.1`（覆盖上一代）并清空当前文件。
+/// 上限约束为「两代 × 5MB」，正常运行量级下够追溯数周。
+const LOG_ROTATE_LIMIT: u64 = 5 * 1024 * 1024;
+
+/// 超限则轮转 daemon.log（copy → truncate）。daemon 启动时与周期任务里调用。
+///
+/// 必须「copy 到 .1 再原地 truncate」而非 rename：daemon / spawn 的 stderr fd 以 O_APPEND
+/// 长期指着当前 inode，rename 后写入会跟着旧 inode 进 .1；truncate 保住 inode，
+/// O_APPEND 写自动从新 EOF（0）继续。竞态无虞：写者只 append，daemon 单实例（flock）。
+pub fn rotate_log_if_needed() {
+    let path = log_path();
+    let Ok(meta) = std::fs::metadata(&path) else {
+        return;
+    };
+    if meta.len() <= LOG_ROTATE_LIMIT {
+        return;
+    }
+    let old = path.with_extension("log.1");
+    if std::fs::copy(&path, &old).is_ok() {
+        if let Ok(f) = std::fs::OpenOptions::new().write(true).open(&path) {
+            let _ = f.set_len(0);
+        }
+    }
+}
+
 /// Daemon 运行元信息（落 daemon.json，供调试/排查）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

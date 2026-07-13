@@ -705,9 +705,11 @@ async fn serve(_lock: LockGuard) -> i32 {
     }
 
     // 临时目录清理（A10）：启动即清一次，之后每小时清理过期 temp/askhuman/<id>/。
+    // 顺带轮转 daemon.log（超 5MB → 挪 .1 并清空；保活 daemon 长跑也不至无限增长）。
     tokio::spawn(async move {
         loop {
             cleanup_temp_dirs();
+            lifecycle::rotate_log_if_needed();
             tokio::time::sleep(Duration::from_secs(3600)).await;
         }
     });
