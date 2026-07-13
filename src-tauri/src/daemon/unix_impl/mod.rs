@@ -247,6 +247,9 @@ struct WatchState {
     /// 渠道 id → 「最后一条非 watch 消息」时刻（Unix 毫秒）——跟底判定的**淹没信号**。
     /// 只有非 watch 消息才算淹没：watch 卡之间互不影响（用户定案）。
     disturb: Mutex<HashMap<String, u64>>,
+    /// 渠道 id → 缓存的传输客户端（连接池跨拍复用；Slack 免每拍 `open_dm`）。
+    /// 配置变更时整体失效（见 `on_config_changed`）。
+    clients: Mutex<HashMap<String, Arc<WatchClient>>>,
 }
 
 /// 一条活动的 watch 订阅（引擎工作台账；持久化时压成 `watch::PersistedWatch`）。
@@ -2376,6 +2379,27 @@ enum WatchClient {
     DingTalk(crate::dingtalk::client::DingTalkClient),
 }
 
+/// 取渠道的缓存 [`WatchClient`]（无则构建并缓存）。构建要新建 reqwest 连接池，Slack 还含
+/// `open_dm` 网络调用——watch tick 每拍逐渠道重建既慢又浪费。缓存后跨拍复用（TLS keep-alive），
+/// 配置变更时整体失效重建；渠道不可用 → None（不缓存，下一拍重试）。
+async fn watch_client(
+    state: &Arc<ServerState>,
+    channel_id: &str,
+    config: &AppConfig,
+) -> Option<Arc<WatchClient>> {
+    if let Some(hit) = state.watch.clients.lock().unwrap().get(channel_id) {
+        return Some(hit.clone());
+    }
+    let built = Arc::new(WatchClient::for_channel(channel_id, config).await?);
+    state
+        .watch
+        .clients
+        .lock()
+        .unwrap()
+        .insert(channel_id.to_string(), built.clone());
+    Some(built)
+}
+
 impl WatchClient {
     /// 按渠道构造。渠道未配置/不可用 → None（该渠道订阅本拍跳过，下一拍重试）。
     async fn for_channel(channel_id: &str, config: &AppConfig) -> Option<WatchClient> {
@@ -2776,6 +2800,8 @@ async fn on_config_changed(state: &Arc<ServerState>) {
     let old = { state.config.lock().unwrap().clone() };
     invalidate_changed_routers(state, &old, &new).await;
     *state.config.lock().unwrap() = new.clone();
+    // 缓存的 watch 传输客户端按旧凭据构建，凭据/开关可能已变 → 整体失效，用到时按新配置重建。
+    state.watch.clients.lock().unwrap().clear();
     // 凭据/收件人变更已停掉旧入站监听（见 invalidate_changed_routers）；这里立即按新配置重建，
     // 使 `/here`、`/status`、普通消息切槽无需等在途请求结束或 daemon 重启即恢复（有工作中 agent 时）。
     ensure_inbound_listeners(state).await;

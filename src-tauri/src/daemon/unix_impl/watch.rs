@@ -122,7 +122,7 @@ pub(super) async fn watch_tick(state: &Arc<ServerState>) {
     let mut changed = false;
     for ch in channels {
         // 渠道不可用（配置被关/失效）→ 本拍跳过该渠道订阅，下一拍重试。
-        let Some(client) = WatchClient::for_channel(&ch, &config).await else {
+        let Some(client) = watch_client(state, &ch, &config).await else {
             continue;
         };
         // 跟底判定的渠道量：淹没水位线 + 是否有在途提问 + 单选卡是否仍在会话底部（二者期间均抑制
@@ -604,7 +604,7 @@ pub(super) async fn handle_rewatch(state: &Arc<ServerState>, channel_id: &str, m
         return;
     };
     let config = state.config_snapshot();
-    let Some(client) = WatchClient::for_channel(channel_id, &config).await else {
+    let Some(client) = watch_client(state, channel_id, &config).await else {
         return;
     };
     let lang = Lang::current();
@@ -672,7 +672,7 @@ pub(super) async fn apply_watch_action(
         return; // 已退订的卡（终态卡无按钮，孤儿回调已在 Router 层应答）。
     };
     let config = state.config_snapshot();
-    let Some(client) = WatchClient::for_channel(channel_id, &config).await else {
+    let Some(client) = watch_client(state, channel_id, &config).await else {
         return;
     };
     let lang = Lang::current();
@@ -927,7 +927,7 @@ pub(super) async fn handle_watch_cmd(
         let _ = reply_channel_text(channel_id, config, &text).await;
         return;
     }
-    let Some(client) = WatchClient::for_channel(channel_id, config).await else {
+    let Some(client) = watch_client(state, channel_id, config).await else {
         return;
     };
     let waiting = state
@@ -1000,7 +1000,7 @@ pub(super) async fn register_watch_at(
             .cloned()
     };
     if let Some(old) = replaced {
-        if let Some(client) = WatchClient::for_channel(channel_id, config).await {
+        if let Some(client) = watch_client(state, channel_id, config).await {
             let snapshot = state.agents.snapshot();
             let waiting = state
                 .registry
@@ -1166,7 +1166,7 @@ pub(super) async fn finalize_and_drop_watches(
     if targets.is_empty() {
         return 0;
     }
-    let Some(client) = WatchClient::for_channel(channel_id, config).await else {
+    let Some(client) = watch_client(state, channel_id, config).await else {
         return 0;
     };
     let keep_rewatchable = final_kind.is_rewatchable();

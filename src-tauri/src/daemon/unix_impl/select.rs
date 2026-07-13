@@ -680,7 +680,7 @@ pub(super) async fn select_pick_unwatch(
         .cloned();
     if let Some(entry) = entry {
         // 旧 watch 卡定格「已取消关注」（可重新关注）。
-        if let Some(client) = WatchClient::for_channel(channel_id, config).await {
+        if let Some(client) = watch_client(state, channel_id, config).await {
             let snapshot = state.agents.snapshot();
             let waiting = state
                 .registry
@@ -897,7 +897,7 @@ pub(super) async fn dd_select_pick_watch(
         }
     }
     // 另发一张实时 watch 卡（活动态活卡 / 已结束则终态卡）。
-    let Some(client) = WatchClient::for_channel("dingding", config).await else {
+    let Some(client) = watch_client(state, "dingding", config).await else {
         return;
     };
     let mode = if ended {
@@ -943,7 +943,7 @@ pub(super) async fn dd_select_pick_unwatch(
         .find(|s| s.channel == "dingding" && s.session_id == session_id)
         .cloned();
     if let Some(entry) = entry {
-        if let Some(client) = WatchClient::for_channel("dingding", config).await {
+        if let Some(client) = watch_client(state, "dingding", config).await {
             let snapshot = state.agents.snapshot();
             let waiting = state
                 .registry
@@ -1219,7 +1219,7 @@ pub(super) async fn select_pick_watch_inplace(
     let ended = frame.phase == crate::watch::WatchPhase::Ended;
     if ended {
         // 已结束/消失：就地把本消息编辑成终态卡、不订阅、消费掉 picker。
-        if let Some(client) = WatchClient::for_channel(channel_id, config).await {
+        if let Some(client) = watch_client(state, channel_id, config).await {
             if let Err(err) = client
                 .edit(
                     mid,
@@ -1267,7 +1267,7 @@ pub(super) async fn select_pick_watch_inplace(
         }
     }
     // 就地把这条单选卡消息编辑成实时 watch 卡。
-    let Some(client) = WatchClient::for_channel(channel_id, config).await else {
+    let Some(client) = watch_client(state, channel_id, config).await else {
         return;
     };
     if let Err(err) = client
@@ -1308,7 +1308,7 @@ pub(super) async fn select_pick_unwatch_inplace(
         .find(|s| s.channel == channel_id && s.session_id == session_id)
         .cloned();
     if let Some(entry) = entry {
-        if let Some(client) = WatchClient::for_channel(channel_id, config).await {
+        if let Some(client) = watch_client(state, channel_id, config).await {
             let snapshot = state.agents.snapshot();
             let waiting = state
                 .registry
