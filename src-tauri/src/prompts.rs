@@ -132,10 +132,7 @@ Adjust your plan if needed. If anything is unclear, ask the user as instructed."
 ///   instructions-defined questioning tool (never empty — Cursor cannot inject a blank follow-up).
 ///
 /// Intentionally avoids product, server, and tool names because the questioning entry point may be renamed.
-pub fn stop_continue_prompt(
-    kind: crate::agents::AgentKind,
-    instruction: Option<&str>,
-) -> String {
+pub fn stop_continue_prompt(kind: crate::agents::AgentKind, instruction: Option<&str>) -> String {
     match instruction.map(str::trim).filter(|text| !text.is_empty()) {
         Some(message) => match kind {
             // Cursor/Codex consume the text as a user message / user prompt — no meta wrapper.

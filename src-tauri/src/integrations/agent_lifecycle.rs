@@ -169,10 +169,8 @@ pub fn migrate_outdated() -> Vec<AgentKind> {
         AgentKind::Grok,
     ] {
         let st = status(kind);
-        if st.installed && st.outdated {
-            if install(kind).is_ok() {
-                migrated.push(kind);
-            }
+        if st.installed && st.outdated && install(kind).is_ok() {
+            migrated.push(kind);
         }
     }
     migrated
@@ -1041,7 +1039,7 @@ mod tests {
         let v = to_value(&out);
         assert_eq!(v["version"], 1);
         let arr = v["hooks"]["beforeSubmitPrompt"].as_array().unwrap();
-        assert_eq!(arr[0]["command"].as_str().unwrap().contains(MARKER), true);
+        assert!(arr[0]["command"].as_str().unwrap().contains(MARKER));
         assert!(arr[0].get("hooks").is_none(), "flat 形状无嵌套 hooks");
     }
 

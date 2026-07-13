@@ -303,7 +303,7 @@ async fn ask_question(
                 card_message_id,
                 header,
                 &content,
-                &status,
+                status,
                 is_markdown,
             )
             .await;
@@ -594,8 +594,7 @@ fn card_keyboard(options: &[String], selected: &[String], lang: Lang) -> Value {
     while i < options.len() {
         let end = (i + KEYBOARD_ROW_WIDTH).min(options.len());
         let mut row: Vec<Value> = Vec::new();
-        for idx in i..end {
-            let option = &options[idx];
+        for (idx, option) in options.iter().enumerate().take(end).skip(i) {
             let label = option_label(idx);
             let text = if selected.iter().any(|s| s == option) {
                 format!("✅ {}", label)

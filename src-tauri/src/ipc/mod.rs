@@ -402,6 +402,8 @@ pub enum InterjectAction {
 }
 
 /// Daemon → 客户端（CLI / GUI Helper）的消息。
+// 大变体（如 Ask 请求全文）装箱会波及所有构造/匹配点；消息短命且量小，体积差可接受。
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum ServerMsg {

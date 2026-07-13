@@ -115,7 +115,7 @@ pub fn build_watch_blocks(
         CardMode::Final(kind) => {
             footer.push_str(&format!(
                 "\n*{}*",
-                esc(&watch::final_label_text(&kind, lang))
+                esc(&watch::final_label_text(kind, lang))
             ));
             blocks.push(json!({
                 "type": "context",

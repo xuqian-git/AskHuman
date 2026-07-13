@@ -275,6 +275,7 @@ impl Default for FeishuChannelConfig {
 /// 鉴权双 token：Bot Token（`xoxb-…`，Web API 发送）+ App-Level Token（`xapp-…`，Socket Mode 建连）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
+#[derive(Default)]
 pub struct SlackChannelConfig {
     pub enabled: bool,
     /// Bot Token（`xoxb-…`）：所有 Web API 调用（chat.* / conversations.* / files.* / auth.test）。
@@ -283,17 +284,6 @@ pub struct SlackChannelConfig {
     pub app_token: String,
     /// 接收/作答用户的 Slack User ID（`U…`，单聊；发送前经 conversations.open 解析 DM 频道）。
     pub user_id: String,
-}
-
-impl Default for SlackChannelConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            bot_token: String::new(),
-            app_token: String::new(),
-            user_id: String::new(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -396,8 +386,7 @@ impl AppConfig {
             std::fs::create_dir_all(dir)?;
             harden_dir(dir);
         }
-        let json = serde_json::to_string_pretty(self)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        let json = serde_json::to_string_pretty(self).map_err(std::io::Error::other)?;
         let tmp = path.with_extension(format!("json.tmp-{}", uuid::Uuid::new_v4()));
         std::fs::write(&tmp, json.as_bytes())?;
         // Restrict the temp file before rename so the published file is never briefly world-readable.

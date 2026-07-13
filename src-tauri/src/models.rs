@@ -354,6 +354,9 @@ pub struct ConfirmRequest {
 
 /// Shared envelope for surfaces that can render either a question or a structured confirmation.
 /// The two business protocols remain independent; this enum only unifies delivery and display.
+// Boxing the large Ask variant would ripple through every construct/match site; envelopes are
+// short-lived and few, so the size gap is acceptable.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "request", rename_all = "camelCase")]
 pub enum InteractionRequest {

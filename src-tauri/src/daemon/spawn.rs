@@ -13,12 +13,10 @@ pub fn spawn_detached() -> std::io::Result<()> {
     {
         // 仅「非 Aqua 会话」才绕道 GUI 域；Aqua 会话保持原样，
         // 不影响 perf/隔离等以 HOME/env 隔离的前台调用方。
-        if !in_aqua_session() {
-            if spawn_via_gui_launchd().is_ok() {
-                return Ok(());
-            }
-            // GUI 域不可用（纯 headless）→ 回退原 setsid 拉起。
+        if !in_aqua_session() && spawn_via_gui_launchd().is_ok() {
+            return Ok(());
         }
+        // GUI 域不可用（纯 headless）→ 回退原 setsid 拉起。
     }
     spawn_plain_detached()
 }
@@ -157,8 +155,7 @@ fn spawn_via_gui_launchd() -> std::io::Result<()> {
     if status.success() {
         Ok(())
     } else {
-        Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
+        Err(std::io::Error::other(
             "launchctl bootstrap gui domain failed",
         ))
     }

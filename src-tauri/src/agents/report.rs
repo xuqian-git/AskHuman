@@ -78,7 +78,7 @@ pub fn run(args: &[String]) {
     // 读回一帧裁决；PostToolUse 与其余事件保持即发即走。
     let interject_poll = matches!(event, super::LifecycleEvent::Activity)
         && intended != AgentKind::Grok
-        && stdin.as_ref().and_then(|v| detect_phase(v)) == Some(ToolPhase::Pre);
+        && stdin.as_ref().and_then(detect_phase) == Some(ToolPhase::Pre);
 
     let msg = ClientMsg::AgentEvent {
         agent: intended.as_str().to_string(),

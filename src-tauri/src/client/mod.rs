@@ -129,7 +129,7 @@ async fn wait_for_drain() {
         if transport::connect().await.is_err() {
             return; // 旧 Daemon 已下线，可拉起新的。
         }
-        if last_hint.map_or(true, |t| t.elapsed() >= Duration::from_secs(30)) {
+        if last_hint.is_none_or(|t| t.elapsed() >= Duration::from_secs(30)) {
             match request_status().await {
                 Some(info) => eprintln!(
                     "askhuman: daemon is draining ({} active request(s) left); waiting to submit… (run 'AskHuman daemon restart --force' to switch now, interrupting them)",

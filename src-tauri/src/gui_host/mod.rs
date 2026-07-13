@@ -137,7 +137,7 @@ mod unix_impl {
         });
         match handle.join() {
             Ok(r) => r,
-            Err(_) => Err(Error::new(ErrorKind::Other, "host_open worker panicked")),
+            Err(_) => Err(Error::other("host_open worker panicked")),
         }
     }
 

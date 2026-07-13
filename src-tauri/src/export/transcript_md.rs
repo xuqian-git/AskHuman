@@ -63,7 +63,7 @@ pub fn render(doc: &TranscriptDoc, meta_title: &str) -> String {
                 }
             }
             TranscriptEvent::Meta(t) => {
-                md.push_str("_");
+                md.push('_');
                 md.push_str(t);
                 md.push_str("_\n\n");
             }

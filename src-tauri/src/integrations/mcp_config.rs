@@ -620,7 +620,7 @@ fn toml_installed(text: &str) -> bool {
     toml_entry(&doc).is_some()
 }
 
-fn toml_entry<'a>(doc: &'a toml_edit::DocumentMut) -> Option<&'a dyn toml_edit::TableLike> {
+fn toml_entry(doc: &toml_edit::DocumentMut) -> Option<&dyn toml_edit::TableLike> {
     doc.get("mcp_servers")?
         .as_table_like()?
         .get(SERVER_NAME)?

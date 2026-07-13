@@ -299,7 +299,7 @@ pub fn list_presets() -> Vec<(String, Option<PresetLease>, Vec<&'static str>)> {
         let channels = load_preset_body(&name)
             .map(|b| configured_channel_ids(&b.channels))
             .unwrap_or_default();
-        let lease = entry.lease.filter(|l| lease_is_live(l));
+        let lease = entry.lease.filter(lease_is_live);
         out.push((name, lease, channels));
     }
     out
@@ -313,7 +313,7 @@ pub fn show_preset(name: &str) -> Result<(PresetBody, Option<PresetLease>), Stri
         .presets
         .get(name)
         .and_then(|e| e.lease.clone())
-        .filter(|l| lease_is_live(l));
+        .filter(lease_is_live);
     Ok((body, lease))
 }
 

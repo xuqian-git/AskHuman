@@ -1460,6 +1460,7 @@ where
 /// macOS：给窗口挂上唯一的背景层。
 /// - macOS 26+：`NSGlassEffectView`（Liquid Glass 整窗背景）；
 /// - 旧系统：插件自动回退到 `NSVisualEffectView`（等价于此前的 vibrancy）。
+///
 /// 因 `apply_surface` 已不再挂 Tauri 自带 vibrancy，这里需对所有 macOS 版本生效。
 #[cfg(target_os = "macos")]
 fn apply_liquid_glass<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) {
@@ -1848,26 +1849,23 @@ pub(crate) fn spawn_agents_subscription(
         loop {
             // 一轮「连接 → 订阅 → 读到断连」+ 退避；与 stop 竞速，stop 触发即退出整个任务。
             let cycle = async {
-                match crate::client::open_for_subscribe().await {
-                    Ok((mut reader, mut writer)) => {
-                        if ipc::write_msg(&mut writer, &ClientMsg::AgentsSubscribe)
-                            .await
-                            .is_err()
-                        {
-                            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                            return;
-                        }
-                        loop {
-                            match ipc::read_msg::<_, ServerMsg>(&mut reader).await {
-                                Ok(Some(ServerMsg::AgentsState { agents })) => {
-                                    let _ = app.emit("agents-updated", agents);
-                                }
-                                Ok(Some(_)) => {}
-                                Ok(None) | Err(_) => break, // 断连 → 跳出去重连。
+                if let Ok((mut reader, mut writer)) = crate::client::open_for_subscribe().await {
+                    if ipc::write_msg(&mut writer, &ClientMsg::AgentsSubscribe)
+                        .await
+                        .is_err()
+                    {
+                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                        return;
+                    }
+                    loop {
+                        match ipc::read_msg::<_, ServerMsg>(&mut reader).await {
+                            Ok(Some(ServerMsg::AgentsState { agents })) => {
+                                let _ = app.emit("agents-updated", agents);
                             }
+                            Ok(Some(_)) => {}
+                            Ok(None) | Err(_) => break, // 断连 → 跳出去重连。
                         }
                     }
-                    Err(_) => {}
                 }
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             };
@@ -1977,10 +1975,7 @@ mod stderr_redirect {
             if saved < 0 {
                 return;
             }
-            let devnull = libc::open(
-                b"/dev/null\0".as_ptr() as *const libc::c_char,
-                libc::O_WRONLY,
-            );
+            let devnull = libc::open(c"/dev/null".as_ptr(), libc::O_WRONLY);
             if devnull < 0 {
                 libc::close(saved);
                 return;

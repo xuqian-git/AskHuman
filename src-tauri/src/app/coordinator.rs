@@ -133,6 +133,7 @@ impl Coordinator {
         )
     }
 
+    #[allow(clippy::too_many_arguments)] // internal constructor; a params struct adds churn without clarity
     fn build(
         exiter: Exiter,
         request: AskRequest,

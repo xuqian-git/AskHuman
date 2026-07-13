@@ -7,6 +7,7 @@
 //!   - `acceptsPreviewPanelControl:` / `beginPreviewPanelControl:` / `endPreviewPanelControl:`
 //!   - DataSource：`numberOfPreviewItemsInPreviewPanel:`（恒为 1，单文件）/ `previewPanel:previewItemAtIndex:`
 //!   - Delegate：`previewPanel:handleEvent:`（捕获方向键，改当前文件 + reloadData，并回传索引）
+//!
 //! 并把该控制者插入弹窗窗口的响应链（`window.nextResponder`）。
 //! 这样：焦点在面板（原生），方向键逐个切换单文件预览，弹窗侧据 `preview-index` 同步高亮；
 //! 面板关闭时经 `endPreviewPanelControl:` 回传 `preview-closed`。

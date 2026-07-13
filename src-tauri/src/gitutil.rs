@@ -289,9 +289,8 @@ pub fn build_diff_model(root: &Path) -> Result<DiffModel, String> {
         }
 
         let mut lines = Vec::new();
-        let mut file_lines = 0usize;
         let mut file_truncated = false;
-        for l in raw.lines() {
+        for (file_lines, l) in raw.lines().enumerate() {
             if line_budget == 0 {
                 truncated = true;
                 break;
@@ -319,7 +318,6 @@ pub fn build_diff_model(root: &Path) -> Result<DiffModel, String> {
             };
             lines.push(DiffLine { kind, text });
             line_budget = line_budget.saturating_sub(1);
-            file_lines += 1;
         }
         files.push(FileDiff {
             path: rel.clone(),

@@ -2310,6 +2310,7 @@ mod unix_impl {
     /// 后推弹窗 badge。`kind_env` 为 CLI 经 env 已判出的家族（None=未判出，典型 MCP `env_clear` → `walk_any`
     /// 兜底）。`ps` 游走是阻塞调用，放 blocking 线程；`caller_pid==0`（旧 CLI 不带）则跳过。
     /// 整段不阻塞请求关键路径（弹窗已先 spawn）。
+    #[allow(clippy::too_many_arguments)] // args mirror the submit-time hints; grouping adds churn without clarity
     fn spawn_agent_resolve(
         entry: Arc<RequestEntry>,
         state: Arc<ServerState>,
@@ -3531,7 +3532,7 @@ mod unix_impl {
                 (WatchRouterRef::DingTalk(Arc::downgrade(r)), task)
             }
         };
-        let _ = task; // 任务由 stop 信号控制生命周期；句柄本身无需保留。
+        drop(task); // 任务由 stop 信号控制生命周期；句柄本身无需保留。
         if let Some(old) = state.watch.routes.lock().unwrap().insert(
             channel_id.to_string(),
             WatchRouteHandle {
@@ -4373,6 +4374,7 @@ mod unix_impl {
 
     /// 组装并发一张 agent 单选卡：空选项 / 非支持渠道（send 失败）→ 返回 false（调用方回文本兜底）。
     /// `payload` 仅 `PickerKind::Msg` 用（待发送内容随卡登记，点「发送」时投递）。
+    #[allow(clippy::too_many_arguments)] // args mirror the picker card fields
     async fn send_agent_picker(
         state: &Arc<ServerState>,
         channel_id: &str,
@@ -4419,6 +4421,7 @@ mod unix_impl {
         true
     }
 
+    #[allow(clippy::too_many_arguments)] // args mirror the select-card callback context
     async fn select_pick_task_flow(
         state: &Arc<ServerState>,
         channel_id: &str,
@@ -8447,7 +8450,7 @@ mod unix_impl {
             let Some(info) = client::request_status().await else {
                 return; // 已下线。
             };
-            if info.draining && last_hint.map_or(true, |t| t.elapsed() >= Duration::from_secs(30)) {
+            if info.draining && last_hint.is_none_or(|t| t.elapsed() >= Duration::from_secs(30)) {
                 eprintln!(
                     "askhuman daemon: draining ({} active request(s) left); waiting… (use --force to terminate now)",
                     info.active_requests

@@ -888,12 +888,7 @@ async fn keepalive_task(stop: Arc<Notify>) {
             _ = stop.notified() => {}
             _ = async {
                 // daemon 主动断开（如换新退出）→ 读到 EOF 即结束。
-                loop {
-                    match ipc::read_msg::<_, ServerMsg>(&mut reader).await {
-                        Ok(Some(_)) => continue,
-                        _ => break,
-                    }
-                }
+                while let Ok(Some(_)) = ipc::read_msg::<_, ServerMsg>(&mut reader).await {}
             } => {}
         }
         // stream 在此 drop → 连接关闭 → daemon active -= 1（重新计时空闲退出）。
@@ -1002,59 +997,56 @@ fn start_status_subscription(app: AppHandle) {
                 }
                 continue;
             }
-            match transport::connect().await {
-                Ok(stream) => {
-                    let (r, mut w) = stream.into_split();
-                    let mut reader = BufReader::new(r);
-                    if ipc::write_msg(&mut w, &ClientMsg::TraySubscribe)
-                        .await
-                        .is_ok()
-                    {
-                        set_daemon_up(&app, true);
-                        loop {
-                            match ipc::read_msg::<_, ServerMsg>(&mut reader).await {
-                                Ok(Some(ServerMsg::TrayState {
-                                    running,
-                                    version,
-                                    uptime_secs,
-                                    active_requests,
-                                    im_connections,
-                                    draining,
-                                    agents_working,
-                                    agents_idle,
-                                    update_available,
-                                    update_latest,
-                                    pending,
-                                    pending_requests,
-                                    agents,
-                                })) => {
-                                    if let Some(state) = app.try_state::<HostState>() {
-                                        *state.data.lock().unwrap() = TrayData {
-                                            running,
-                                            version,
-                                            uptime_secs,
-                                            active_requests,
-                                            im_connections,
-                                            draining,
-                                            agents_working,
-                                            agents_idle,
-                                            update_available,
-                                            update_latest,
-                                            pending,
-                                            pending_requests,
-                                            agents,
-                                        };
-                                    }
-                                    refresh_on_main(&app);
-                                    maybe_refresh_binary(&app);
+            if let Ok(stream) = transport::connect().await {
+                let (r, mut w) = stream.into_split();
+                let mut reader = BufReader::new(r);
+                if ipc::write_msg(&mut w, &ClientMsg::TraySubscribe)
+                    .await
+                    .is_ok()
+                {
+                    set_daemon_up(&app, true);
+                    loop {
+                        match ipc::read_msg::<_, ServerMsg>(&mut reader).await {
+                            Ok(Some(ServerMsg::TrayState {
+                                running,
+                                version,
+                                uptime_secs,
+                                active_requests,
+                                im_connections,
+                                draining,
+                                agents_working,
+                                agents_idle,
+                                update_available,
+                                update_latest,
+                                pending,
+                                pending_requests,
+                                agents,
+                            })) => {
+                                if let Some(state) = app.try_state::<HostState>() {
+                                    *state.data.lock().unwrap() = TrayData {
+                                        running,
+                                        version,
+                                        uptime_secs,
+                                        active_requests,
+                                        im_connections,
+                                        draining,
+                                        agents_working,
+                                        agents_idle,
+                                        update_available,
+                                        update_latest,
+                                        pending,
+                                        pending_requests,
+                                        agents,
+                                    };
                                 }
-                                Ok(Some(_)) => {} // 忽略未知 / 其它变体（兼容）。
-                                Ok(None) | Err(_) => break,
+                                refresh_on_main(&app);
+                                maybe_refresh_binary(&app);
                             }
+                            Ok(Some(_)) => {} // 忽略未知 / 其它变体（兼容）。
+                            Ok(None) | Err(_) => break,
                         }
                     }
                 }
-                Err(_) => {}
             }
             // 断连：daemon 空闲退出 / 停止 / 换新。刷新会因签名不变而仅在「运行→停止」首刷生效。
             set_daemon_up(&app, false);

@@ -19,10 +19,8 @@ pub fn slug(s: &str, max: usize) -> String {
         }
         if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
             out.push(c);
-        } else if c == ' ' || c == '.' {
-            if !out.ends_with('-') {
-                out.push('-');
-            }
+        } else if (c == ' ' || c == '.') && !out.ends_with('-') {
+            out.push('-');
         }
     }
     let out = out.trim_matches('-').to_string();

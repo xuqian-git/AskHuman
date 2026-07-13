@@ -122,6 +122,7 @@ async fn keep_feishu_tombstone(
     events.clear_active(Some(&message_id), &target);
 }
 
+#[allow(clippy::too_many_arguments)] // one-shot task spawner; args mirror the tombstone card fields
 async fn keep_slack_tombstone(
     mut events: crate::slack::router::RoutedSl,
     client: crate::slack::client::SlackClient,

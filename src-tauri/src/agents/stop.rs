@@ -409,11 +409,7 @@ mod tests {
                 last_assistant_message(AgentKind::Codex, &json!({"last_assistant_message": text}));
             assert!(message.user_confirmed_end_turn, "should match: {text:?}");
             assert!(
-                !message
-                    .display
-                    .as_deref()
-                    .unwrap_or("")
-                    .contains(marker),
+                !message.display.as_deref().unwrap_or("").contains(marker),
                 "marker should be stripped from display: {text:?}"
             );
         }
@@ -426,7 +422,10 @@ mod tests {
         ] {
             let message =
                 last_assistant_message(AgentKind::Codex, &json!({"last_assistant_message": text}));
-            assert!(!message.user_confirmed_end_turn, "should not match: {text:?}");
+            assert!(
+                !message.user_confirmed_end_turn,
+                "should not match: {text:?}"
+            );
         }
 
         let long = format!("{}\n{marker}", "你".repeat(2_001));

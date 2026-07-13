@@ -796,10 +796,10 @@ end tell"#;
             .args(["-e", script])
             .status()
             .map_err(|e| e.to_string())?;
-        return status
+        status
             .success()
             .then_some(())
-            .ok_or_else(|| "Terminal.app rejected the test".to_string());
+            .ok_or_else(|| "Terminal.app rejected the test".to_string())
     }
     #[cfg(not(target_os = "macos"))]
     Err("Terminal.app test is only available on macOS".to_string())
