@@ -110,8 +110,9 @@ pub(super) async fn watch_tick(state: &Arc<ServerState>) {
         ensure_watch_routes(state).await;
         return;
     }
-    let config = AppConfig::load();
-    let lang = Lang::current();
+    let config = state.config_snapshot();
+    // 语言从快照解析（`Lang::current()` 每次读盘，2s 一拍的热路径不值得）。
+    let lang = Lang::resolve(&config.general.language);
     let now = now_secs();
     let snapshot = state.agents.snapshot();
     let waiting = state.registry.in_flight_agent_session_ids();
@@ -296,7 +297,7 @@ pub(super) async fn ensure_watch_routes(state: &Arc<ServerState>) {
             }
         });
     }
-    let config = AppConfig::load();
+    let config = state.config_snapshot();
     for (ch, mids) in desired {
         ensure_watch_route_for(state, &config, &ch, mids).await;
     }
@@ -573,7 +574,7 @@ pub(super) fn handle_watch_card_action(
             let state = Arc::clone(state);
             let sid = session_id;
             tokio::spawn(async move {
-                let config = AppConfig::load();
+                let config = state.config_snapshot();
                 let lang = Lang::current();
                 activate_channel_on_action(&state, "feishu", &config, lang).await;
                 let snapshot = state.agents.snapshot();
@@ -602,7 +603,7 @@ pub(super) async fn handle_rewatch(state: &Arc<ServerState>, channel_id: &str, m
     let Some(entry) = entry else {
         return;
     };
-    let config = AppConfig::load();
+    let config = state.config_snapshot();
     let Some(client) = WatchClient::for_channel(channel_id, &config).await else {
         return;
     };
@@ -638,7 +639,7 @@ pub(super) async fn handle_rewatch(state: &Arc<ServerState>, channel_id: &str, m
     let sid = entry.session_id;
     let ch = channel_id.to_string();
     tokio::spawn(async move {
-        let config = AppConfig::load();
+        let config = state.config_snapshot();
         let lang = Lang::current();
         let snapshot = state.agents.snapshot();
         let rec = find_agent_by_session(&snapshot, &sid);
@@ -670,7 +671,7 @@ pub(super) async fn apply_watch_action(
     let Some(entry) = entry else {
         return; // 已退订的卡（终态卡无按钮，孤儿回调已在 Router 层应答）。
     };
-    let config = AppConfig::load();
+    let config = state.config_snapshot();
     let Some(client) = WatchClient::for_channel(channel_id, &config).await else {
         return;
     };
@@ -749,7 +750,7 @@ pub(super) async fn handle_watch_tg_action(state: &Arc<ServerState>, cb: &serde_
     };
     // 应答 callback（best-effort）。
     if let Some(id) = cb.get("id").and_then(|i| i.as_str()) {
-        let tg = &AppConfig::load().channels.telegram;
+        let tg = &state.config_snapshot().channels.telegram;
         if let Ok(c) = crate::telegram::TelegramClient::new(
             tg.bot_token.clone(),
             tg.chat_id.clone(),
@@ -1319,6 +1320,6 @@ pub(super) async fn match_pending_launch_watch(
         })
         .and_then(|item| item.get("seq").and_then(|value| value.as_u64()));
     let Some(seq) = seq else { return };
-    let config = AppConfig::load();
+    let config = state.config_snapshot();
     handle_watch_cmd(state, &matched.channel, Some(seq), &config, Lang::current()).await;
 }

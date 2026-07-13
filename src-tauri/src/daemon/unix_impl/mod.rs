@@ -196,6 +196,16 @@ struct ServerState {
     pending_launches: Mutex<Vec<PendingLaunchWatch>>,
 }
 
+impl ServerState {
+    /// 当前生效配置的快照。启动时 `load()` 初始化、config_watch 变更后刷新（`on_config_changed`），
+    /// 密钥已解析。热路径（watch tick、入站消息、卡片回调、提交投放）一律读它，避免每次
+    /// 「读盘 + JSON 解析 + macOS 钥匙串 IPC」；代价是配置变更后有 config_watch 去抖窗（~300ms）
+    /// 的短暂陈旧，下一次读取即新。
+    fn config_snapshot(&self) -> AppConfig {
+        self.config.lock().unwrap().clone()
+    }
+}
+
 #[derive(Clone)]
 struct PendingLaunchWatch {
     id: String,
@@ -1259,12 +1269,8 @@ async fn handle_submit_confirm(
     }
     broadcast_tray_state(state);
 
-    let shallow_config = AppConfig::load_without_secrets();
-    let config = if any_im_enabled(&shallow_config) {
-        AppConfig::load()
-    } else {
-        shallow_config
-    };
+    // 缓存快照（密钥已解析）：零钥匙串、零磁盘读，见 `config_snapshot`。
+    let config = state.config_snapshot();
     let popup_enabled = config.channels.popup.enabled && has_display();
     let im_candidates = confirm_im_candidates(&entry, state, &config);
     if popup_enabled {
@@ -2096,13 +2102,12 @@ async fn attach_im_channels(
     w: &mut OwnedWriteHalf,
     lang: Lang,
 ) -> bool {
-    // 方案4（spec §4）：先用 config.json 的 `enabled` 标志（`load_without_secrets`，零钥匙串）判定
-    // 有无任何启用的 IM 渠道；都没启用（最常见的「仅弹窗」用户）则**完全跳过** `AppConfig::load()`，
-    // 不读 OS 钥匙串。注意只能用 `enabled` 标志：`is_*_active` 要构造 client、依赖密钥，缺密钥会误判。
-    if !any_im_enabled(&AppConfig::load_without_secrets()) {
+    // 方案4（spec §4）的「仅弹窗用户零钥匙串」目标现由缓存快照达成：快照在启动 / 配置变更时
+    // 已解析密钥，这里读缓存即可，热路径不再触碰钥匙串与磁盘。
+    let config = state.config_snapshot();
+    if !any_im_enabled(&config) {
         return false;
     }
-    let config = AppConfig::load();
     let request = entry.request().clone();
     let sink = entry.coordinator.clone();
     let mut attached = false;

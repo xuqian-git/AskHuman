@@ -262,7 +262,7 @@ pub(super) async fn ensure_select_routes(state: &Arc<ServerState>) {
             }
         });
     }
-    let config = AppConfig::load();
+    let config = state.config_snapshot();
     for (ch, mids) in desired {
         ensure_select_route_for(state, &config, &ch, mids).await;
     }
@@ -468,7 +468,7 @@ pub(super) async fn handle_select_card_action(
         return;
     };
     let lang = Lang::current();
-    let config = AppConfig::load();
+    let config = state.config_snapshot();
     match picker.kind {
         PickerKind::TaskWorkspace | PickerKind::TaskAgent | PickerKind::TaskPermission => {
             select_pick_task_flow(
@@ -780,7 +780,7 @@ pub(super) async fn handle_select_dd_action(state: &Arc<ServerState>, data: &ser
         return;
     }
     let lang = Lang::current();
-    let config = AppConfig::load();
+    let config = state.config_snapshot();
     match picker.kind {
         PickerKind::TaskWorkspace | PickerKind::TaskAgent | PickerKind::TaskPermission => {
             select_pick_task_flow(
@@ -1057,7 +1057,7 @@ pub(super) async fn handle_select_tg_action(state: &Arc<ServerState>, cb: &serde
     else {
         return;
     };
-    let config = AppConfig::load();
+    let config = state.config_snapshot();
     // 应答 callback（消除客户端转圈，best-effort）。
     if let Some(id) = cb.get("id").and_then(|i| i.as_str()) {
         let tg = &config.channels.telegram;
@@ -1084,7 +1084,7 @@ pub(super) async fn handle_select_slack_action(
     state: &Arc<ServerState>,
     payload: &serde_json::Value,
 ) {
-    let config = AppConfig::load();
+    let config = state.config_snapshot();
     if let Some((ts, slot)) = crate::slack::confirm::parse_confirm_action(payload) {
         handle_confirm_action(state, "slack", &ts, slot, None).await;
         return;

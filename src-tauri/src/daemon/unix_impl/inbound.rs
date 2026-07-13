@@ -13,12 +13,11 @@ use super::*;
 pub(super) async fn ensure_inbound_listeners(state: &Arc<ServerState>) {
     // 「存活即监听」：不再用「有工作中 agent」门控——只要 daemon 存活且有启用 IM 就监听，与工作中 agent /
     // 在途提问 / 自动激活开关全部无关（使任何消息在世期间都能被收到并回复）。
-    // 方案4（spec §4）：仍先用 `enabled` 标志（零钥匙串）门控——无任何启用的 IM 渠道则无须建监听，
-    // 跳过 `AppConfig::load()` 的钥匙串读取。
-    if !any_im_enabled(&AppConfig::load_without_secrets()) {
+    // 读缓存快照（密钥已解析、config_watch 保鲜），无任何启用的 IM 渠道则无须建监听。
+    let config = state.config_snapshot();
+    if !any_im_enabled(&config) {
         return;
     }
-    let config = AppConfig::load();
 
     if crate::app::is_feishu_active(&config) {
         if let Some(stop) = state.inbound_listeners.claim("feishu") {
@@ -384,7 +383,7 @@ pub(super) fn spawn_read_receipts(
             .unwrap_or(0);
         let text =
             crate::i18n::tr(lang, "autoChannel.msgReadReceipt").replace("{id}", &seq.to_string());
-        let config = AppConfig::load();
+        let config = state.config_snapshot();
         for ch in channels {
             let _ = reply_channel_text(&ch, &config, &text).await;
         }
@@ -1108,7 +1107,7 @@ pub(super) fn task_source_target(config: &AppConfig, channel_id: &str) -> String
 pub(super) async fn handle_inbound(state: &Arc<ServerState>, channel_id: &str, text: Option<&str>) {
     use crate::autochannel::{classify, help_text, Command, Parsed};
     let lang = Lang::current();
-    let config = AppConfig::load();
+    let config = state.config_snapshot();
     let auto = config.channels.auto_activation;
     // `/watch` 渠道门控（spec docs/specs/im-watch.md）：决定 help 是否列 watch 命令。
     let watch_cmd = crate::watch::channel_supported(channel_id);
@@ -1367,7 +1366,7 @@ pub(super) async fn set_active_channel(state: &Arc<ServerState>, new_id: &str) -
     };
     crate::autochannel::save_active(Some(new_id));
     log(&format!("auto-channel: active slot -> {}", new_id));
-    let cfg = AppConfig::load();
+    let cfg = state.config_snapshot();
     // 旧渠道反激活提示（仅真实 IM；"popup" / None 无收件端，跳过）。
     if let Some(old) = prev {
         if old != "popup" && old != new_id {
@@ -1876,7 +1875,7 @@ pub(super) async fn handle_confirm_action(
     ack: Option<crate::confirm::transport::FsAck>,
 ) {
     let lang = Lang::current();
-    let config = AppConfig::load();
+    let config = state.config_snapshot();
     let entry = {
         let mut cs = state.select.confirms.lock().unwrap();
         let pos = cs
