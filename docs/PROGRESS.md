@@ -5,8 +5,9 @@
 ## 【进行中】项目 review 第三轮落实：R7 渠道故障可见化 + R9 设置页搜索
 
 分支 `chore/project-review-2026-07`。第三轮报告（R6–R15）见
-`docs/investigations/project-review-2026-07.md`；用户选定先做 R7（渠道运行时故障
-挂进 TrayState：托盘警示 + 设置页渠道卡片显示最近错误）与 R9（设置页搜索）。
+`docs/investigations/project-review-2026-07.md`。R7（渠道健康登记表 + 托盘警示行 +
+设置页渠道卡横幅）与 R9（tabbar 搜索框，跳转 + 高亮）代码已完成并提交，
+测试全过（Rust 635 / 前端 28）。当前：install.sh 换新 + 真机验证中。
 其余 R6/R8/R10–R15 未排期。另：TCC 弹窗修复用户尚未真机验证（Agent 任务确认弹层已验收）。
 
 ## 待办：项目 review 的 P2 项（择机）

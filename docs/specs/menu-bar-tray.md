@@ -8,6 +8,13 @@
 > 请求与 Agent 摘要，使菜单可聚焦 Popup、打开插话 composer 或聚焦终端。托盘菜单由 `app/tray_menu.rs`
 > 按稳定 key 做最小 diff，daemon socket 用文件监听唤醒重连。`general.daemonLifecycle=keepalive` 是与
 > `menuBarIcon` 正交的 daemon 常驻策略，GUI Host 与 daemon 使用各自登录项。
+>
+> **渠道故障可见化（R7，2026-07）**：daemon 进程内新增渠道健康登记表（`channels/health.rs`）——四家
+> IM 客户端的统一请求出口失败即登记、该渠道下一次任何成功操作即清除（纯内存态，daemon 重启即清）。
+> 快照经 `TrayState.channel_issues` / `StatusInfo.channel_issues` 下发（旧端缺字段 → 空，不显示）；
+> 登记表内容变化即推一帧 TrayState。托盘状态区逐渠道显示可点击的「⚠ 渠道异常（时间）」行，点击打开
+> 设置窗口并定位渠道 tab（新开窗经 URL `?tab=`、已开窗经 `settings-goto-tab` 事件）；设置页渠道卡
+> 顶部显示错误横幅，渠道 tab 可见期间每 10s 轻量轮询刷新。
 
 ## 1. 背景与动机
 
