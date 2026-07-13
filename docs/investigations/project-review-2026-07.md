@@ -116,6 +116,8 @@ semver 范围内**，跑一次 `cargo update`（或至少针对这三个包 upda
   `dirs` 5 → 6、`thiserror` 1 → 2（低风险小迁移）。
 - **前端 dev 链**：vite 6 → 8、typescript 5.9 → 7、vue-tsc 2 → 3、@vitejs/plugin-vue 5 → 6。
   建议作为一个独立小任务整体升级 dev 工具链（相互有版本约束，单独升某一个容易踩坑）。
+  （落实时实测：TS 7 为 Go 版 tsc，vue-tsc 3.3 仍依赖 TS 5.x 的 JS 内部实现，二者不兼容；
+  故 vite/plugin-vue/vue-tsc 升 major，TypeScript 保持 5.9，待 vue-tsc 支持 TS7 后再升。）
 - 运行时依赖（vue/markdown-it/@tauri-apps/api）只差 patch/minor，随手 `pnpm update` 即可。
 - `pnpm audit` 当前无漏洞。
 
