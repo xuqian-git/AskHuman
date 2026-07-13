@@ -1605,13 +1605,13 @@ where
         None => "index.html?view=settings".to_string(),
     };
     let builder = WebviewWindowBuilder::new(manager, "settings", WebviewUrl::App(url.into()))
-    .title(i18n::tr(lang, "title.settings"))
-    .inner_size(560.0, 640.0)
-    // 最小宽度：保证标题栏内居中的 tab 不会与左上角红绿灯重叠。
-    .min_inner_size(480.0, 520.0)
-    .center()
-    .always_on_top(pin_above_popup)
-    .theme(theme);
+        .title(i18n::tr(lang, "title.settings"))
+        .inner_size(560.0, 640.0)
+        // 最小宽度：保证标题栏内居中的 tab 不会与左上角红绿灯重叠。
+        .min_inner_size(480.0, 520.0)
+        .center()
+        .always_on_top(pin_above_popup)
+        .theme(theme);
     let window_effect = config.general.window_effect;
     #[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
     let win = apply_surface(builder, window_bg, window_effect).build()?;

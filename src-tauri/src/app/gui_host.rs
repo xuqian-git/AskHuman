@@ -342,7 +342,13 @@ pub fn refresh_tray(app: &AppHandle) {
 /// 决定菜单/图标渲染结果的全部输入拼成的签名：与上次相同即「整次跳过」（菜单已是正确状态，连 diff 都省，
 /// 确保展开的菜单纹丝不动）；不同才进入 diff。**必须覆盖 `build_specs` 与图标/tooltip 的每个输入**，
 /// 否则真变化会被误跳过。uptime 取分钟级文案，避免秒级微变把每次推送都判为「有变化」。
-fn menu_signature(up: bool, lang: Lang, data: &TrayData, lifecycle_on: bool, stale: bool) -> String {
+fn menu_signature(
+    up: bool,
+    lang: Lang,
+    data: &TrayData,
+    lifecycle_on: bool,
+    stale: bool,
+) -> String {
     // 待答子菜单内容（id+预览）也入签名：列表/预览变化即触发 diff。
     let pending: String = data
         .pending_requests
@@ -432,7 +438,13 @@ fn fmt_uptime(secs: u64) -> String {
 /// 生成「期望的托盘菜单节点列表」（声明式，spec D7）：状态区只读条目 + 操作区可点条目。
 /// 每个节点带稳定 `key`（可点条目的 `key` 即事件路由 id）；由 `TrayMenu::apply` diff 应用——
 /// 文字变化只 `set_text`、结构变化才最小增删，绝不整段重建（整段重建会关掉已展开菜单）。
-fn build_specs(up: bool, lang: Lang, data: &TrayData, lifecycle_on: bool, stale: bool) -> Vec<Node> {
+fn build_specs(
+    up: bool,
+    lang: Lang,
+    data: &TrayData,
+    lifecycle_on: bool,
+    stale: bool,
+) -> Vec<Node> {
     let mut nodes: Vec<Node> = Vec::new();
 
     // —— 状态区（只读）——
@@ -474,7 +486,10 @@ fn build_specs(up: bool, lang: Lang, data: &TrayData, lifecycle_on: bool, stale:
             nodes.push(Node::item(
                 format!("chissue:{}", issue.channel),
                 i18n::tr(lang, "tray.channelIssue")
-                    .replace("{ch}", &crate::autochannel::channel_label(&issue.channel, lang))
+                    .replace(
+                        "{ch}",
+                        &crate::autochannel::channel_label(&issue.channel, lang),
+                    )
                     .replace("{t}", &fmt_ago(issue.at_ms, lang)),
                 true,
             ));
@@ -882,7 +897,13 @@ pub(crate) fn open_window(
 /// 打开（或聚焦）设置窗口并定位到指定 tab（R7 托盘渠道故障行使用）。
 /// 已开窗 → `create_settings_window` 内经 `settings-goto-tab` 事件切 tab；新开 → tab 进初始 URL。
 fn open_window_settings_tab(app: &AppHandle, tab: &str) {
-    open_window(app, WindowKind::Settings, false, Some(tab.to_string()), None);
+    open_window(
+        app,
+        WindowKind::Settings,
+        false,
+        Some(tab.to_string()),
+        None,
+    );
 }
 
 /// 重算宿主承载的窗口数，并据此维护续命连接与退出判定。可在任意线程调用（只读窗口表 + 原子）。
