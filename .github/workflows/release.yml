@@ -173,6 +173,8 @@ jobs:
               tar -czf "release-assets/AskHuman-$target-v$VERSION.tar.gz" -C "$dest" "$exe"
             fi
           done
+          # 供 self-update 下载后做完整性校验（见 src-tauri/src/update/direct.rs）。
+          (cd release-assets && sha256sum -- * > SHA256SUMS)
           ls -la release-assets
 
       - name: Publish to npm

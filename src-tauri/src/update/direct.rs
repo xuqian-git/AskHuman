@@ -90,6 +90,56 @@ fn asset_url_for_triple(release: &Value, triple: &str) -> Option<String> {
     None
 }
 
+/// 纯函数：按资产名精确匹配 `browser_download_url`。
+#[cfg_attr(not(unix), allow(dead_code))] // 非 Unix 无自动更新路径，仅测试使用
+fn asset_url_by_name(release: &Value, name: &str) -> Option<String> {
+    let assets = release.get("assets")?.as_array()?;
+    assets
+        .iter()
+        .find(|a| a.get("name").and_then(|v| v.as_str()) == Some(name))
+        .and_then(|a| a.get("browser_download_url").and_then(|v| v.as_str()))
+        .map(|s| s.to_string())
+}
+
+/// 下载 SHA256SUMS 并校验已下载压缩包的哈希（`sha256sum` 输出格式：`<hex>  <文件名>`）。
+#[cfg(unix)]
+async fn verify_archive_sha256(
+    archive: &std::path::Path,
+    file_name: &str,
+    sums_url: &str,
+) -> Result<()> {
+    use sha2::{Digest, Sha256};
+    let resp = http_client()
+        .get(sums_url)
+        .send()
+        .await
+        .context("下载 SHA256SUMS 失败")?;
+    if !resp.status().is_success() {
+        return Err(anyhow!("下载 SHA256SUMS 失败：HTTP {}", resp.status()));
+    }
+    let text = resp.text().await.context("读取 SHA256SUMS 失败")?;
+    let expected = expected_sha256(&text, file_name)
+        .ok_or_else(|| anyhow!("SHA256SUMS 中没有 {file_name} 的条目"))?;
+    let bytes = std::fs::read(archive).context("读取下载文件失败")?;
+    let actual = format!("{:x}", Sha256::digest(&bytes));
+    if !actual.eq_ignore_ascii_case(&expected) {
+        return Err(anyhow!(
+            "下载文件校验和不符（期望 {expected}，实际 {actual}），已中止更新"
+        ));
+    }
+    Ok(())
+}
+
+/// 纯函数：从 `sha256sum` 格式文本中取指定文件的哈希（容忍 `*` 二进制标记）。
+#[cfg_attr(not(unix), allow(dead_code))] // 非 Unix 无自动更新路径，仅测试使用
+fn expected_sha256(sums: &str, file_name: &str) -> Option<String> {
+    sums.lines().find_map(|line| {
+        let (hash, name) = line.trim().split_once(char::is_whitespace)?;
+        let name = name.trim().trim_start_matches('*');
+        (name == file_name && !hash.is_empty()).then(|| hash.to_string())
+    })
+}
+
 #[cfg(unix)]
 async fn apply_unix(progress: Option<ProgressCb>) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -115,6 +165,12 @@ async fn apply_unix(progress: Option<ProgressCb>) -> Result<()> {
         .to_string();
     let archive = work.join(&file_name);
     download_with_progress(&url, &archive, progress).await?;
+
+    // 完整性校验：release 若带 SHA256SUMS（新发布均随资产发布），下载产物必须匹配；
+    // 旧发布没有该文件则跳过（macOS 后续还有 codesign 把关真实性）。
+    if let Some(sums_url) = asset_url_by_name(&release, "SHA256SUMS") {
+        verify_archive_sha256(&archive, &file_name, &sums_url).await?;
+    }
 
     // 解压（shell out tar/unzip；mac/Linux 自带）。
     let extract = work.join("extract");
@@ -333,6 +389,37 @@ mod tests {
             asset_url_for_triple(&release, "riscv64-unknown-linux-gnu"),
             None
         );
+    }
+
+    #[test]
+    fn sha256sums_lookup_matches_exact_file() {
+        let sums = "abc123  AskHuman-aarch64-apple-darwin-v0.9.1.tar.gz\n\
+                    def456 *AskHuman-x86_64-pc-windows-msvc-v0.9.1.zip\n";
+        assert_eq!(
+            expected_sha256(sums, "AskHuman-aarch64-apple-darwin-v0.9.1.tar.gz").as_deref(),
+            Some("abc123")
+        );
+        assert_eq!(
+            expected_sha256(sums, "AskHuman-x86_64-pc-windows-msvc-v0.9.1.zip").as_deref(),
+            Some("def456"),
+            "binary-mode `*` marker must be tolerated"
+        );
+        assert_eq!(expected_sha256(sums, "other.tar.gz"), None);
+    }
+
+    #[test]
+    fn asset_lookup_by_name_is_exact() {
+        let release = json!({
+            "assets": [
+                { "name": "SHA256SUMS", "browser_download_url": "https://example.com/sums" },
+                { "name": "AskHuman-x.tar.gz", "browser_download_url": "https://example.com/x" }
+            ]
+        });
+        assert_eq!(
+            asset_url_by_name(&release, "SHA256SUMS").as_deref(),
+            Some("https://example.com/sums")
+        );
+        assert_eq!(asset_url_by_name(&release, "missing"), None);
     }
 
     #[test]
