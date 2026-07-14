@@ -27,6 +27,9 @@ tauri-build = { version = "2" }
 tauri = { version = "2", features = ["macos-private-api", "tray-icon", "image-png"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Line-oriented permission preview diffs. Keep 2.x for the repository's Rust 1.82 MSRV;
+# similar 3.x requires Rust 1.85.
+similar = "2.7"
 # 以 CST 做“保留格式的最小化编辑”改写 hooks.json / settings.json：
 # 只触碰本应用注入的条目，用户的注释 / 缩进 / 转义（如 http:\/\/）逐字节保留；
 # 解析失败即中止，绝不整份重写覆盖用户文件。

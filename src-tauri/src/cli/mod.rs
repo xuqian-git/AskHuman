@@ -222,6 +222,16 @@ pub fn dispatch() {
             }
             exit(0);
         }
+        // Hidden short-lived file snapshot worker used only by the local permission popup.
+        "__permission-diff-worker" => {
+            #[cfg(unix)]
+            {
+                if let Some(output) = crate::permission_diff::worker::run_stdio() {
+                    print_line(&output);
+                }
+            }
+            exit(0);
+        }
         // Agent 状态 + 集成子命令组（spec：cli-config）：monitor / show / install / uninstall / update。
         "agents" => {
             agents_cmd::dispatch(&argv[2..], lang);

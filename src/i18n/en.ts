@@ -24,6 +24,33 @@ export default {
     addImage: "Add image",
     recommended: "Recommended",
     permissionReason: "Reason:",
+    permissionDiff: {
+      title: "Proposed changes",
+      files: "{n} files",
+      additions: "+{n}",
+      deletions: "−{n}",
+      originalParams: "Original tool parameters",
+      snapshotAt: "Read at {time}",
+      omitted: "Omitted {files} files, {hunks} hunks, and {lines} lines",
+      loadingSnapshot: "Reading the local file snapshot…",
+      status: {
+        payload_only:
+          "The original file could not be read. This diff comes only from the agent payload and may be inaccurate.",
+        snapshot_ready: "Combined with a local file snapshot",
+        new_file: "New file (the path does not currently exist)",
+        protected_path:
+          "The protected or high-risk path was not read. This diff may be inaccurate.",
+        timeout: "Reading the original file timed out. This diff may be inaccurate.",
+        too_large: "The file or diff exceeds the safety limit and may be incomplete.",
+        too_many_files: "The file count exceeds the safety limit and the diff may be incomplete.",
+        non_utf8: "The original file is not UTF-8 text. This diff may be inaccurate.",
+        not_regular_file: "The original path is not a regular file. This diff may be inaccurate.",
+        unreadable: "The original file could not be read safely. This diff may be inaccurate.",
+        source_mismatch:
+          "Local content does not match the proposed edit. This diff may be inaccurate.",
+        unsupported: "This native edit does not provide a diff yet",
+      },
+    },
     view: {
       copyMessage: "Copy message",
       viewSource: "View source",

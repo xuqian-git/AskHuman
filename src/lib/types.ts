@@ -62,6 +62,106 @@ export interface ConfirmRequest {
   expiresAtMs: number;
 }
 
+export type SnapshotStatus =
+  | "payload_only"
+  | "snapshot_ready"
+  | "new_file"
+  | "protected_path"
+  | "timeout"
+  | "too_large"
+  | "too_many_files"
+  | "non_utf8"
+  | "not_regular_file"
+  | "unreadable"
+  | "source_mismatch"
+  | "unsupported";
+
+export type PermissionFileChangeKind =
+  | "added"
+  | "modified"
+  | "deleted"
+  | "moved"
+  | "proposed";
+
+export type PermissionDiffLineKind = "context" | "add" | "delete" | "meta";
+
+export interface PermissionDiffLine {
+  kind: PermissionDiffLineKind;
+  oldLine?: number | null;
+  newLine?: number | null;
+  text: string;
+}
+
+export interface PermissionDiffHunk {
+  oldStart?: number | null;
+  newStart?: number | null;
+  header: string;
+  lines: PermissionDiffLine[];
+}
+
+export interface PermissionDiffFile {
+  changeKind: PermissionFileChangeKind;
+  oldPath?: string | null;
+  newPath: string;
+  snapshotStatus: SnapshotStatus;
+  hunks: PermissionDiffHunk[];
+  additions: number;
+  deletions: number;
+  omittedHunks: number;
+  omittedLines: number;
+}
+
+export interface PermissionDiffModel {
+  requestId: string;
+  snapshotStatus: SnapshotStatus;
+  snapshotAtMs?: number | null;
+  files: PermissionDiffFile[];
+  totalFiles: number;
+  additions: number;
+  deletions: number;
+  omittedFiles: number;
+  omittedHunks: number;
+  omittedLines: number;
+  truncated: boolean;
+}
+
+export interface PatchLine {
+  kind: PermissionDiffLineKind;
+  text: string;
+}
+
+export interface PatchHunk {
+  header: string;
+  lines: PatchLine[];
+}
+
+export interface PatchFile {
+  kind: "add" | "update" | "delete" | "move";
+  oldPath?: string | null;
+  newPath: string;
+  hunks: PatchHunk[];
+}
+
+export type PermissionEditOperation =
+  | {
+      type: "textReplace";
+      path: string;
+      oldText: string;
+      newText: string;
+      replaceAll: boolean;
+    }
+  | { type: "wholeFileWrite"; path: string; content: string }
+  | { type: "patchSet"; files: PatchFile[] }
+  | { type: "unsupported"; reason: "notebook_edit" | "invalid_payload" };
+
+export interface PermissionEditIntent {
+  agentKind: string;
+  nativeTool: string;
+  workspace: string;
+  operation: PermissionEditOperation;
+  initialDiff?: PermissionDiffModel | null;
+}
+
 export type InteractionRequest =
   | { type: "ask"; request: AskRequest }
   | { type: "confirm"; request: ConfirmRequest };
@@ -104,6 +204,8 @@ export type WindowEffect = "glass" | "blur";
 export interface PopupInit {
   /** Current interaction. A prewarmed popup returns null until assigned. */
   interaction: InteractionRequest | null;
+  /** Local-popup-only native edit intent for permission confirmations. */
+  popupEdit?: PermissionEditIntent | null;
   theme: ThemeMode;
   alwaysOnTop: boolean;
   sourceName: string;

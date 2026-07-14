@@ -42,6 +42,7 @@ mod mcp;
 mod models;
 mod paths;
 mod perf;
+mod permission_diff;
 mod permissions;
 mod project;
 mod prompts;

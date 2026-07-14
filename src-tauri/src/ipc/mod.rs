@@ -165,6 +165,10 @@ pub struct TaskRequest {
 #[serde(rename_all = "camelCase")]
 pub struct ConfirmTask {
     pub spec: ConfirmSpec,
+    /// Structured native edit intent used only by the local permission popup. It is forwarded in
+    /// `ShowPayload`, never copied into the daemon-owned `ConfirmRequest` used by IM/history.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub popup_edit: Option<Box<crate::permission_diff::PermissionEditIntent>>,
     /// Caller source label used by popup/IM headers.
     pub source: String,
     /// Resolved UI language ("en" / "zh").
@@ -247,6 +251,9 @@ pub struct ShowPayload {
     pub request_id: String,
     /// Complete daemon-owned interaction, discriminated for popup rendering.
     pub interaction: InteractionRequest,
+    /// Local-popup-only native edit intent. Snapshot contents are never carried through daemon IPC.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub popup_edit: Option<Box<crate::permission_diff::PermissionEditIntent>>,
     /// 调用方来源名（弹窗标题「Question from {source}」）。
     pub source: String,
     /// 界面语言（"en" / "zh"）。
@@ -606,6 +613,7 @@ mod tests {
                 },
                 dismiss_action_id: "deny".into(),
             },
+            popup_edit: None,
             source: "Claude Code".into(),
             lang: "en".into(),
             project: "/tmp/project".into(),

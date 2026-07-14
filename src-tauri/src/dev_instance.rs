@@ -75,7 +75,7 @@ pub fn classify_command(argv: &[String]) -> CommandClass {
         return CommandClass::Meta;
     };
     match first {
-        "--popup" | "--gui-host" => CommandClass::Skip,
+        "--popup" | "--gui-host" | "__permission-diff-worker" => CommandClass::Skip,
         "dev" | "--help" | "-h" | "--version" | "-v" | "--agent-help" | "--scripting-help" => {
             CommandClass::Meta
         }
@@ -203,6 +203,10 @@ mod tests {
         };
         assert_eq!(classify_command(&prog(&["--popup"])), CommandClass::Skip);
         assert_eq!(classify_command(&prog(&["--gui-host"])), CommandClass::Skip);
+        assert_eq!(
+            classify_command(&prog(&["__permission-diff-worker"])),
+            CommandClass::Skip
+        );
         assert_eq!(
             classify_command(&prog(&["dev", "enable"])),
             CommandClass::Meta

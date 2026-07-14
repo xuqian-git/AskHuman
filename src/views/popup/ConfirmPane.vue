@@ -2,6 +2,7 @@
 // Agent 权限确认面板（confirm 交互）：标题 + 理由 + 工具详情 + 单选动作 + 可选备注输入。
 import { useI18n } from "vue-i18n";
 import { usePopupContext } from "./context";
+import PermissionDiffPane from "./PermissionDiffPane.vue";
 
 const { t } = useI18n();
 const {
@@ -12,6 +13,9 @@ const {
   showConfirmInput,
   confirmDetailHtml,
   confirmToolName,
+  permissionEdit,
+  permissionDiff,
+  permissionDiffLoading,
   selectConfirmChoice,
   onContentClick,
 } = usePopupContext();
@@ -26,8 +30,25 @@ const {
     </p>
     <section class="confirm-tool">
       <header class="confirm-tool-header">{{ confirmToolName }}</header>
+      <PermissionDiffPane
+        v-if="permissionEdit && permissionDiff"
+        :model="permissionDiff"
+        :loading="permissionDiffLoading"
+        :workspace="permissionEdit.workspace"
+      />
+      <details
+        v-if="permissionEdit && confirmRequest.detail.bodyMd"
+        class="confirm-raw-details"
+      >
+        <summary>{{ t("popup.permissionDiff.originalParams") }}</summary>
+        <div
+          class="markdown-body confirm-detail"
+          v-html="confirmDetailHtml"
+          @click="onContentClick"
+        ></div>
+      </details>
       <div
-        v-if="confirmRequest.detail.bodyMd"
+        v-else-if="confirmRequest.detail.bodyMd"
         class="markdown-body confirm-detail"
         v-html="confirmDetailHtml"
         @click="onContentClick"

@@ -16,6 +16,8 @@ use tauri::{AppHandle, Emitter, Manager, State};
 pub struct PopupInit {
     /// Current interaction. A prewarmed helper returns `None` until it is assigned.
     interaction: Option<InteractionRequest>,
+    /// Native edit intent used only by the local permission popup.
+    popup_edit: Option<Box<crate::permission_diff::PermissionEditIntent>>,
     theme: String,
     always_on_top: bool,
     /// 标题来源名：「Question from {source_name}」。可经环境变量定制。
@@ -57,45 +59,68 @@ pub fn popup_init(app: AppHandle, state: State<AppState>) -> PopupInit {
     // en/zh）；其余路径用本进程 config 的原始值（auto/en/zh）。
     let default_lang = state.config.general.language.clone();
     #[cfg(unix)]
-    let (interaction, source, project, agent_kind, agent_pid, language, warm, created_at_ms) =
-        if let Some(w) = app.try_state::<crate::app::WarmPopup>() {
-            match w.show.lock().ok().and_then(|g| g.clone()) {
-                Some(s) => (
-                    Some(s.interaction),
-                    s.source,
-                    s.project,
-                    s.agent_kind,
-                    s.agent_pid,
-                    s.lang,
-                    true,
-                    s.created_at_ms,
-                ),
-                None => (
-                    None,
-                    String::new(),
-                    String::new(),
-                    None,
-                    None,
-                    default_lang,
-                    true,
-                    0,
-                ),
-            }
-        } else {
-            (
-                Some(state.interaction.clone()),
-                state.source.clone(),
-                state.project.clone(),
-                state.agent_kind.clone(),
-                state.agent_pid,
+    let (
+        interaction,
+        popup_edit,
+        source,
+        project,
+        agent_kind,
+        agent_pid,
+        language,
+        warm,
+        created_at_ms,
+    ) = if let Some(w) = app.try_state::<crate::app::WarmPopup>() {
+        match w.show.lock().ok().and_then(|g| g.clone()) {
+            Some(s) => (
+                Some(s.interaction),
+                s.popup_edit,
+                s.source,
+                s.project,
+                s.agent_kind,
+                s.agent_pid,
+                s.lang,
+                true,
+                s.created_at_ms,
+            ),
+            None => (
+                None,
+                None,
+                String::new(),
+                String::new(),
+                None,
+                None,
                 default_lang,
-                false,
-                state.created_at_ms,
-            )
-        };
+                true,
+                0,
+            ),
+        }
+    } else {
+        (
+            Some(state.interaction.clone()),
+            state.popup_edit.clone(),
+            state.source.clone(),
+            state.project.clone(),
+            state.agent_kind.clone(),
+            state.agent_pid,
+            default_lang,
+            false,
+            state.created_at_ms,
+        )
+    };
     #[cfg(not(unix))]
-    let (interaction, source, project, agent_kind, agent_pid, language, warm, created_at_ms) = (
+    let (
+        interaction,
+        popup_edit,
+        source,
+        project,
+        agent_kind,
+        agent_pid,
+        language,
+        warm,
+        created_at_ms,
+    ) = (
         Some(state.interaction.clone()),
+        state.popup_edit.clone(),
         state.source.clone(),
         state.project.clone(),
         state.agent_kind.clone(),
@@ -118,6 +143,7 @@ pub fn popup_init(app: AppHandle, state: State<AppState>) -> PopupInit {
     let project_name = crate::project::display_name(&project);
     PopupInit {
         interaction,
+        popup_edit,
         theme: theme_str(cfg.general.theme),
         always_on_top: cfg.general.always_on_top,
         // GUI Helper 模式下来源名由 Daemon 上送（A11）；单进程 / 设置回退取本进程环境。
@@ -134,6 +160,76 @@ pub fn popup_init(app: AppHandle, state: State<AppState>) -> PopupInit {
         perf_autodismiss: crate::perf::autodismiss(),
         warm,
         created_at_ms,
+    }
+}
+
+#[tauri::command]
+pub async fn enrich_permission_diff(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    request_id: String,
+) -> Result<crate::permission_diff::PermissionDiffModel, String> {
+    #[cfg(unix)]
+    let (current_id, intent) = if let Some(warm) = app.try_state::<crate::app::WarmPopup>() {
+        let show = warm
+            .show
+            .lock()
+            .map_err(|_| "permission diff state unavailable".to_string())?
+            .clone()
+            .ok_or_else(|| "permission diff request is not assigned".to_string())?;
+        (show.request_id, show.popup_edit)
+    } else {
+        let id = state
+            .interaction
+            .confirm()
+            .map(|request| request.id.clone())
+            .ok_or_else(|| "permission diff requires a confirmation".to_string())?;
+        (id, state.popup_edit.clone())
+    };
+    #[cfg(not(unix))]
+    let (current_id, intent) = {
+        let _ = &app;
+        let id = state
+            .interaction
+            .confirm()
+            .map(|request| request.id.clone())
+            .ok_or_else(|| "permission diff requires a confirmation".to_string())?;
+        (id, state.popup_edit.clone())
+    };
+
+    if current_id != request_id {
+        return Err("permission diff request changed".to_string());
+    }
+    let intent = *intent.ok_or_else(|| "permission diff is unavailable".to_string())?;
+    let paths = crate::permission_diff::safety::operation_paths(&intent);
+    if paths.is_empty() {
+        return Ok(crate::permission_diff::worker::fallback_model(
+            &intent,
+            &request_id,
+            crate::permission_diff::SnapshotStatus::Unsupported,
+        ));
+    }
+    let protected_paths = crate::permission_diff::safety::protected_paths(&intent);
+    if protected_paths.len() >= paths.len() {
+        return Ok(crate::permission_diff::worker::fallback_model(
+            &intent,
+            &request_id,
+            crate::permission_diff::SnapshotStatus::ProtectedPath,
+        ));
+    }
+    let input = crate::permission_diff::PermissionDiffWorkerInput {
+        request_id: request_id.clone(),
+        intent: intent.clone(),
+        protected_paths,
+    };
+    match crate::permission_diff::worker::spawn_worker(input).await {
+        Ok(output) if output.request_id == request_id => Ok(output.model),
+        Ok(_) => Err("permission diff worker returned a stale result".to_string()),
+        Err(status) => Ok(crate::permission_diff::worker::fallback_model(
+            &intent,
+            &request_id,
+            status,
+        )),
     }
 }
 

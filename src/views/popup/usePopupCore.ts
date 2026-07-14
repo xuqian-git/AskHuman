@@ -8,6 +8,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   popupInit,
+  enrichPermissionDiff,
   submitPopup,
   submitConfirmAction,
   confirmPopupReady,
@@ -36,6 +37,8 @@ import type {
   FileAttachment,
   ImageAttachment,
   PopupInit,
+  PermissionDiffModel,
+  PermissionEditIntent,
   Question,
   QuestionAnswer,
   ThemeMode,
@@ -59,6 +62,9 @@ export function usePopupCore() {
   const isConfirm = computed(() => confirmRequest.value !== null);
   const confirmChoiceIndex = ref<number | null>(null);
   const confirmComment = ref("");
+  const permissionEdit = ref<PermissionEditIntent | null>(null);
+  const permissionDiff = ref<PermissionDiffModel | null>(null);
+  const permissionDiffLoading = ref(false);
   const showConfirmCloseWarning = ref(false);
   const loadError = ref<string | null>(null);
 
@@ -930,6 +936,24 @@ export function usePopupCore() {
       "Tool"
   );
 
+  function startPermissionDiffEnrichment() {
+    const edit = permissionEdit.value;
+    const id = confirmRequest.value?.id;
+    if (!edit || !id || edit.operation.type === "unsupported") return;
+    permissionDiffLoading.value = true;
+    perfMarkFe("permission_diff.worker_start");
+    void enrichPermissionDiff(id)
+      .then((model) => {
+        if (confirmRequest.value?.id === id && model.requestId === id) {
+          permissionDiff.value = model;
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (confirmRequest.value?.id === id) permissionDiffLoading.value = false;
+      });
+  }
+
   function selectConfirmChoice(index: number) {
     if (!submitting.value) confirmChoiceIndex.value = index;
   }
@@ -1125,6 +1149,14 @@ export function usePopupCore() {
     const req = interaction.type === "ask" ? interaction.request : null;
     request.value = req;
     confirmRequest.value = interaction.type === "confirm" ? interaction.request : null;
+    permissionEdit.value = interaction.type === "confirm" ? init.popupEdit ?? null : null;
+    permissionDiff.value = permissionEdit.value?.initialDiff
+      ? {
+          ...permissionEdit.value.initialDiff,
+          requestId: interaction.type === "confirm" ? interaction.request.id : "",
+        }
+      : null;
+    permissionDiffLoading.value = false;
     confirmChoiceIndex.value =
       interaction.type === "confirm" && interaction.request.presentation.defaultActionId
         ? interaction.request.choices.findIndex(
@@ -1169,6 +1201,7 @@ export function usePopupCore() {
         requestAnimationFrame(() => {
           perfMarkFe("fe.painted");
           if (isConfirm.value) confirmPopupReady().catch(() => {});
+          startPermissionDiffEnrichment();
           // harness 模式：内容已上屏即自动取消，免人工点按。
           if (init.perfAutodismiss && !isConfirm.value) {
             cancelPopup().catch(() => {});
@@ -1464,6 +1497,9 @@ export function usePopupCore() {
     confirmCanSubmit,
     confirmDetailHtml,
     confirmToolName,
+    permissionEdit,
+    permissionDiff,
+    permissionDiffLoading,
     selectConfirmChoice,
     submitConfirm,
     requestConfirmClose,

@@ -31,7 +31,7 @@
   overflow: hidden;
   border: 1px solid var(--border);
   border-radius: 10px;
-  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  background: color-mix(in srgb, var(--bg) 92%, transparent);
   box-shadow: 0 1px 2px color-mix(in srgb, #000 4%, transparent);
 }
 .confirm-tool-header {
@@ -51,7 +51,209 @@
 .confirm-detail {
   min-width: 0;
   padding: 13px 14px 14px;
-  background: color-mix(in srgb, var(--surface) 68%, transparent);
+  background: color-mix(in srgb, var(--bg) 68%, transparent);
+}
+.permission-diff {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px 0 0;
+  background: color-mix(in srgb, var(--bg) 68%, transparent);
+}
+.permission-diff-summary,
+.permission-diff-status,
+.permission-diff-file-header {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+.permission-diff-summary {
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  padding: 0 14px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.permission-diff-summary strong {
+  color: var(--text-primary);
+  font-size: 13px;
+}
+.permission-diff-count {
+  margin-left: auto;
+}
+.permission-diff-stat {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-weight: 600;
+}
+.permission-diff-stat.additions {
+  color: #248a3d;
+}
+.permission-diff-stat.deletions {
+  color: #d70015;
+}
+.permission-diff-status {
+  gap: 7px;
+  margin: 0 14px;
+  padding: 1px 0;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  color: var(--text-secondary);
+  background: transparent;
+  font-size: 11px;
+  line-height: 1.35;
+}
+.permission-diff-status-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-secondary);
+}
+.permission-diff-status.status-snapshot_ready .permission-diff-status-dot,
+.permission-diff-status.status-new_file .permission-diff-status-dot {
+  background: #30a14e;
+}
+.permission-diff-status.status-payload_only .permission-diff-status-dot,
+.permission-diff-status.status-protected_path .permission-diff-status-dot,
+.permission-diff-status.status-timeout .permission-diff-status-dot,
+.permission-diff-status.status-too_large .permission-diff-status-dot,
+.permission-diff-status.status-too_many_files .permission-diff-status-dot,
+.permission-diff-status.status-non_utf8 .permission-diff-status-dot,
+.permission-diff-status.status-not_regular_file .permission-diff-status-dot,
+.permission-diff-status.status-unreadable .permission-diff-status-dot,
+.permission-diff-status.status-source_mismatch .permission-diff-status-dot,
+.permission-diff-status.status-unsupported .permission-diff-status-dot {
+  background: #d97706;
+}
+.permission-diff-status:not(.loading).status-payload_only,
+.permission-diff-status:not(.loading).status-protected_path,
+.permission-diff-status:not(.loading).status-timeout,
+.permission-diff-status:not(.loading).status-too_large,
+.permission-diff-status:not(.loading).status-too_many_files,
+.permission-diff-status:not(.loading).status-non_utf8,
+.permission-diff-status:not(.loading).status-not_regular_file,
+.permission-diff-status:not(.loading).status-unreadable,
+.permission-diff-status:not(.loading).status-source_mismatch,
+.permission-diff-status:not(.loading).status-unsupported {
+  padding: 7px 9px;
+  border-color: color-mix(in srgb, #d97706 28%, var(--border));
+  background: color-mix(in srgb, #d97706 9%, var(--bg));
+}
+.permission-diff-status.loading .permission-diff-status-dot {
+  animation: permission-diff-pulse 0.9s ease-in-out infinite alternate;
+}
+.permission-diff-time {
+  margin-left: auto;
+  white-space: nowrap;
+  color: var(--text-tertiary, var(--text-secondary));
+}
+.permission-diff-file {
+  min-width: 0;
+  border-top: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
+}
+.permission-diff-file-header {
+  gap: 9px;
+  padding: 8px 14px;
+  color: var(--text-primary);
+  background: color-mix(in srgb, var(--bg) 90%, transparent);
+  font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.permission-diff-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  user-select: text;
+}
+.permission-diff-move {
+  padding: 0 4px;
+  color: var(--text-secondary);
+}
+.permission-diff-file-status {
+  margin-left: auto;
+  color: var(--text-secondary);
+  font-family: var(--font-sans, -apple-system, BlinkMacSystemFont, sans-serif);
+  font-size: 10px;
+  white-space: nowrap;
+}
+.permission-diff-hunk {
+  min-width: 0;
+  overflow-x: auto;
+  background: color-mix(in srgb, var(--bg) 78%, transparent);
+}
+.permission-diff-hunk-header,
+.permission-diff-line {
+  min-width: max-content;
+  font: 11px/1.48 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.permission-diff-hunk-header {
+  padding: 5px 14px;
+  color: color-mix(in srgb, var(--accent) 78%, var(--text-secondary));
+  background: color-mix(in srgb, var(--accent) 7%, var(--bg));
+}
+.permission-diff-line {
+  display: grid;
+  grid-template-columns: 38px 38px 18px minmax(max-content, 1fr);
+  align-items: stretch;
+  min-height: 18px;
+}
+.permission-diff-line-no,
+.permission-diff-prefix {
+  padding: 1px 6px;
+  color: var(--text-secondary);
+  text-align: right;
+  user-select: none;
+}
+.permission-diff-prefix {
+  padding-left: 4px;
+  padding-right: 4px;
+  text-align: center;
+}
+.permission-diff-line code {
+  display: block;
+  padding: 1px 14px 1px 4px;
+  color: var(--text-primary);
+  background: transparent;
+  white-space: pre;
+  user-select: text;
+}
+.permission-diff-line.kind-add {
+  background: var(--diff-add-bg);
+}
+.permission-diff-line.kind-delete {
+  background: var(--diff-delete-bg);
+}
+.permission-diff-line.kind-meta {
+  color: var(--text-secondary);
+  font-style: italic;
+}
+.permission-diff-omitted {
+  margin: 0 14px 12px;
+  padding: 7px 9px;
+  border-radius: 7px;
+  color: var(--text-secondary);
+  background: color-mix(in srgb, #d97706 9%, var(--bg));
+  font-size: 11px;
+}
+.confirm-raw-details {
+  border-top: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
+}
+.confirm-raw-details > summary {
+  padding: 10px 14px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 12px;
+  user-select: none;
+}
+.confirm-raw-details[open] > summary {
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+}
+.confirm-raw-details .confirm-detail {
+  padding-top: 10px;
+}
+@keyframes permission-diff-pulse {
+  from { opacity: 0.35; }
+  to { opacity: 1; }
 }
 .confirm-options {
   display: grid;

@@ -9,6 +9,7 @@ use crate::models::{
     ConfirmChoice, ConfirmDetail, ConfirmField, ConfirmFieldKind, ConfirmInput,
     ConfirmPresentation, ConfirmResult, ConfirmSpec,
 };
+use crate::permission_diff::adapters::{normalize_permission_edit, AdapterOutcome};
 use serde_json::{json, Map, Value};
 use std::io::Read;
 
@@ -87,6 +88,10 @@ fn parse_permission(agent: Agent, input: &Value) -> Option<ParsedPermission> {
     }
 
     let (summary, body) = summarize_tool(&tool_name, &tool_input);
+    let popup_edit = match normalize_permission_edit(agent.id(), &tool_name, &tool_input, &cwd) {
+        AdapterOutcome::Intent(intent) => Some(intent),
+        AdapterOutcome::NotNativeEdit => None,
+    };
     let now = crate::history::now_ms();
     let project_name = crate::project::display_name(&cwd);
     let lang = crate::i18n::Lang::current();
@@ -237,6 +242,7 @@ fn parse_permission(agent: Agent, input: &Value) -> Option<ParsedPermission> {
         agent,
         task: ConfirmTask {
             spec,
+            popup_edit,
             source: agent.label().into(),
             lang: if zh { "zh" } else { "en" }.into(),
             project: cwd,
@@ -262,7 +268,7 @@ fn summarize_tool(tool: &str, input: &Value) -> (String, String) {
         .map(str::to_string)
         .unwrap_or_else(|| match tool {
             "Bash" => "Run a shell command".into(),
-            "apply_patch" | "Edit" | "Write" => "Modify files".into(),
+            "apply_patch" | "Edit" | "Write" | "NotebookEdit" => "Modify files".into(),
             value if value.starts_with("mcp__") => "Call an MCP tool".into(),
             _ => format!("Use {tool}"),
         });
@@ -500,6 +506,25 @@ mod tests {
         assert_eq!(
             deny["hookSpecificOutput"]["decision"]["message"],
             "The user denied this permission request via AskHuman. Reason: unsafe"
+        );
+    }
+
+    #[test]
+    fn native_edit_intent_is_popup_only_metadata() {
+        let mut value = input(Agent::Claude);
+        value["tool_name"] = json!("Edit");
+        value["tool_input"] = json!({
+            "file_path": "/tmp/project/a.txt",
+            "old_string": "old",
+            "new_string": "new"
+        });
+        let parsed = parse_permission(Agent::Claude, &value).unwrap();
+        let intent = parsed.task.popup_edit.as_ref().unwrap();
+        assert_eq!(intent.native_tool, "Edit");
+        assert_eq!(intent.workspace, "/tmp/project");
+        assert_eq!(
+            intent.initial_diff.as_ref().unwrap().snapshot_status,
+            crate::permission_diff::SnapshotStatus::PayloadOnly
         );
     }
 

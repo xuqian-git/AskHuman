@@ -217,6 +217,7 @@ pub fn create_internal_confirm(
     let show = ShowPayload {
         request_id: request_id.clone(),
         interaction: InteractionRequest::Confirm((*request).clone()),
+        popup_edit: None,
         source: source_channel.to_string(),
         lang: lang.to_string(),
         project: project.to_string(),
@@ -313,6 +314,7 @@ impl RequestRegistry {
         let show = ShowPayload {
             request_id: request_id.clone(),
             interaction: InteractionRequest::Ask(request),
+            popup_edit: None,
             source: task.source,
             lang: task.lang,
             project: task.project,
@@ -371,6 +373,9 @@ impl RequestRegistry {
         if task.agent_session_id.trim().is_empty() {
             return Err("confirm requires an agent session id".to_string());
         }
+        if let Some(intent) = task.popup_edit.as_ref() {
+            crate::permission_diff::validate_intent(intent, &task.agent_kind, &task.project)?;
+        }
         let request_id = uuid::Uuid::new_v4().to_string();
         let token = uuid::Uuid::new_v4().to_string();
         let created_at_ms = crate::perf::now_ms() as u64;
@@ -386,6 +391,7 @@ impl RequestRegistry {
         let show = ShowPayload {
             request_id: request_id.clone(),
             interaction: InteractionRequest::Confirm((*request).clone()),
+            popup_edit: task.popup_edit.clone(),
             source: task.source.clone(),
             lang: task.lang.clone(),
             project: task.project.clone(),
@@ -680,6 +686,8 @@ mod tests {
         ConfirmChoice, ConfirmDetail, ConfirmField, ConfirmFieldKind, ConfirmPresentation,
         ConfirmSpec,
     };
+    use crate::permission_diff::adapters::{normalize_permission_edit, AdapterOutcome};
+    use serde_json::json;
 
     fn confirm_task() -> ConfirmTask {
         let context = [
@@ -727,6 +735,7 @@ mod tests {
                 },
                 dismiss_action_id: "deny".into(),
             },
+            popup_edit: None,
             source: "Claude Code".into(),
             lang: "en".into(),
             project: "/tmp/project".into(),
@@ -763,6 +772,51 @@ mod tests {
             registry.attach_gui(&entry.token),
             Some(InteractionEntry::Confirm(_))
         ));
+    }
+
+    #[test]
+    fn popup_edit_is_forwarded_only_in_show_payload() {
+        let mut task = confirm_task();
+        let AdapterOutcome::Intent(intent) = normalize_permission_edit(
+            "claude",
+            "Edit",
+            &json!({
+                "file_path": "/tmp/project/a.txt",
+                "old_string": "old",
+                "new_string": "new"
+            }),
+            "/tmp/project",
+        ) else {
+            panic!("expected intent");
+        };
+        task.popup_edit = Some(intent);
+        let registry = RequestRegistry::new();
+        let (entry, _rx) = registry.create_confirm(task).unwrap();
+        assert!(entry.show.popup_edit.is_some());
+        let request_json = serde_json::to_string(&entry.request).unwrap();
+        assert!(!request_json.contains("popupEdit"));
+        assert!(!request_json.contains("oldText"));
+    }
+
+    #[test]
+    fn mismatched_popup_edit_is_rejected() {
+        let mut task = confirm_task();
+        let AdapterOutcome::Intent(mut intent) = normalize_permission_edit(
+            "claude",
+            "Edit",
+            &json!({
+                "file_path": "/tmp/project/a.txt",
+                "old_string": "old",
+                "new_string": "new"
+            }),
+            "/tmp/project",
+        ) else {
+            panic!("expected intent");
+        };
+        intent.agent_kind = "codex".into();
+        task.popup_edit = Some(intent);
+        let registry = RequestRegistry::new();
+        assert!(registry.create_confirm(task).is_err());
     }
 
     #[test]

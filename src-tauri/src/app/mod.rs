@@ -32,6 +32,8 @@ use tauri::{Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 /// 运行时只读状态：供 popup_init 拉取请求内容与主题。
 pub struct AppState {
     pub interaction: InteractionRequest,
+    /// Native edit intent used only by the local permission popup.
+    pub popup_edit: Option<Box<crate::permission_diff::PermissionEditIntent>>,
     pub config: AppConfig,
     /// 来源名（弹窗标题「Question from {source}」）。Daemon 模式由调用方上送（A11）；
     /// 设置 / 非 Daemon 回退路径取本进程环境。
@@ -339,6 +341,7 @@ fn run_gui_ask(request: AskRequest, config: AppConfig, messaging_active: bool) -
     let lang = Lang::resolve(&config.general.language);
     let state = AppState {
         interaction: InteractionRequest::Ask(request.clone()),
+        popup_edit: None,
         config: config.clone(),
         source: crate::models::source_name(),
         project: crate::project::detect(),
@@ -570,6 +573,7 @@ pub fn run_settings(config: AppConfig) -> ! {
             Vec::new(),
             false,
         )),
+        popup_edit: None,
         config,
         source: crate::models::source_name(),
         project: crate::project::detect(),
@@ -598,6 +602,7 @@ pub fn run_history(project: String, all: bool, config: AppConfig) -> ! {
             Vec::new(),
             false,
         )),
+        popup_edit: None,
         config,
         source: crate::models::source_name(),
         project,
@@ -627,6 +632,7 @@ pub fn run_agents(config: AppConfig) -> ! {
             Vec::new(),
             false,
         )),
+        popup_edit: None,
         config,
         source: crate::models::source_name(),
         project: crate::project::detect(),
@@ -661,6 +667,7 @@ pub fn run_gui_host(config: AppConfig) -> ! {
             Vec::new(),
             false,
         )),
+        popup_edit: None,
         config,
         source: crate::models::source_name(),
         project: crate::project::detect(),
@@ -717,6 +724,7 @@ pub fn run_gui_helper(_endpoint: String, token: String, warm: bool) -> ! {
                 Vec::new(),
                 false,
             )),
+            popup_edit: None,
             config: AppConfig::load_without_secrets(),
             source: String::new(),
             project: String::new(),
@@ -781,6 +789,7 @@ pub fn run_gui_helper(_endpoint: String, token: String, warm: bool) -> ! {
     let request_id = show.request_id.clone();
     let state = AppState {
         interaction: show.interaction,
+        popup_edit: show.popup_edit,
         // The popup helper never connects to IM (the daemon does); it only needs general/theme/
         // popup-size config. Skip keychain via load_without_secrets().
         config: AppConfig::load_without_secrets(),
@@ -844,6 +853,7 @@ fn launch(state: AppState, view: View, popup_ipc: Option<PopupIpc>) -> tauri::Re
         .manage(state)
         .invoke_handler(tauri::generate_handler![
             crate::commands::popup_init,
+            crate::commands::enrich_permission_diff,
             crate::commands::perf_mark,
             crate::commands::popup_agent_terminal,
             crate::commands::popup_agent_resolved,

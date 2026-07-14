@@ -22,6 +22,7 @@ import type {
   InterjectInit,
   LifecycleStatus,
   PopupInit,
+  PermissionDiffModel,
   PopupSoundSupport,
   PushedAgent,
   PushedUpdateState,
@@ -40,6 +41,9 @@ import type {
 } from "./types";
 
 export const popupInit = () => invoke<PopupInit>("popup_init");
+
+export const enrichPermissionDiff = (requestId: string) =>
+  invoke<PermissionDiffModel>("enrich_permission_diff", { requestId });
 
 /** 上报一个前端性能埋点（`stage` + 前端 epoch ms 时间戳）；埋点关闭时后端为 no-op。 */
 export const perfMark = (stage: string, ts: number) =>
