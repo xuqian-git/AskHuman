@@ -523,7 +523,8 @@
 .tabbar {
   position: relative;
 }
-.tab-search-toggle {
+/* 保持高于 controls.css 的 `.tabbar button`，否则其水平 padding 会挤掉 SVG 内容区。 */
+.tabbar .tab-search-toggle {
   position: absolute;
   right: var(--space-4);
   top: 50%;
@@ -571,7 +572,7 @@
 .tab-search-input:focus {
   border-color: color-mix(in srgb, var(--accent) 55%, var(--control-border));
 }
-.tab-search-close {
+.tabbar .tab-search-close {
   flex: none;
   width: 24px;
   height: 24px;
