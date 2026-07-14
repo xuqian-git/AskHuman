@@ -29,7 +29,10 @@ export default defineConfig({
     },
   },
   build: {
-    target: "es2021",
+    // Safari 13.1 = macOS 10.15 Catalina 系统 WebKit 上限。
+    // es2021 会留下 ||= / &&= / ??=，在 Catalina WKWebView 里语法错误 → 空白弹窗。
+    // 二进制 LC_VERSION_MIN 为 10.13，前端目标需与之对齐。
+    target: ["es2019", "safari13"],
     // 输出到仓库根的 dist/（tauri.conf.json 的 frontendDist=../dist）。
     outDir: "../dist",
     emptyOutDir: true,
