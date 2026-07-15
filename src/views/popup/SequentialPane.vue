@@ -2,6 +2,7 @@
 // 旧版（顺序模式）：单题 / 实验开关关时——一次显示一个问题，上一步/下一步左右滑动切换。
 import { useI18n } from "vue-i18n";
 import { usePopupContext } from "./context";
+import AnswerComposer from "./AnswerComposer.vue";
 
 const { t } = useI18n();
 const {
@@ -18,30 +19,10 @@ const {
   viewSource,
   onContentClick,
   chosen,
-  userInput,
-  images,
-  replyFiles,
   single,
   selectOnly,
   optionHotkey,
   toggle,
-  setInputRef,
-  setThumbsRef,
-  autoGrow,
-  onUserCaretMaybeMoved,
-  onTextareaMouseDown,
-  speechSupported,
-  listening,
-  speechReady,
-  speechError,
-  speechStatus,
-  speechHotkeyLabel,
-  speechErrorText,
-  speechStatusText,
-  toggleSpeech,
-  pickFiles,
-  removeImage,
-  removeReplyFile,
 } = usePopupContext();
 </script>
 
@@ -86,88 +67,7 @@ const {
         </div>
       </div>
 
-      <!-- 输入框 + 内置「添加图片」小图标（右下角）；严格选择模式隐藏 -->
-      <div v-if="!selectOnly" class="input-wrap">
-        <textarea
-          :ref="(el) => setInputRef(el as HTMLTextAreaElement | null, current)"
-          v-model="userInput"
-          class="textarea"
-          :placeholder="t('popup.inputPlaceholder')"
-          @input="autoGrow(current)"
-          @keyup="onUserCaretMaybeMoved"
-          @mousedown="onTextareaMouseDown"
-        ></textarea>
-        <button
-          v-if="speechSupported"
-          class="mic-btn"
-          :class="{ loading: listening && !speechReady, recording: speechReady }"
-          type="button"
-          :title="
-            speechReady
-              ? t('popup.speech.stop') +
-                (speechHotkeyLabel ? ' ' + speechHotkeyLabel : '')
-              : listening
-              ? t('popup.speech.preparing')
-              : t('popup.speech.start') +
-                (speechHotkeyLabel ? ' ' + speechHotkeyLabel : '')
-          "
-          :aria-label="
-            listening ? t('popup.speech.stop') : t('popup.speech.start')
-          "
-          @mousedown.prevent
-          @click="toggleSpeech"
-        >
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
-            <rect x="9" y="2" width="6" height="12" rx="3" />
-            <path d="M5 11a7 7 0 0 0 14 0" />
-            <path d="M12 18v3" />
-          </svg>
-        </button>
-        <button
-          class="img-btn"
-          type="button"
-          :title="t('popup.addImage')"
-          :aria-label="t('popup.addImage')"
-          @mousedown.prevent
-          @click="pickFiles(current)"
-        >
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
-            <rect x="3" y="3" width="18" height="18" rx="2" />
-            <circle cx="8.5" cy="8.5" r="1.6" />
-            <path d="M21 15l-5-5L5 21" />
-          </svg>
-        </button>
-      </div>
-      <p v-if="!selectOnly && speechError" class="speech-error">
-        {{ speechErrorText(speechError) }}
-      </p>
-      <p v-else-if="!selectOnly && listening && speechStatus" class="speech-status">
-        {{ speechStatusText(speechStatus) }}
-      </p>
-
-      <div v-if="!selectOnly && images.length" :ref="(el) => setThumbsRef(el as HTMLElement | null, current)" class="thumbs">
-        <div v-for="(img, i) in images" :key="i" class="thumb">
-          <img :src="img.data" alt="" />
-          <button class="remove" type="button" @click="removeImage(current, i)">
-            ×
-          </button>
-        </div>
-      </div>
-
-      <div v-if="!selectOnly && replyFiles.length" class="reply-files">
-        <div
-          v-for="(f, i) in replyFiles"
-          :key="f.path"
-          class="reply-file"
-          :title="f.path"
-        >
-          <span class="rf-icon">📄</span>
-          <span class="rf-name">{{ f.name }}</span>
-          <button class="rf-remove" type="button" @click="removeReplyFile(current, i)">
-            ×
-          </button>
-        </div>
-      </div>
+      <AnswerComposer v-if="!selectOnly" :q-index="current" />
     </div>
   </Transition>
 </template>

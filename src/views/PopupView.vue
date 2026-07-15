@@ -10,6 +10,7 @@ import MessageSection from "./popup/MessageSection.vue";
 import QuestionCards from "./popup/QuestionCards.vue";
 import SequentialPane from "./popup/SequentialPane.vue";
 import TodoSection from "./popup/TodoSection.vue";
+import ComposerDock from "./popup/ComposerDock.vue";
 import PopupFooter from "./popup/PopupFooter.vue";
 import PopupOverlays from "./popup/PopupOverlays.vue";
 import "./popup/popup.css";
@@ -27,6 +28,7 @@ const {
   contentRef,
   fileRef,
   onScroll,
+  onContentWheel,
   onDrop,
   onBackgroundClick,
   onFileChange,
@@ -55,6 +57,7 @@ const {
       :ref="(el) => (contentRef = el as HTMLElement | null)"
       class="content"
       @scroll="onScroll"
+      @wheel.passive="onContentWheel"
     >
       <ConfirmPane v-if="isConfirm" />
       <template v-else>
@@ -63,6 +66,9 @@ const {
         <SequentialPane v-else />
       </template>
     </div>
+
+    <TodoSection v-if="!isConfirm" />
+    <ComposerDock v-if="!isConfirm" />
 
     <input
       :ref="(el) => (fileRef = el as HTMLInputElement | null)"
@@ -73,7 +79,6 @@ const {
       @change="onFileChange"
     />
 
-    <TodoSection v-if="!isConfirm" />
     <PopupFooter />
     <PopupOverlays />
   </div>

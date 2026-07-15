@@ -952,16 +952,34 @@ pub fn tr(lang: Lang, key: &'static str) -> &'static str {
         "tray.agentFocusTerminal" => pick(lang, "Focus Terminal", "聚焦终端"),
         "tray.agentAskNow" => pick(lang, "Ask Me Now", "要求提问"),
         "tray.checkUpdate" => pick(lang, "Check for Updates", "检查更新"),
+        "tray.checkingUpdate" => pick(lang, "Checking for updates…", "正在检查更新…"),
+        "tray.updateCurrent" => pick(lang, "AskHuman is up to date", "AskHuman 已是最新版"),
+        "tray.checkUpdateFailed" => pick(
+            lang,
+            "⚠ Update check failed: {e}",
+            "⚠ 检查更新失败：{e}",
+        ),
         "tray.applyUpdate" => pick(
             lang,
             "Update to v{v} (applies after answering)",
             "更新到 v{v}（答完后生效）",
+        ),
+        "tray.applyingUpdate" => pick(lang, "Updating AskHuman…", "正在更新 AskHuman…"),
+        "tray.applyUpdateFailed" => pick(
+            lang,
+            "⚠ Update failed: {e}",
+            "⚠ 更新失败：{e}",
         ),
         // 盘上二进制已换新但窗口开着（自动换新被挡）时的宿主重启项（B2）。
         "tray.restartHost" => pick(
             lang,
             "Restart Menu Bar App to Finish Update",
             "重启菜单栏应用以完成更新",
+        ),
+        "tray.restartHostFailed" => pick(
+            lang,
+            "⚠ Menu Bar App restart failed: {e}",
+            "⚠ 菜单栏应用重启失败：{e}",
         ),
         "tray.startDaemon" => pick(lang, "Start Daemon", "启动 daemon"),
         "tray.restartDaemon" => pick(lang, "Restart Daemon", "重启 daemon"),

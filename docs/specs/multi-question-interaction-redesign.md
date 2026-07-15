@@ -140,3 +140,7 @@
    动画」全程，动画结束后才交回 scroll-spy；用户**手动滚动**时才按 scroll-spy 切当前题。
 8. **闪光区域几何**：`.q-card::before` 定为 `inset: 8px -6px -6px -9px`（上/右/下轻微外扩、**不覆盖题间分割线**；左侧
    外扩 -9px 留 ~7px 呼吸位、不贴窗口边框），accent 12% 淡底、圆角 8px、`opacity 1→0` 渐隐。
+
+### 2026-07（固定编辑器与当前题解耦）
+
+`docs/specs/popup-pinned-composer.md` 在不改变本规格导航 / 快捷键焦点模型的前提下，引入独立 composer owner：用户向上回看 Message 时，最近激活的输入框可固定在底部，scroll-spy 仍可更新 `current`。只有聚焦另一题输入框或在另一题执行明确作答动作才切换 / 清除旧 owner；单纯滚动、点正文或选择 Message 文字不会清除。

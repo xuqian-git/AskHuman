@@ -5,7 +5,7 @@
 ## 窗口与附件交互
 
 - 窗口拖拽用 `data-tauri-drag-region`（导航栏、底部空白和设置 tab 栏）；置顶用前端 `@tauri-apps/api/window` 的 `setAlwaysOnTop`。
-- 文件拖入用 `onDragDropEvent` 取得原生路径；`-f` 附件拖出用 `tauri-plugin-drag` 的 `startDrag`。预览、系统图标和原生右键菜单由 `commands.rs` 中对应 command 提供。
+- 文件拖入用 `onDragDropEvent` 取得原生路径；`-f` 附件拖出用 `tauri-plugin-drag` 的 `startDrag`。预览、系统图标和原生右键菜单由 `commands.rs` 中对应 command 提供。macOS Quick Look 打开后可与 Popup 并行交互：弹窗内点击和切题不关闭预览，附件高亮保留；输入焦点不会在面板关闭时被附件抢回。焦点不在输入控件时空格切换预览，提交 / 取消 / Popup 销毁主动关闭。
 
 ## 来源标题与上下文
 
@@ -25,6 +25,12 @@
 设计见 `docs/specs/multi-question-vertical.md`，实现计划见 `docs/plans/multi-question-vertical.md`。该模式仅在 `experimental.verticalQuestions` 开启且问题数大于 1 时生效；关闭时保留一次一题的左右切换。
 
 纵向模式由 `PopupView` 同时渲染所有题卡，以 active 指针统一键盘快捷键、语音和输入目标；滚动可更新 active，程序化导航期间有短暂锁定避免抖动。每题用 visited 状态跟踪是否看过，最后一题可见后才显示发送按钮。选项、文本、图片和回复文件均按题目索引保存；拖放图片按原生落点归属题卡，粘贴图片归当前聚焦题。单题不启用这些纵向模式样式与状态。
+
+## 回看时固定答案编辑器
+
+普通问答的单题、顺序多题和纵向多题共用 `AnswerComposer.vue`。单题 / 顺序模式上屏时只有 textarea home 在 `.content` 内至少可见 50% 才自动 focus；不足时保持未激活，后来滚入视口也不追补自动 focus。textarea 获得焦点后成为最近激活的编辑器；它仍有实际 focus，具备“用户手动激活过”或“曾完整显示”任一资格，并在激活后发生向上滚动时，原输入位置落到 `.content` 视口下方会把同一个编辑器 DOM 通过 Teleport 移到 `.content` 与 footer 之间的底部固定区。点击一个已被底边裁切的输入框本身不立即固定；弹出时的自动聚焦、异步布局或 resize 也不会自行触发固定。未固定前先失焦再滚动不会固定；已经固定后 blur 不清除编辑器归属，因此选择或复制 Message 文字不会让固定区消失。原输入位置重新容纳进视口后自动回位。
+
+固定判定与小幅滞回在 `composerDock.ts`，owner、占位高度、ResizeObserver、焦点 / 选区和输入法组合态保护在 `usePopupCore.ts`，固定区外壳由 `ComposerDock.vue` 提供。纵向多题的 composer owner 与 scroll-spy `current` 解耦；固定区显示 `Question i/n` 并可回到原题。完整行为见 `docs/specs/popup-pinned-composer.md`，实施记录见 `docs/plans/popup-pinned-composer.md`。
 
 ## 推荐选项
 

@@ -2,6 +2,7 @@
 // 纵向模式（实验开关 + 多题）：所有问题纵向平铺成卡片，scroll-spy 定位当前题。
 import { useI18n } from "vue-i18n";
 import { usePopupContext } from "./context";
+import AnswerComposer from "./AnswerComposer.vue";
 
 const { t } = useI18n();
 const {
@@ -12,37 +13,13 @@ const {
   questionHtml,
   onContentClick,
   chosenByQ,
-  inputByQ,
-  imagesByQ,
-  replyFilesByQ,
   single,
   selectOnly,
-  current,
-  expandedQ,
   cardOptionHotkey,
   toggle,
   setActive,
   setCardRef,
-  setInputRef,
   setSentinelRef,
-  setThumbsRef,
-  autoGrow,
-  onTextareaFocus,
-  onTextareaBlur,
-  onUserCaretMaybeMoved,
-  onTextareaMouseDown,
-  speechSupported,
-  listening,
-  speechReady,
-  speechError,
-  speechStatus,
-  speechHotkeyLabel,
-  speechErrorText,
-  speechStatusText,
-  toggleSpeech,
-  pickFiles,
-  removeImage,
-  removeReplyFile,
 } = usePopupContext();
 </script>
 
@@ -91,99 +68,7 @@ const {
       </div>
     </div>
 
-    <!-- 输入框 + 内置「添加图片」小图标（右下角）；严格选择模式隐藏 -->
-    <div v-if="!selectOnly" class="input-wrap">
-      <textarea
-        :ref="(el) => setInputRef(el as HTMLTextAreaElement | null, qi)"
-        v-model="inputByQ[qi]"
-        class="textarea"
-        :class="{ collapsed: !expandedQ(qi) }"
-        rows="1"
-        :placeholder="t('popup.inputPlaceholder')"
-        @input="autoGrow(qi)"
-        @focus="onTextareaFocus(qi)"
-        @blur="onTextareaBlur(qi)"
-        @keyup="onUserCaretMaybeMoved"
-        @mousedown="onTextareaMouseDown"
-      ></textarea>
-      <template v-if="expandedQ(qi)">
-        <button
-          v-if="speechSupported"
-          class="mic-btn"
-          :class="{ loading: listening && current === qi && !speechReady, recording: listening && current === qi && speechReady }"
-          type="button"
-          :title="
-            speechReady
-              ? t('popup.speech.stop') +
-                (speechHotkeyLabel ? ' ' + speechHotkeyLabel : '')
-              : listening
-              ? t('popup.speech.preparing')
-              : t('popup.speech.start') +
-                (speechHotkeyLabel ? ' ' + speechHotkeyLabel : '')
-          "
-          :aria-label="
-            listening ? t('popup.speech.stop') : t('popup.speech.start')
-          "
-          @mousedown.prevent
-          @click="(setActive(qi, false), toggleSpeech())"
-        >
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
-            <rect x="9" y="2" width="6" height="12" rx="3" />
-            <path d="M5 11a7 7 0 0 0 14 0" />
-            <path d="M12 18v3" />
-          </svg>
-        </button>
-        <!-- mousedown.prevent：保住 textarea 焦点。否则空输入框会因 blur 折叠、按钮随之消失，click 落空。 -->
-        <button
-          class="img-btn"
-          type="button"
-          :title="t('popup.addImage')"
-          :aria-label="t('popup.addImage')"
-          @mousedown.prevent
-          @click="pickFiles(qi)"
-        >
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
-            <rect x="3" y="3" width="18" height="18" rx="2" />
-            <circle cx="8.5" cy="8.5" r="1.6" />
-            <path d="M21 15l-5-5L5 21" />
-          </svg>
-        </button>
-      </template>
-    </div>
-    <p v-if="!selectOnly && current === qi && speechError" class="speech-error">
-      {{ speechErrorText(speechError) }}
-    </p>
-    <p v-else-if="!selectOnly && current === qi && listening && speechStatus" class="speech-status">
-      {{ speechStatusText(speechStatus) }}
-    </p>
-
-    <div
-      v-if="!selectOnly && (imagesByQ[qi] ?? []).length"
-      :ref="(el) => setThumbsRef(el as HTMLElement | null, qi)"
-      class="thumbs"
-    >
-      <div v-for="(img, i) in imagesByQ[qi]" :key="i" class="thumb">
-        <img :src="img.data" alt="" />
-        <button class="remove" type="button" @click="removeImage(qi, i)">
-          ×
-        </button>
-      </div>
-    </div>
-
-    <div v-if="!selectOnly && (replyFilesByQ[qi] ?? []).length" class="reply-files">
-      <div
-        v-for="(f, i) in replyFilesByQ[qi]"
-        :key="f.path"
-        class="reply-file"
-        :title="f.path"
-      >
-        <span class="rf-icon">📄</span>
-        <span class="rf-name">{{ f.name }}</span>
-        <button class="rf-remove" type="button" @click="removeReplyFile(qi, i)">
-          ×
-        </button>
-      </div>
-    </div>
+    <AnswerComposer v-if="!selectOnly" :q-index="qi" collapsible />
 
     <!-- 底部哨兵：进视口即「已看到」该题（兼容超长题） -->
     <div

@@ -886,6 +886,94 @@
   }
 }
 /* 输入框容器：承载内置「添加图片」图标 */
+.composer-anchor {
+  min-width: 0;
+}
+.composer-anchor.is-docked {
+  flex: 0 0 auto;
+}
+.answer-composer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.composer-attachments {
+  display: contents;
+}
+.composer-dock {
+  position: relative;
+  z-index: 10;
+  flex: 0 0 auto;
+  min-width: 0;
+  padding: 8px var(--space-4) 10px;
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+  box-shadow: 0 -8px 22px color-mix(in srgb, #000 8%, transparent);
+}
+.composer-dock-home {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0 0 6px;
+  padding: 2px 5px 2px 2px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 11px;
+  cursor: default;
+}
+.composer-dock-home:hover {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+.composer-dock-home svg {
+  width: 14px;
+  height: 14px;
+}
+.composer-dock-target,
+.composer-dock-target .answer-composer {
+  min-width: 0;
+}
+.answer-composer.is-docked {
+  gap: 7px;
+}
+.answer-composer.is-docked .textarea {
+  max-height: 120px;
+}
+.answer-composer.is-docked .composer-attachments {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 1px;
+}
+.answer-composer.is-docked .thumbs,
+.answer-composer.is-docked .reply-files {
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+  margin-top: 0;
+}
+.answer-composer.is-docked .thumb {
+  width: 38px;
+  height: 38px;
+}
+.answer-composer.is-docked .thumb .remove {
+  top: 1px;
+  right: 1px;
+  width: 15px;
+  height: 15px;
+  font-size: 10px;
+}
+.answer-composer.is-docked .reply-file {
+  max-width: 160px;
+  padding-top: 3px;
+  padding-bottom: 3px;
+}
 .input-wrap {
   position: relative;
   display: flex;

@@ -32,7 +32,7 @@ export function useSpeech(deps: {
   // 插入模型（复刻 demo）：文本布局 = [...已提交...][实时片段]。
   // interimStart 指向实时片段起点；interimLen 为其长度。committed 在 interimStart 处永久插入；
   // volatile 就地替换 [interimStart, interimStart+interimLen]。用户中途移动光标→固定并 flush。
-  let speechTargetQ = 0;
+  const speechTargetQ = ref(0);
   let interimStart = 0;
   let interimLen = 0;
   // 待替换选区（激活时若有选区，延迟到首个识别文字到达才删除，模拟原生听写）。
@@ -102,13 +102,13 @@ export function useSpeech(deps: {
     }
     speechError.value = null;
     speechStatus.value = null;
-    speechTargetQ = current.value;
+    speechTargetQ.value = current.value;
     // 听写起点 = 当前光标处。若存在选区：保持高亮，待首个识别文字到达时才替换（原生听写语义）。
     const el = inputRef.value;
-    const fieldLen = inputByQ.value[speechTargetQ]?.length ?? 0;
+    const fieldLen = inputByQ.value[speechTargetQ.value]?.length ?? 0;
     let start = fieldLen;
     let end = fieldLen;
-    if (el && speechTargetQ === current.value) {
+    if (el && speechTargetQ.value === current.value) {
       start = el.selectionStart ?? fieldLen;
       end = el.selectionEnd ?? start;
     }
@@ -142,8 +142,8 @@ export function useSpeech(deps: {
   // 首个识别文字到达时，删除「待替换选区」（实现：说话才替换选中文本）。
   function consumePendingSelection() {
     if (pendingSelStart >= 0 && pendingSelEnd > pendingSelStart) {
-      const v = inputByQ.value[speechTargetQ] ?? "";
-      inputByQ.value[speechTargetQ] =
+      const v = inputByQ.value[speechTargetQ.value] ?? "";
+      inputByQ.value[speechTargetQ.value] =
         v.slice(0, pendingSelStart) + v.slice(pendingSelEnd);
       interimStart = pendingSelStart;
       interimLen = 0;
@@ -156,14 +156,14 @@ export function useSpeech(deps: {
   function onSpeechCommitted(delta: string) {
     if (!delta || suspendSpeechDom) return;
     consumePendingSelection();
-    let v = inputByQ.value[speechTargetQ] ?? "";
+    let v = inputByQ.value[speechTargetQ.value] ?? "";
     if (interimLen > 0) {
       v = v.slice(0, interimStart) + v.slice(interimStart + interimLen);
       interimLen = 0;
     }
     v = v.slice(0, interimStart) + delta + v.slice(interimStart);
     interimStart += delta.length;
-    inputByQ.value[speechTargetQ] = v;
+    inputByQ.value[speechTargetQ.value] = v;
     syncCaret();
   }
 
@@ -173,16 +173,16 @@ export function useSpeech(deps: {
     // 尚无任何文字、也无既有实时片段时（空回调），不触碰选区。
     if (!text && interimLen === 0) return;
     consumePendingSelection();
-    let v = inputByQ.value[speechTargetQ] ?? "";
+    let v = inputByQ.value[speechTargetQ.value] ?? "";
     v = v.slice(0, interimStart) + text + v.slice(interimStart + interimLen);
     interimLen = text.length;
-    inputByQ.value[speechTargetQ] = v;
+    inputByQ.value[speechTargetQ.value] = v;
     syncCaret();
   }
 
   // 把光标移到实时片段末尾，并记录为「程序化」位置（避免误判为用户移动）。
   function syncCaret() {
-    if (speechTargetQ !== current.value || suspendSpeechDom) return;
+    if (speechTargetQ.value !== current.value || suspendSpeechDom) return;
     nextTick(() => {
       autoGrow();
       const el = inputRef.value;
@@ -196,7 +196,7 @@ export function useSpeech(deps: {
 
   // 鼠标在输入框按下即开始拖选：暂停语音写入 DOM，保护用户选区。
   function onTextareaMouseDown() {
-    if (listening.value && speechTargetQ === current.value) {
+    if (listening.value && speechTargetQ.value === current.value) {
       suspendSpeechDom = true;
     }
   }
@@ -210,7 +210,7 @@ export function useSpeech(deps: {
 
   // 用户在听写中主动移动光标/编辑：固定当前内容、以新光标为起点重启识别会话。
   function onUserCaretMaybeMoved() {
-    if (!listening.value || speechTargetQ !== current.value) return;
+    if (!listening.value || speechTargetQ.value !== current.value) return;
     const el = inputRef.value;
     if (!el) return;
     const selStart = el.selectionStart ?? 0;
@@ -292,6 +292,7 @@ export function useSpeech(deps: {
     speechLang,
     speechShortcut,
     speechHotkeyLabel,
+    speechTargetQ,
     speechStatusText,
     speechErrorText,
     toggleSpeech,

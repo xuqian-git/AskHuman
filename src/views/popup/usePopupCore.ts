@@ -50,6 +50,13 @@ import type {
 import { useSpeech } from "./useSpeech";
 import { useAttachments } from "./useAttachments";
 import { useUpdateState } from "./useUpdateState";
+import {
+  canComposerDock,
+  composerHomeVisibleRatio,
+  isComposerHomeFullyVisible,
+  resolveComposerDocked,
+  type ComposerDockGeometry,
+} from "./composerDock";
 
 export function usePopupCore() {
   const { t } = useI18n();
@@ -105,7 +112,7 @@ export function usePopupCore() {
   // 供语音 / autoGrow / 聚焦复用既有逻辑（current 即 active 指针）。
   const inputRefs = ref<(HTMLTextAreaElement | null)[]>([]);
   function setInputRef(el: HTMLTextAreaElement | null, i: number) {
-    if (el) inputRefs.value[i] = el;
+    inputRefs.value[i] = el;
   }
   const inputRef = computed<HTMLTextAreaElement | null>(
     () => inputRefs.value[current.value] ?? null
@@ -124,6 +131,277 @@ export function usePopupCore() {
   const thumbsRefs = ref<(HTMLElement | null)[]>([]);
   function setThumbsRef(el: HTMLElement | null, i: number) {
     thumbsRefs.value[i] = el;
+  }
+  // The last explicitly focused answer editor owns bottom docking. It intentionally outlives
+  // textarea focus so users can select or copy prompt text without losing the editor.
+  const composerOwnerQ = ref<number | null>(null);
+  const dockedComposerQ = ref<number | null>(null);
+  const ownerSeenInline = ref(false);
+  const ownerManuallyActivated = ref(false);
+  const ownerScrolledUpAfterActivation = ref(false);
+  const composerAnchorRefs = ref<(HTMLElement | null)[]>([]);
+  const composerHomeRefs = ref<(HTMLElement | null)[]>([]);
+  const composerDockRef = ref<HTMLElement | null>(null);
+  const composerInlineHeights: number[] = [];
+  const composerHomeHeights: number[] = [];
+  const composerSelections: { start: number; end: number }[] = [];
+  let composerResizeObserver: ResizeObserver | null = null;
+  let composingQ: number | null = null;
+  let pendingDockTarget: number | null | undefined;
+  let returnFocusQ: number | null = null;
+  let programmaticFocusActivation: {
+    qIndex: number;
+    manuallyActivated: boolean;
+  } | null = null;
+  let nextSequentialFocusIsManual = false;
+  let lastContentScrollTop = 0;
+  let upwardScrollIntentUntil = 0;
+
+  function ensureComposerResizeObserver(): ResizeObserver | null {
+    if (composerResizeObserver || typeof ResizeObserver === "undefined") {
+      return composerResizeObserver;
+    }
+    composerResizeObserver = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const el = entry.target as HTMLElement;
+        const index = Number(el.dataset.composerIndex);
+        if (Number.isNaN(index) || dockedComposerQ.value === index) continue;
+        const height = entry.borderBoxSize?.[0]?.blockSize ?? entry.contentRect.height;
+        if (el.dataset.composerPart === "anchor") composerInlineHeights[index] = height;
+        else if (el.dataset.composerPart === "home") composerHomeHeights[index] = height;
+      }
+      scheduleScrollWork();
+    });
+    return composerResizeObserver;
+  }
+
+  function replaceObservedComposerRef(
+    refs: (HTMLElement | null)[],
+    el: HTMLElement | null,
+    i: number,
+    part: "anchor" | "home"
+  ) {
+    const old = refs[i];
+    if (old && old !== el) composerResizeObserver?.unobserve(old);
+    refs[i] = el;
+    if (!el) return;
+    el.dataset.composerIndex = String(i);
+    el.dataset.composerPart = part;
+    ensureComposerResizeObserver()?.observe(el);
+    const height = el.getBoundingClientRect().height;
+    if (dockedComposerQ.value !== i) {
+      if (part === "anchor") composerInlineHeights[i] = height;
+      else composerHomeHeights[i] = height;
+    }
+  }
+
+  function setComposerAnchorRef(el: HTMLElement | null, i: number) {
+    replaceObservedComposerRef(composerAnchorRefs.value, el, i, "anchor");
+  }
+
+  function setComposerHomeRef(el: HTMLElement | null, i: number) {
+    replaceObservedComposerRef(composerHomeRefs.value, el, i, "home");
+  }
+
+  function setComposerDockRef(el: HTMLElement | null) {
+    composerDockRef.value = el;
+  }
+
+  function composerAnchorStyle(i: number): Record<string, string> | undefined {
+    if (dockedComposerQ.value !== i) return undefined;
+    const height = composerInlineHeights[i] ?? 0;
+    return height > 0 ? { height: `${height}px` } : undefined;
+  }
+
+  function rememberComposerSelection(i: number) {
+    const el = inputRefs.value[i];
+    if (!el) return;
+    composerSelections[i] = {
+      start: el.selectionStart ?? el.value.length,
+      end: el.selectionEnd ?? el.selectionStart ?? el.value.length,
+    };
+  }
+
+  function setDockedComposer(next: number | null) {
+    if (dockedComposerQ.value === next) return;
+    const movingQ = next ?? dockedComposerQ.value ?? composerOwnerQ.value;
+    if (movingQ === null) {
+      dockedComposerQ.value = next;
+      return;
+    }
+    if (composingQ === movingQ) {
+      pendingDockTarget = next;
+      return;
+    }
+
+    const el = inputRefs.value[movingQ];
+    const hadFocus = !!el && document.activeElement === el;
+    const selection = el
+      ? {
+          start: el.selectionStart ?? el.value.length,
+          end: el.selectionEnd ?? el.selectionStart ?? el.value.length,
+        }
+      : composerSelections[movingQ];
+    if (selection) composerSelections[movingQ] = selection;
+    const shouldFocus = hadFocus || returnFocusQ === movingQ;
+    dockedComposerQ.value = next;
+    nextTick(() => {
+      const moved = inputRefs.value[movingQ];
+      if (shouldFocus && moved) {
+        focusComposer(movingQ, ownerManuallyActivated.value);
+        if (selection) moved.setSelectionRange(selection.start, selection.end);
+      }
+      if (returnFocusQ === movingQ && next === null) returnFocusQ = null;
+      autoGrow(movingQ);
+      scheduleScrollWork();
+    });
+  }
+
+  function composerGeometry(i: number): ComposerDockGeometry | null {
+    const root = contentRef.value;
+    const anchor = composerAnchorRefs.value[i];
+    if (!root || !anchor) return null;
+    const viewport = root.getBoundingClientRect();
+    const anchorRect = anchor.getBoundingClientRect();
+    const liveHomeHeight =
+      dockedComposerQ.value === i
+        ? 0
+        : composerHomeRefs.value[i]?.getBoundingClientRect().height ?? 0;
+    if (liveHomeHeight > 0) composerHomeHeights[i] = liveHomeHeight;
+    const homeHeight = composerHomeHeights[i] ?? 0;
+    if (homeHeight <= 0) return null;
+    const releasedHeight =
+      dockedComposerQ.value === i
+        ? composerDockRef.value?.getBoundingClientRect().height ?? 0
+        : 0;
+    return {
+      homeTop: anchorRect.top,
+      homeBottom: anchorRect.top + homeHeight,
+      viewportTop: viewport.top,
+      viewportBottom: viewport.bottom,
+      viewportBottomAfterUndock: viewport.bottom + releasedHeight,
+    };
+  }
+
+  function measureComposerDock() {
+    const i = composerOwnerQ.value;
+    if (i === null) {
+      if (dockedComposerQ.value !== null) setDockedComposer(null);
+      return;
+    }
+    if (dockedComposerQ.value !== null && dockedComposerQ.value !== i) {
+      setDockedComposer(null);
+      return;
+    }
+    const geometry = composerGeometry(i);
+    if (!geometry) return;
+    const currentlyDocked = dockedComposerQ.value === i;
+    if (!currentlyDocked && isComposerHomeFullyVisible(geometry)) {
+      ownerSeenInline.value = true;
+    }
+    const shouldDock = resolveComposerDocked(
+      currentlyDocked,
+      currentlyDocked ||
+        canComposerDock(
+          focusedQ.value === i,
+          ownerManuallyActivated.value,
+          ownerSeenInline.value,
+          ownerScrolledUpAfterActivation.value
+        ),
+      geometry
+    );
+    if (shouldDock !== currentlyDocked) setDockedComposer(shouldDock ? i : null);
+  }
+
+  function activateComposer(i: number, manuallyActivated = true) {
+    if (composerOwnerQ.value !== i) {
+      if (dockedComposerQ.value !== null) setDockedComposer(null);
+      composerOwnerQ.value = i;
+      ownerSeenInline.value = false;
+      ownerManuallyActivated.value = manuallyActivated;
+      ownerScrolledUpAfterActivation.value = false;
+      lastContentScrollTop = contentRef.value?.scrollTop ?? 0;
+      returnFocusQ = null;
+    } else if (manuallyActivated) {
+      ownerManuallyActivated.value = true;
+      if (dockedComposerQ.value === null) {
+        ownerScrolledUpAfterActivation.value = false;
+        lastContentScrollTop = contentRef.value?.scrollTop ?? 0;
+      }
+    }
+    nextTick(() => {
+      const geometry = composerGeometry(i);
+      if (geometry && isComposerHomeFullyVisible(geometry)) {
+        ownerSeenInline.value = true;
+      }
+      scheduleScrollWork();
+    });
+  }
+
+  function focusComposer(i: number, manuallyActivated: boolean) {
+    const el = inputRefs.value[i];
+    if (!el) return;
+    programmaticFocusActivation = { qIndex: i, manuallyActivated };
+    el.focus({ preventScroll: true });
+    if (programmaticFocusActivation?.qIndex === i) {
+      programmaticFocusActivation = null;
+      activateComposer(i, manuallyActivated);
+    }
+  }
+
+  function focusComposerIfInitiallyVisible(i: number) {
+    const geometry = composerGeometry(i);
+    if (!geometry || composerHomeVisibleRatio(geometry) < 0.5) return;
+    focusComposer(i, false);
+  }
+
+  function clearComposerOwner() {
+    if (dockedComposerQ.value !== null) setDockedComposer(null);
+    composerOwnerQ.value = null;
+    ownerSeenInline.value = false;
+    ownerManuallyActivated.value = false;
+    ownerScrolledUpAfterActivation.value = false;
+    returnFocusQ = null;
+  }
+
+  function endOtherComposer(i: number) {
+    if (composerOwnerQ.value !== null && composerOwnerQ.value !== i) {
+      clearComposerOwner();
+    }
+  }
+
+  function onComposerCompositionStart(i: number) {
+    composingQ = i;
+  }
+
+  function onComposerCompositionEnd(i: number) {
+    if (composingQ === i) composingQ = null;
+    if (pendingDockTarget !== undefined) {
+      pendingDockTarget = undefined;
+      scheduleScrollWork();
+    }
+  }
+
+  function resetComposerDock() {
+    for (const el of composerAnchorRefs.value) if (el) composerResizeObserver?.unobserve(el);
+    for (const el of composerHomeRefs.value) if (el) composerResizeObserver?.unobserve(el);
+    composerOwnerQ.value = null;
+    dockedComposerQ.value = null;
+    ownerSeenInline.value = false;
+    ownerManuallyActivated.value = false;
+    ownerScrolledUpAfterActivation.value = false;
+    composerAnchorRefs.value = [];
+    composerHomeRefs.value = [];
+    composerInlineHeights.length = 0;
+    composerHomeHeights.length = 0;
+    composerSelections.length = 0;
+    composingQ = null;
+    pendingDockTarget = undefined;
+    returnFocusQ = null;
+    programmaticFocusActivation = null;
+    nextSequentialFocusIsManual = false;
+    lastContentScrollTop = contentRef.value?.scrollTop ?? 0;
+    upwardScrollIntentUntil = 0;
   }
   // 当前聚焦的问题索引（null = 无）；驱动折叠输入框展开。
   const focusedQ = ref<number | null>(null);
@@ -148,9 +426,21 @@ export function usePopupCore() {
 
   function onScroll(e: Event) {
     const st = (e.target as HTMLElement).scrollTop;
+    if (
+      composerOwnerQ.value !== null &&
+      Date.now() <= upwardScrollIntentUntil &&
+      st < lastContentScrollTop - 0.5
+    ) {
+      ownerScrolledUpAfterActivation.value = true;
+    }
+    lastContentScrollTop = st;
     scrolled.value = st > 0;
     atTop.value = st <= 0;
-    updateActiveFromScroll();
+    scheduleScrollWork();
+  }
+
+  function onContentWheel(e: WheelEvent) {
+    if (e.deltaY < 0) upwardScrollIntentUntil = Date.now() + 500;
   }
 
   // 滚动定位「当前题」：用「比例阅读线」(proportional scroll-spy)——判定线在视口内的纵向位置
@@ -176,16 +466,18 @@ export function usePopupCore() {
     return next;
   }
   let scrollRaf = 0;
-  function updateActiveFromScroll() {
-    if (!verticalMode.value) return;
+  function scheduleScrollWork() {
     if (scrollRaf) return;
     scrollRaf = requestAnimationFrame(() => {
       scrollRaf = 0;
-      if (Date.now() < activeLockUntil) return;
-      const root = contentRef.value;
-      if (!root) return;
-      const next = activeForScroll(root);
-      if (next !== current.value) current.value = next;
+      if (verticalMode.value && Date.now() >= activeLockUntil) {
+        const root = contentRef.value;
+        if (root) {
+          const next = activeForScroll(root);
+          if (next !== current.value) current.value = next;
+        }
+      }
+      measureComposerDock();
     });
   }
 
@@ -489,7 +781,11 @@ export function usePopupCore() {
   // 折叠输入仅在纵向模式生效：默认 1 行，聚焦或已有内容时展开。单题 / 旧版顺序模式恒展开。
   function expandedQ(i: number): boolean {
     if (!verticalMode.value) return true;
-    return focusedQ.value === i || (inputByQ.value[i]?.trim().length ?? 0) > 0;
+    return (
+      dockedComposerQ.value === i ||
+      focusedQ.value === i ||
+      (inputByQ.value[i]?.trim().length ?? 0) > 0
+    );
   }
   // 每题题干渲染（Markdown 全局开关 + 源码视图）。
   function questionHtml(q: Question): string {
@@ -598,6 +894,7 @@ export function usePopupCore() {
   function toggle(qIndex: number, option: string) {
     const arr = chosenByQ.value[qIndex];
     if (!arr) return;
+    endOtherComposer(qIndex);
     const i = arr.indexOf(option);
     // 单选：选中即替换为唯一项；再次点击当前选中项则清空（保留"可不选"，除非严格模式）。
     if (single.value) {
@@ -618,12 +915,14 @@ export function usePopupCore() {
 
   // 点「添加图片」：记录目标题后唤起文件选择。
   function pickFiles(qIndex: number) {
+    activateComposer(qIndex);
     pendingPickQ = qIndex;
     fileRef.value?.click();
   }
 
   async function addFiles(files: FileList | File[], qIndex: number) {
     if (selectOnly.value) return;
+    endOtherComposer(qIndex);
     let added = 0;
     for (const file of Array.from(files)) {
       if (!file.type.startsWith("image/")) continue;
@@ -655,6 +954,7 @@ export function usePopupCore() {
   }
 
   function removeImage(qIndex: number, index: number) {
+    endOtherComposer(qIndex);
     imagesByQ.value[qIndex]?.splice(index, 1);
   }
 
@@ -678,6 +978,7 @@ export function usePopupCore() {
 
   async function addDroppedPaths(paths: string[], qIndex: number) {
     if (selectOnly.value) return;
+    endOtherComposer(qIndex);
     const attachPaths = new Set(attachments.value.map((a) => a.path));
     let addedImage = 0;
     for (const path of paths) {
@@ -701,6 +1002,7 @@ export function usePopupCore() {
   }
 
   function removeReplyFile(qIndex: number, index: number) {
+    endOtherComposer(qIndex);
     replyFilesByQ.value[qIndex]?.splice(index, 1);
   }
 
@@ -742,11 +1044,25 @@ export function usePopupCore() {
 
   // textarea 聚焦/失焦：维护 focusedQ + 切当前题（聚焦即展开）；失焦且空则折叠。
   function onTextareaFocus(i: number) {
+    const activation = programmaticFocusActivation;
+    const manuallyActivated =
+      activation?.qIndex === i ? activation.manuallyActivated : false;
+    if (activation?.qIndex === i) programmaticFocusActivation = null;
+    activateComposer(i, manuallyActivated);
     focusedQ.value = i;
     setActive(i, false);
     nextTick(() => autoGrow(i));
   }
+  function onComposerInput(i: number) {
+    activateComposer(i);
+    autoGrow(i);
+  }
+  function onComposerMouseDown(i: number) {
+    activateComposer(i);
+    speech.onTextareaMouseDown();
+  }
   function onTextareaBlur(i: number) {
+    rememberComposerSelection(i);
     if (focusedQ.value === i) focusedQ.value = null;
     nextTick(() => autoGrow(i));
   }
@@ -789,6 +1105,28 @@ export function usePopupCore() {
     if (!root) return;
     const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
     root.scrollTo({ top: 0, behavior: reduce ? "auto" : "smooth" });
+  }
+
+  function returnComposerHome() {
+    const i = composerOwnerQ.value;
+    const root = contentRef.value;
+    const anchor = i === null ? null : composerAnchorRefs.value[i];
+    if (i === null || !root || !anchor) return;
+    if (verticalMode.value) setActive(i, false);
+    const rootRect = root.getBoundingClientRect();
+    const anchorRect = anchor.getBoundingClientRect();
+    const offsetTop = anchorRect.top - rootRect.top + root.scrollTop;
+    const homeHeight = composerHomeHeights[i] ?? 0;
+    const max = Math.max(0, root.scrollHeight - root.clientHeight);
+    const top = Math.max(
+      0,
+      Math.min(max, offsetTop + homeHeight - root.clientHeight + 16)
+    );
+    const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    returnFocusQ = i;
+    activeLockUntil = Date.now() + NAV_LOCK_MS;
+    root.scrollTo({ top, behavior: reduce ? "auto" : "smooth" });
+    scheduleScrollWork();
   }
 
   // 把第 i 题滚到「顶部对齐 + 16px 呼吸位」——统一露出该题**顶部**（含末题：夹到 max 即贴底、也完整可见）。
@@ -836,13 +1174,11 @@ export function usePopupCore() {
   // 聚焦会触发折叠输入框展开、改变高度，故**展开后再滚动**（双 nextTick），避免用旧高度定位。全程用 NAV_LOCK_MS
   // 锁住 scroll-spy 到滚动动画结束，避免 current 被滚动事件抢走。供上一个/下一个、⌘[/⌘]、⌘↵ 复用，行为一致。
   function goToIdx(target: number) {
-    attach.stopPreview();
-    attach.selectedFile.value = null;
     const i = Math.max(0, Math.min(target, total.value - 1));
     setActive(i, false); // 先置当前题、不滚动（滚动放到展开之后）
     activeLockUntil = Date.now() + NAV_LOCK_MS;
     nextTick(() => {
-      inputRefs.value[i]?.focus({ preventScroll: true });
+      focusComposer(i, true);
       nextTick(() => {
         activeLockUntil = Date.now() + NAV_LOCK_MS; // 展开后重置锁：确保覆盖此刻才开始的 smooth 滚动动画
         scrollQuestionIntoView(i);
@@ -859,8 +1195,8 @@ export function usePopupCore() {
   function goToSeq(index: number) {
     if (index < 0 || index >= total.value || index === current.value) return;
     speech.stopListening(); // 切题前停语音，避免回调写进旧题
-    attach.stopPreview();
-    attach.selectedFile.value = null;
+    clearComposerOwner();
+    nextSequentialFocusIsManual = true;
     current.value = index;
     markVisited(index);
   }
@@ -876,7 +1212,9 @@ export function usePopupCore() {
   // 旧版切题动画完成后：聚焦输入 + 校正高度 + 滚动头部到顶（新面板已挂载、高度确定）。
   function onQuestionEntered() {
     if (verticalMode.value) return;
-    inputRef.value?.focus({ preventScroll: true });
+    if (nextSequentialFocusIsManual) focusComposer(current.value, true);
+    else focusComposerIfInitiallyVisible(current.value);
+    nextSequentialFocusIsManual = false;
     autoGrow(current.value);
     scrollHeaderIntoView();
   }
@@ -984,6 +1322,7 @@ export function usePopupCore() {
   async function submit() {
     if (submitting.value || !canSubmit.value) return;
     submitting.value = true;
+    attach.stopPreview();
     try {
       await submitPopup({ answers: collectAnswers() });
     } catch {
@@ -1083,6 +1422,7 @@ export function usePopupCore() {
     if (submitting.value) return;
     submitting.value = true;
     showCancelConfirm.value = false;
+    attach.stopPreview();
     try {
       await cancelPopup();
     } catch {
@@ -1249,6 +1589,7 @@ export function usePopupCore() {
     confirmComment.value = "";
     showConfirmCloseWarning.value = false;
     const n = req?.questions.length ?? 0;
+    resetComposerDock();
     chosenByQ.value = Array.from({ length: n }, () => []);
     inputByQ.value = Array.from({ length: n }, () => "");
     imagesByQ.value = Array.from({ length: n }, () => []);
@@ -1275,7 +1616,7 @@ export function usePopupCore() {
       // DOM 更新后再聚焦/建观察（此时 textarea / 哨兵已挂载）。
       nextTick(() => {
         if (!vertical) {
-          inputRef.value?.focus({ preventScroll: true });
+          focusComposerIfInitiallyVisible(0);
           autoGrow(0);
         } else {
           setupQuestionObserver();
@@ -1480,6 +1821,8 @@ export function usePopupCore() {
     if (copiedTimer) window.clearTimeout(copiedTimer);
     io?.disconnect();
     io = null;
+    composerResizeObserver?.disconnect();
+    composerResizeObserver = null;
     if (scrollRaf) cancelAnimationFrame(scrollRaf);
     speech.disposeSpeech();
   });
@@ -1526,8 +1869,17 @@ export function usePopupCore() {
     autoGrow,
     onTextareaFocus,
     onTextareaBlur,
+    onComposerInput,
+    onComposerMouseDown,
+    activateComposer,
+    onComposerCompositionStart,
+    onComposerCompositionEnd,
     // DOM refs
     setInputRef,
+    setComposerAnchorRef,
+    setComposerHomeRef,
+    setComposerDockRef,
+    composerAnchorStyle,
     setCardRef,
     setSentinelRef,
     setThumbsRef,
@@ -1535,6 +1887,9 @@ export function usePopupCore() {
     contentRef,
     qHeaderRef,
     onFileChange,
+    composerOwnerQ,
+    dockedComposerQ,
+    returnComposerHome,
     // Message / 头部
     messageText,
     messageHtml,
@@ -1558,6 +1913,7 @@ export function usePopupCore() {
     cmdHeld,
     flashing,
     onScroll,
+    onContentWheel,
     onDrop,
     setActive,
     goPrev,

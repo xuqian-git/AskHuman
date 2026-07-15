@@ -22,6 +22,10 @@ export default {
     attachments: "附件 · {n}",
     inputPlaceholder: "输入你的回复…",
     addImage: "添加图片",
+    composer: {
+      dockedLabel: "固定的回答输入区",
+      returnToQuestion: "回到输入框所在问题",
+    },
     recommended: "推荐",
     permissionReason: "理由：",
     permissionDiff: {

@@ -22,6 +22,10 @@ export default {
     attachments: "Attachments · {n}",
     inputPlaceholder: "Type your reply…",
     addImage: "Add image",
+    composer: {
+      dockedLabel: "Pinned answer editor",
+      returnToQuestion: "Return to the editor's question",
+    },
     recommended: "Recommended",
     permissionReason: "Reason:",
     permissionDiff: {

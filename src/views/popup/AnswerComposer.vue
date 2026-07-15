@@ -1,0 +1,187 @@
+<script setup lang="ts">
+import { computed } from "vue";
+import { useI18n } from "vue-i18n";
+import { usePopupContext } from "./context";
+
+const props = defineProps<{
+  qIndex: number;
+  collapsible?: boolean;
+}>();
+
+const { t } = useI18n();
+const {
+  inputByQ,
+  imagesByQ,
+  replyFilesByQ,
+  expandedQ,
+  dockedComposerQ,
+  setInputRef,
+  setComposerAnchorRef,
+  setComposerHomeRef,
+  composerAnchorStyle,
+  setThumbsRef,
+  activateComposer,
+  onTextareaFocus,
+  onTextareaBlur,
+  onComposerInput,
+  onComposerMouseDown,
+  onComposerCompositionStart,
+  onComposerCompositionEnd,
+  onUserCaretMaybeMoved,
+  speechSupported,
+  listening,
+  speechReady,
+  speechError,
+  speechStatus,
+  speechTargetQ,
+  speechHotkeyLabel,
+  speechErrorText,
+  speechStatusText,
+  toggleSpeech,
+  setActive,
+  pickFiles,
+  removeImage,
+  removeReplyFile,
+} = usePopupContext();
+
+const isDocked = computed(() => dockedComposerQ.value === props.qIndex);
+const isExpanded = computed(
+  () => isDocked.value || !props.collapsible || expandedQ(props.qIndex)
+);
+const ownsSpeech = computed(
+  () => listening.value && speechTargetQ.value === props.qIndex
+);
+
+function handleSpeech() {
+  activateComposer(props.qIndex);
+  setActive(props.qIndex, false);
+  toggleSpeech();
+}
+
+function handlePickFiles() {
+  setActive(props.qIndex, false);
+  pickFiles(props.qIndex);
+}
+</script>
+
+<template>
+  <div
+    :ref="(el) => setComposerAnchorRef(el as HTMLElement | null, qIndex)"
+    class="composer-anchor"
+    :class="{ 'is-docked': isDocked }"
+    :style="composerAnchorStyle(qIndex)"
+  >
+    <Teleport defer to="#popup-composer-dock-target" :disabled="!isDocked">
+      <div class="answer-composer" :class="{ 'is-docked': isDocked }">
+        <div
+          :ref="(el) => setComposerHomeRef(el as HTMLElement | null, qIndex)"
+          class="input-wrap"
+        >
+          <textarea
+            :ref="(el) => setInputRef(el as HTMLTextAreaElement | null, qIndex)"
+            v-model="inputByQ[qIndex]"
+            class="textarea"
+            :class="{ collapsed: !isExpanded }"
+            :rows="collapsible ? 1 : undefined"
+            :placeholder="t('popup.inputPlaceholder')"
+            @input="onComposerInput(qIndex)"
+            @focus="onTextareaFocus(qIndex)"
+            @blur="onTextareaBlur(qIndex)"
+            @compositionstart="onComposerCompositionStart(qIndex)"
+            @compositionend="onComposerCompositionEnd(qIndex)"
+            @keyup="onUserCaretMaybeMoved"
+            @keydown="activateComposer(qIndex)"
+            @mousedown="onComposerMouseDown(qIndex)"
+            @click="activateComposer(qIndex)"
+          ></textarea>
+          <template v-if="isExpanded">
+            <button
+              v-if="speechSupported"
+              class="mic-btn"
+              :class="{
+                loading: ownsSpeech && !speechReady,
+                recording: ownsSpeech && speechReady,
+              }"
+              type="button"
+              :title="
+                speechReady && listening
+                  ? t('popup.speech.stop') +
+                    (speechHotkeyLabel ? ' ' + speechHotkeyLabel : '')
+                  : listening
+                    ? t('popup.speech.preparing')
+                    : t('popup.speech.start') +
+                      (speechHotkeyLabel ? ' ' + speechHotkeyLabel : '')
+              "
+              :aria-label="listening ? t('popup.speech.stop') : t('popup.speech.start')"
+              @mousedown.prevent
+              @click="handleSpeech"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="9" y="2" width="6" height="12" rx="3" />
+                <path d="M5 11a7 7 0 0 0 14 0" />
+                <path d="M12 18v3" />
+              </svg>
+            </button>
+            <button
+              class="img-btn"
+              type="button"
+              :title="t('popup.addImage')"
+              :aria-label="t('popup.addImage')"
+              @mousedown.prevent
+              @click="handlePickFiles"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="3" width="18" height="18" rx="2" />
+                <circle cx="8.5" cy="8.5" r="1.6" />
+                <path d="M21 15l-5-5L5 21" />
+              </svg>
+            </button>
+          </template>
+        </div>
+
+        <p v-if="speechTargetQ === qIndex && speechError" class="speech-error">
+          {{ speechErrorText(speechError) }}
+        </p>
+        <p
+          v-else-if="ownsSpeech && speechStatus"
+          class="speech-status"
+        >
+          {{ speechStatusText(speechStatus) }}
+        </p>
+
+        <div
+          v-if="(imagesByQ[qIndex] ?? []).length || (replyFilesByQ[qIndex] ?? []).length"
+          class="composer-attachments"
+        >
+          <div
+            v-if="(imagesByQ[qIndex] ?? []).length"
+            :ref="(el) => setThumbsRef(el as HTMLElement | null, qIndex)"
+            class="thumbs"
+          >
+            <div v-for="(img, i) in imagesByQ[qIndex]" :key="i" class="thumb">
+              <img :src="img.data" alt="" />
+              <button class="remove" type="button" @click="removeImage(qIndex, i)">
+                ×
+              </button>
+            </div>
+          </div>
+
+          <div v-if="(replyFilesByQ[qIndex] ?? []).length" class="reply-files">
+            <div
+              v-for="(f, i) in replyFilesByQ[qIndex]"
+              :key="f.path"
+              class="reply-file"
+              :title="f.path"
+            >
+              <span class="rf-icon">📄</span>
+              <span class="rf-name">{{ f.name }}</span>
+              <button class="rf-remove" type="button" @click="removeReplyFile(qIndex, i)">
+                ×
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+  </div>
+</template>

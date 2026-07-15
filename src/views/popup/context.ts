@@ -11,7 +11,7 @@ export function createPopupContext() {
 
 export type PopupContext = ReturnType<typeof createPopupContext>;
 
-const PopupCtxKey: InjectionKey<PopupContext> = Symbol("popup-ctx");
+export const PopupCtxKey: InjectionKey<PopupContext> = Symbol("popup-ctx");
 
 export function usePopupContext(): PopupContext {
   const ctx = inject(PopupCtxKey);
