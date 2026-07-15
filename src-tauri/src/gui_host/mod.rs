@@ -66,7 +66,7 @@ pub fn interject_label(session_id: &str) -> String {
 }
 
 #[cfg(unix)]
-pub use unix_impl::{bind, host_open, spawn_detached};
+pub use unix_impl::{bind, host_open, spawn_detached, spawn_detached_from};
 
 #[cfg(unix)]
 mod unix_impl {
@@ -100,9 +100,18 @@ mod unix_impl {
     /// 后台拉起宿主进程（`AskHuman --gui-host`，detach 新会话脱离调用方终端）。
     /// 单实例由宿主自身的 flock 去重——重复 spawn 的多余进程会因抢锁失败而立即退出。
     pub fn spawn_detached() -> std::io::Result<()> {
+        let exe = std::env::current_exe()?;
+        spawn_detached_from(&exe)
+    }
+
+    /// Start GUI Host from a caller-supplied stable disk path.
+    ///
+    /// The running executable can be replaced during self-update. In particular, Linux may then
+    /// report `current_exe()` as a deleted inode path, so the old Host passes its launch path here.
+    pub fn spawn_detached_from(exe: &std::path::Path) -> std::io::Result<()> {
         use std::os::unix::process::CommandExt;
         use std::process::{Command, Stdio};
-        let exe = std::env::current_exe()?;
+
         let mut cmd = Command::new(exe);
         cmd.arg("--gui-host")
             .stdin(Stdio::null())

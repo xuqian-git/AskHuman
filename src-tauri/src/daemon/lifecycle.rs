@@ -24,20 +24,29 @@ pub struct Fingerprint {
 /// 按 (路径, mtime, size) 做持久缓存（`~/.askhuman/binhash.json`）：命中即复用已算哈希，
 /// 把稳态开销降到一次。缓存仅为加速，任何缺失/损坏都会回退到重新计算。
 pub fn current_fingerprint() -> Fingerprint {
-    let zero = Fingerprint { size: 0, hash: 0 };
     let Ok(path) = std::env::current_exe() else {
-        return zero;
+        return Fingerprint { size: 0, hash: 0 };
     };
-    let Ok(meta) = std::fs::metadata(&path) else {
+    fingerprint_at(&path)
+}
+
+/// Compute the content fingerprint at a stable executable path.
+///
+/// GUI Host caches its launch path before an in-place update. On Linux, `current_exe()` may resolve
+/// to a non-existent `... (deleted)` path after the running inode is replaced, so update detection
+/// and re-exec must keep using the pre-update disk path instead.
+pub fn fingerprint_at(path: &Path) -> Fingerprint {
+    let zero = Fingerprint { size: 0, hash: 0 };
+    let Ok(meta) = std::fs::metadata(path) else {
         return zero;
     };
     let size = meta.len();
     let mtime_ms = mtime_ms_of(&meta);
-    if let Some(hash) = cached_hash(&path, size, mtime_ms) {
+    if let Some(hash) = cached_hash(path, size, mtime_ms) {
         return Fingerprint { size, hash };
     }
-    let hash = hash_file(&path).unwrap_or(0);
-    store_cached_hash(&path, size, mtime_ms, hash);
+    let hash = hash_file(path).unwrap_or(0);
+    store_cached_hash(path, size, mtime_ms, hash);
     Fingerprint { size, hash }
 }
 
@@ -281,6 +290,29 @@ mod tests {
         assert_ne!(hash_file(&p1).unwrap(), hash_file(&p3).unwrap());
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn fingerprint_at_tracks_atomic_replacement() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("AskHuman");
+        std::fs::File::create(&path)
+            .unwrap()
+            .write_all(b"old binary")
+            .unwrap();
+        let old = fingerprint_at(&path);
+
+        let staged = dir.path().join(".AskHuman.new");
+        std::fs::File::create(&staged)
+            .unwrap()
+            .write_all(b"new binary with different bytes")
+            .unwrap();
+        std::fs::rename(staged, &path).unwrap();
+
+        let new = fingerprint_at(&path);
+        assert_ne!(old, new);
+        assert_eq!(new.size, 31);
     }
 
     #[test]

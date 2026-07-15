@@ -16,6 +16,7 @@ use crate::daemon::lifecycle::{self, Fingerprint, LockGuard};
 use crate::gui_host::{HostMsg, WindowKind};
 use crate::i18n::{self, Lang};
 use crate::ipc::{self, transport, ClientMsg, ServerMsg};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
@@ -97,6 +98,65 @@ pub struct TrayData {
     pub channel_issues: Vec<ipc::ChannelIssueInfo>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+enum UpdateActionState {
+    #[default]
+    Idle,
+    Checking,
+    Current,
+    CheckFailed(String),
+    Applying,
+    ApplyFailed(String),
+    RestartFailed(String),
+}
+
+impl UpdateActionState {
+    fn busy(&self) -> bool {
+        matches!(self, Self::Checking | Self::Applying)
+    }
+}
+
+fn cached_update_available(state: &crate::update::state::UpdateState, current: &str) -> bool {
+    !state.latest_version.is_empty()
+        && crate::update::compare_versions(&state.latest_version, current) > 0
+        && !state
+            .dismissed_versions
+            .iter()
+            .any(|version| version == &state.latest_version)
+}
+
+fn merge_update_status(
+    daemon_available: bool,
+    daemon_latest: String,
+    daemon_pending: bool,
+    persisted: &crate::update::state::UpdateState,
+    current: &str,
+) -> (bool, String, bool) {
+    let mut available = daemon_available;
+    let mut latest = daemon_latest;
+    if cached_update_available(persisted, current)
+        && (!available || crate::update::compare_versions(&persisted.latest_version, &latest) > 0)
+    {
+        available = true;
+        latest = persisted.latest_version.clone();
+    }
+    let pending = daemon_pending || persisted.pending;
+    if pending {
+        available = false;
+    }
+    (available, latest, pending)
+}
+
+/// Seed the daemon-independent part of the tray from the persisted update check.
+fn initial_tray_data() -> TrayData {
+    let update = crate::update::state::load();
+    TrayData {
+        update_available: cached_update_available(&update, &crate::update::current_version()),
+        update_latest: update.latest_version,
+        ..TrayData::default()
+    }
+}
+
 pub struct HostState {
     pub mode: Mutex<MenuBarIconMode>,
     /// 上次已应用的守护进程生命周期模式：用于在配置变更时检测「切到保活」的跃迁，
@@ -104,6 +164,8 @@ pub struct HostState {
     pub daemon_lifecycle: Mutex<DaemonLifecycleMode>,
     pub lang: Mutex<Lang>,
     pub data: Mutex<TrayData>,
+    /// GUI Host owns menu-triggered update feedback even while daemon is down.
+    update_action: Mutex<UpdateActionState>,
     pub daemon_up: AtomicBool,
     pub windows_open: AtomicUsize,
     /// 是否曾经打开过窗口（off/active 模式退出判定用，避免开窗前误退）。
@@ -124,6 +186,8 @@ pub struct HostState {
     pub agents_sub: Mutex<Option<Arc<Notify>>>,
     /// 启动时的二进制指纹（盘上内容变化即触发宿主换新）。
     pub startup_fp: Fingerprint,
+    /// Stable on-disk launch path captured before self-update replaces the running inode.
+    pub executable_path: PathBuf,
     /// 盘上二进制已与启动时不同（由 15s 轮询维护）：有窗口挡住自动换新时，
     /// 托盘显示「重启以完成更新」项（B2）；也作为关最后一个窗口即刻换新的提示（B1）。
     pub binary_stale: AtomicBool,
@@ -156,12 +220,19 @@ fn tray_supported() -> bool {
 pub fn setup(app: &mut tauri::App, config: &AppConfig) -> tauri::Result<()> {
     let lang = Lang::resolve(&config.general.language);
     let mode = config.general.menu_bar_icon;
+    let executable_path = std::env::current_exe().unwrap_or_default();
+    let startup_fp = if executable_path.as_os_str().is_empty() {
+        lifecycle::current_fingerprint()
+    } else {
+        lifecycle::fingerprint_at(&executable_path)
+    };
 
     app.manage(HostState {
         mode: Mutex::new(mode),
         daemon_lifecycle: Mutex::new(config.general.daemon_lifecycle),
         lang: Mutex::new(lang),
-        data: Mutex::new(TrayData::default()),
+        data: Mutex::new(initial_tray_data()),
+        update_action: Mutex::new(UpdateActionState::Idle),
         daemon_up: AtomicBool::new(false),
         windows_open: AtomicUsize::new(0),
         ever_open: AtomicBool::new(false),
@@ -171,7 +242,8 @@ pub fn setup(app: &mut tauri::App, config: &AppConfig) -> tauri::Result<()> {
         menu_sig: Mutex::new(None),
         keepalive: Mutex::new(None),
         agents_sub: Mutex::new(None),
-        startup_fp: lifecycle::current_fingerprint(),
+        startup_fp,
+        executable_path,
         binary_stale: AtomicBool::new(false),
     });
 
@@ -307,6 +379,7 @@ pub fn refresh_tray(app: &AppHandle) {
     };
     let up = state.daemon_up.load(Ordering::SeqCst);
     let data = state.data.lock().unwrap().clone();
+    let update_action = state.update_action.lock().unwrap().clone();
     let lang = state.lang();
     // 是否有任一家开启了生命周期追踪：未开启时隐藏 Agent 状态相关菜单项（入口 + 忙闲行）。
     let lifecycle_on = crate::integrations::agent_lifecycle::any_installed();
@@ -314,7 +387,7 @@ pub fn refresh_tray(app: &AppHandle) {
     let stale = state.binary_stale.load(Ordering::SeqCst);
 
     // 内容签名：与上次相同 → 整次跳过，不触碰托盘（连 diff 都省，确保展开的菜单纹丝不动）。
-    let sig = menu_signature(up, lang, &data, lifecycle_on, stale);
+    let sig = menu_signature(up, lang, &data, lifecycle_on, stale, &update_action);
     if state.menu_sig.lock().unwrap().as_deref() == Some(sig.as_str()) {
         return;
     }
@@ -327,7 +400,14 @@ pub fn refresh_tray(app: &AppHandle) {
     // 菜单：把期望节点列表 diff 应用到**同一个**菜单对象——文字变化只 set_text、结构变化才最小增删，
     // 绝不整段重建（整段重建会关掉已展开菜单）。
     if let Some(tm) = state.tray_menu.lock().unwrap().as_mut() {
-        tm.apply(build_specs(up, lang, &data, lifecycle_on, stale));
+        tm.apply(build_specs(
+            up,
+            lang,
+            &data,
+            lifecycle_on,
+            stale,
+            &update_action,
+        ));
     }
     let tip = if up {
         i18n::tr(lang, "tray.tooltipRunning").to_string()
@@ -348,6 +428,7 @@ fn menu_signature(
     data: &TrayData,
     lifecycle_on: bool,
     stale: bool,
+    update_action: &UpdateActionState,
 ) -> String {
     // 待答子菜单内容（id+预览）也入签名：列表/预览变化即触发 diff。
     let pending: String = data
@@ -383,7 +464,7 @@ fn menu_signature(
         .collect::<Vec<_>>()
         .join(";");
     format!(
-        "{:?}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+        "{:?}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{:?}",
         lang,
         up as u8,
         data.version,
@@ -406,6 +487,7 @@ fn menu_signature(
         pending,
         agents,
         issues,
+        update_action,
     )
 }
 
@@ -444,6 +526,7 @@ fn build_specs(
     data: &TrayData,
     lifecycle_on: bool,
     stale: bool,
+    update_action: &UpdateActionState,
 ) -> Vec<Node> {
     let mut nodes: Vec<Node> = Vec::new();
 
@@ -628,16 +711,20 @@ fn build_specs(
         }
     }
     nodes.push(Node::separator("sep.update"));
+    if let Some(text) = update_action_text(update_action, lang) {
+        nodes.push(Node::item("st.update_action", text, false));
+    }
+    let update_busy = update_action.busy();
     nodes.push(Node::item(
         "check_update",
         i18n::tr(lang, "tray.checkUpdate").to_string(),
-        true,
+        !update_busy,
     ));
     if data.update_available {
         nodes.push(Node::item(
             "apply_update",
             i18n::tr(lang, "tray.applyUpdate").replace("{v}", &data.update_latest),
-            true,
+            !update_busy,
         ));
     }
     // 盘上二进制已换新但窗口开着（自动换新被挡）→ 用户可主动重启宿主完成更新（B2）。
@@ -678,6 +765,30 @@ fn build_specs(
         ));
     }
     nodes
+}
+
+fn update_action_text(action: &UpdateActionState, lang: Lang) -> Option<String> {
+    let text = match action {
+        UpdateActionState::Idle => return None,
+        UpdateActionState::Checking => i18n::tr(lang, "tray.checkingUpdate").to_string(),
+        UpdateActionState::Current => i18n::tr(lang, "tray.updateCurrent").to_string(),
+        UpdateActionState::CheckFailed(error) => {
+            i18n::tr(lang, "tray.checkUpdateFailed").replace("{e}", error)
+        }
+        UpdateActionState::Applying => i18n::tr(lang, "tray.applyingUpdate").to_string(),
+        UpdateActionState::ApplyFailed(error) => {
+            i18n::tr(lang, "tray.applyUpdateFailed").replace("{e}", error)
+        }
+        UpdateActionState::RestartFailed(error) => {
+            i18n::tr(lang, "tray.restartHostFailed").replace("{e}", error)
+        }
+    };
+    Some(text)
+}
+
+fn compact_update_error(error: &str) -> String {
+    let one_line = error.split_whitespace().collect::<Vec<_>>().join(" ");
+    truncate_chars(&one_line, 72)
 }
 
 /// agent 家族展示名（托盘 Agent 子菜单标签用；与 `AgentKind::label` 同口径）。
@@ -796,27 +907,89 @@ pub fn on_menu_event(app: &AppHandle, id: &str) {
         "open_history" => open_window(app, WindowKind::History, true, None, None),
         "open_agents" => open_window(app, WindowKind::Agents, false, None, None),
         "check_update" => {
-            tauri::async_runtime::spawn(async {
-                if let Ok(info) = crate::update::check().await {
-                    crate::update::state::record_check(&info.latest_version, &info.release_notes);
+            let Some(state) = app.try_state::<HostState>() else {
+                return;
+            };
+            {
+                let mut action = state.update_action.lock().unwrap();
+                if action.busy() {
+                    return;
                 }
+                *action = UpdateActionState::Checking;
+            }
+            refresh_on_main(app);
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                crate::update::state::clear_dismissed();
+                match crate::update::check().await {
+                    Ok(info) => {
+                        crate::update::state::record_check(
+                            &info.latest_version,
+                            &info.release_notes,
+                        );
+                        if let Some(state) = app.try_state::<HostState>() {
+                            let mut data = state.data.lock().unwrap();
+                            data.update_available = info.available;
+                            data.update_latest = info.latest_version;
+                            *state.update_action.lock().unwrap() = if info.available {
+                                UpdateActionState::Idle
+                            } else {
+                                UpdateActionState::Current
+                            };
+                        }
+                    }
+                    Err(error) => {
+                        if let Some(state) = app.try_state::<HostState>() {
+                            *state.update_action.lock().unwrap() = UpdateActionState::CheckFailed(
+                                compact_update_error(&error.to_string()),
+                            );
+                        }
+                    }
+                }
+                refresh_on_main(&app);
             });
         }
         "apply_update" => {
-            tauri::async_runtime::spawn(async {
+            let Some(state) = app.try_state::<HostState>() else {
+                return;
+            };
+            {
+                let mut action = state.update_action.lock().unwrap();
+                if action.busy() {
+                    return;
+                }
+                *action = UpdateActionState::Applying;
+            }
+            refresh_on_main(app);
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
                 let updater = crate::update::select_updater();
-                if updater.apply(None).await.is_ok() {
-                    crate::update::state::set_pending(true);
+                match updater.apply(None).await {
+                    Ok(()) => {
+                        crate::update::state::set_pending(true);
+                        if let Some(state) = app.try_state::<HostState>() {
+                            let mut data = state.data.lock().unwrap();
+                            data.update_available = false;
+                            data.pending = true;
+                            *state.update_action.lock().unwrap() = UpdateActionState::Idle;
+                        }
+                        refresh_on_main(&app);
+                        refresh_binary_on_main(&app);
+                    }
+                    Err(error) => {
+                        if let Some(state) = app.try_state::<HostState>() {
+                            *state.update_action.lock().unwrap() = UpdateActionState::ApplyFailed(
+                                compact_update_error(&error.to_string()),
+                            );
+                        }
+                        refresh_on_main(&app);
+                    }
                 }
             });
         }
         // B2：用户主动重启宿主完成二进制换新（窗口开着也重启——用户已知情选择）。
         "host_restart" => {
-            let mode = app
-                .try_state::<HostState>()
-                .map(|s| s.mode())
-                .unwrap_or(MenuBarIconMode::Active);
-            restart_host(app, mode);
+            restart_host(app);
         }
         "start_daemon" => {
             tauri::async_runtime::spawn(async {
@@ -1122,6 +1295,15 @@ fn start_status_subscription(app: AppHandle) {
                                 agents,
                                 channel_issues,
                             })) => {
+                                let persisted = crate::update::state::load();
+                                let (update_available, update_latest, pending) =
+                                    merge_update_status(
+                                        update_available,
+                                        update_latest,
+                                        pending,
+                                        &persisted,
+                                        &crate::update::current_version(),
+                                    );
                                 if let Some(state) = app.try_state::<HostState>() {
                                     *state.data.lock().unwrap() = TrayData {
                                         running,
@@ -1218,6 +1400,14 @@ fn set_daemon_up(app: &AppHandle, up: bool) {
 fn refresh_on_main(app: &AppHandle) {
     let app2 = app.clone();
     let _ = app.run_on_main_thread(move || refresh_tray(&app2));
+}
+
+fn refresh_binary_on_main(app: &AppHandle) {
+    let app2 = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        update_binary_stale(&app2);
+        maybe_refresh_binary(&app2);
+    });
 }
 
 // ===== 配置监听（模式 / 语言 / 登录项）=====
@@ -1339,7 +1529,7 @@ fn update_binary_stale(app: &AppHandle) {
     let Some(state) = app.try_state::<HostState>() else {
         return;
     };
-    let stale = lifecycle::current_fingerprint() != state.startup_fp;
+    let stale = host_disk_fingerprint(&state) != state.startup_fp;
     if state.binary_stale.swap(stale, Ordering::SeqCst) != stale {
         refresh_tray(app);
     }
@@ -1354,14 +1544,27 @@ fn maybe_refresh_binary(app: &AppHandle) {
         return;
     }
     // 以「自身盘上二进制内容是否变化」为准（pending 仅作提示）；新实例会捕获新指纹，不会循环。
-    if lifecycle::current_fingerprint() == state.startup_fp {
+    if host_disk_fingerprint(&state) == state.startup_fp {
         return;
     }
-    restart_host(app, state.mode());
+    restart_host(app);
+}
+
+fn host_disk_fingerprint(state: &HostState) -> Fingerprint {
+    if state.executable_path.as_os_str().is_empty() {
+        lifecycle::current_fingerprint()
+    } else {
+        lifecycle::fingerprint_at(&state.executable_path)
+    }
 }
 
 /// 用盘上（新）二进制重启宿主：释放单实例锁；always 交 launchd KeepAlive 重启，其它自我 re-exec。
-fn restart_host(app: &AppHandle, mode: MenuBarIconMode) {
+fn restart_host(app: &AppHandle) {
+    let Some(state) = app.try_state::<HostState>() else {
+        return;
+    };
+    let mode = state.mode();
+    let executable_path = state.executable_path.clone();
     release_lock(); // 让新实例可抢锁。
     #[cfg(target_os = "macos")]
     {
@@ -1370,7 +1573,136 @@ fn restart_host(app: &AppHandle, mode: MenuBarIconMode) {
             return;
         }
     }
-    let _ = crate::gui_host::spawn_detached();
+    let spawned = if executable_path.as_os_str().is_empty() {
+        crate::gui_host::spawn_detached()
+    } else {
+        crate::gui_host::spawn_detached_from(&executable_path)
+    };
+    match spawned {
+        Ok(()) => app.exit(0),
+        Err(error) => {
+            // Keep serving from the in-memory old image if the new disk image could not launch.
+            // Reacquiring the lock prevents another Host from racing this recovery path.
+            if acquire_singleton() {
+                if let Some(state) = app.try_state::<HostState>() {
+                    *state.update_action.lock().unwrap() =
+                        UpdateActionState::RestartFailed(compact_update_error(&error.to_string()));
+                }
+                refresh_on_main(app);
+            } else {
+                app.exit(0);
+            }
+        }
+    }
     let _ = mode;
-    app.exit(0);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn item<'a>(nodes: &'a [Node], key: &str) -> (&'a str, bool) {
+        nodes
+            .iter()
+            .find_map(|node| match node {
+                Node::Item {
+                    key: node_key,
+                    text,
+                    enabled,
+                } if node_key == key => Some((text.as_str(), *enabled)),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("missing menu item {key}"))
+    }
+
+    #[test]
+    fn cached_update_is_available_without_daemon() {
+        let state = crate::update::state::UpdateState {
+            latest_version: "1.2.0".to_string(),
+            ..Default::default()
+        };
+        assert!(cached_update_available(&state, "1.1.9"));
+        assert!(!cached_update_available(&state, "1.2.0"));
+
+        let dismissed = crate::update::state::UpdateState {
+            dismissed_versions: vec!["1.2.0".to_string()],
+            ..state
+        };
+        assert!(!cached_update_available(&dismissed, "1.1.9"));
+    }
+
+    #[test]
+    fn manual_check_survives_stale_daemon_snapshots() {
+        let persisted = crate::update::state::UpdateState {
+            latest_version: "1.2.0".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(
+            merge_update_status(false, String::new(), false, &persisted, "1.1.0"),
+            (true, "1.2.0".to_string(), false)
+        );
+
+        let pending = crate::update::state::UpdateState {
+            pending: true,
+            ..persisted
+        };
+        assert_eq!(
+            merge_update_status(true, "1.2.0".to_string(), false, &pending, "1.1.0"),
+            (false, "1.2.0".to_string(), true)
+        );
+    }
+
+    #[test]
+    fn current_result_is_visible_and_check_remains_available() {
+        let nodes = build_specs(
+            false,
+            Lang::En,
+            &TrayData::default(),
+            false,
+            false,
+            &UpdateActionState::Current,
+        );
+        assert_eq!(
+            item(&nodes, "st.update_action"),
+            ("AskHuman is up to date", false)
+        );
+        assert_eq!(item(&nodes, "check_update"), ("Check for Updates", true));
+    }
+
+    #[test]
+    fn applying_disables_concurrent_update_actions() {
+        let data = TrayData {
+            update_available: true,
+            update_latest: "1.2.0".to_string(),
+            ..Default::default()
+        };
+        let nodes = build_specs(
+            false,
+            Lang::En,
+            &data,
+            false,
+            false,
+            &UpdateActionState::Applying,
+        );
+        assert_eq!(
+            item(&nodes, "st.update_action"),
+            ("Updating AskHuman…", false)
+        );
+        assert!(!item(&nodes, "check_update").1);
+        assert!(!item(&nodes, "apply_update").1);
+    }
+
+    #[test]
+    fn update_errors_are_single_line_and_bounded() {
+        let compact = compact_update_error(
+            "npm failed\nplease run npm i -g askhuman@latest because this explanation is deliberately long enough to truncate",
+        );
+        assert!(!compact.contains('\n'));
+        assert!(compact.chars().count() <= 73);
+        assert!(compact.ends_with('…'));
+
+        let action = UpdateActionState::ApplyFailed(compact.clone());
+        let text = update_action_text(&action, Lang::En).unwrap();
+        assert_eq!(text, format!("⚠ Update failed: {compact}"));
+    }
 }
