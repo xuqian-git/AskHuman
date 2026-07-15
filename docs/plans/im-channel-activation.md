@@ -55,7 +55,7 @@ AskHuman 把每次提问推给多个「人机交互出口」：本地**弹窗（
   有工作中 agent 时可用——本就是 `/status` 有意义的前提。）
 
 ### 3.3 活跃槽（单个 · 持久化 · 统一含「弹窗」· 在哪儿说话就用哪儿）
-- 全局**单**活跃槽 `active_channel`，取值为某 IM id 或 `"popup"`（`"popup"` / None = 不向任何 IM 发卡片，只弹窗）。
+- 全局**单**活跃槽 `active_channel`，取值为某 IM id 或 `"popup"`（Popup 可用时，`"popup"` / None = 不向任何 IM 发卡片，只弹窗）。
 - **持久化、跨 daemon 重启保留**（重启后即便我不在电脑前，仍按旧槽继续收消息）。
 - **改变途径 = 我在某渠道「说话」**——统一为「更新活跃槽」一处逻辑（`set_active_channel`）：
   - 在某 IM 发**任意**入站消息 → `active_channel = 该 IM`；
@@ -65,7 +65,7 @@ AskHuman 把每次提问推给多个「人机交互出口」：本地**弹窗（
   - 给**旧**渠道（若为 IM）发**反激活**提示，并**点明切到了哪个渠道**（如「已切换到『弹窗』/『钉钉』」），发 /here 可切回；
   - 把**所有在途未答**问题**补推**给**新**渠道（若为 IM）——补推是「渠道激活」的固有行为，**与触发方式无关**（`/here`、普通消息、`/status` 切槽、作答切槽均同）；
   - 新渠道的**激活**提示由调用方按场景发送（IM 入站回执见 §3.4；弹窗无收件端，免发）。
-- 发卡片的判据：armed（有工作中会话）**且** `active_channel` 命中某 IM → 新提问同时发该 IM（+弹窗）；否则只弹窗。
+- 发卡片的判据：armed（有工作中会话）**且** `active_channel` 命中某 IM → 新提问同时发该 IM（+ 已启用的 Popup）；否则只弹窗。**可达性兜底**：若 Popup 禁用/无显示，且「有效活跃槽 ∪ watch 渠道」交集为空，该次全发所有可用 IM，避免零投递；不自动改持久化活跃槽，首个回复渠道会按既有逻辑成为新活跃槽。
 
 ### 3.4 入站分派：通用 slash 命令机制
 入站文本 `trim` 后**以 `/` 开头**才算命令（机制可扩展，后续可注册更多命令）；否则按「普通消息」。命令大小写不敏感。本期内置：
@@ -113,7 +113,7 @@ AskHuman 把每次提问推给多个「人机交互出口」：本地**弹窗（
 1. **平台「同一 bot 同一时刻仅一条长连接」**（钉钉 Stream / 飞书 WS / Slack Socket Mode / Telegram getUpdates 单 offset）。本方案靠「IM 仅在本机有工作会话时才连」→ 用户一般不会多机同时跑 Agent → 同一 bot 不会并发连接，抢占问题自然消失。
 2. **唯一残留代价**：无中心服务仲裁，本机的 IM 长连接在「有工作会话」期间建立，并保持到**守护进程空闲退出**（无工作 agent + 无连接 + 无订阅后约 5 分钟，D18）才释放——即空闲窗口内仍占着该 bot。多机冲突仅在「两台机器同时有**活着的工作会话**（或处于该空闲窗口）+ 同一 bot」时发生，罕见、可接受。
 3. **信号原则**（沿用生命周期追踪）：进程存活＝电平骨干（判会话在不在）；turn-start↔turn-end 成对事件＝判忙/闲；TTL 仅兜底。不用「定时超时升级到 IM」（时长无法定，已否决）。
-4. **弹窗始终参与**（本地、免费、无刷屏顾虑）；IM 是「可选、最多一个」的附加出口。
+4. **弹窗按配置参与**：`channels.popup.enabled` 且有显示环境时，它是本地、免费、无刷屏顾虑的默认出口；它不可用且按需发送选不出有效 IM 时，为保证可达性才例外全发所有可用 IM。
 
 ---
 
@@ -123,7 +123,7 @@ AskHuman 把每次提问推给多个「人机交互出口」：本地**弹窗（
 1. **配置**：`ChannelsConfig.auto_activation: bool`（camelCase `autoActivation`，默认 false，**不在 `experimental` 里**）。设置页「渠道」Tab 顶部开关 UI + 简短说明（仅 `experimental.enabled` 且非 Windows 显示），i18n。`config.rs`、`SettingsView.vue`、`src/lib/types.ts`、`src/i18n/*`。
 2. **活跃槽持久化**：`~/.askhuman/state/auto-channel.json`（`{ "channel": "feishu"|"popup"|null, "updatedAt": <secs> }`，含 `"popup"`）。`paths.rs` 路径 helper；`ServerState.active_channel: Mutex<Option<String>>`，启动 `autochannel::load_active()`、`set_active_channel` 变更原子写。逻辑集中在 `autochannel.rs`。
 3. **会话兜底登记**：`AgentRegistry::upsert_working`（建/更新为工作中，补 pid/cwd）；`handle_submit` **开关开时**对带 `agent_kind/session_id` 的提问调用，使无 hook 也能驱动入站消费/切槽（开关关时只 `touch_activity`，不污染注册表）。
-4. **发卡门控（attach）**：`daemon::attach_im_channels` 开关开时仅 `active_channel` 命中的 IM `register + start` 发卡片；开关关 → 旧「全发」逻辑。注意：**「连 IM 收命令」不在 attach**，而由 `ensure_inbound_listeners`（按「有工作中 agent」自门控、与开关无关）负责。
+4. **发卡门控（attach）**：`daemon::attach_im_channels` 开关开时仅对「有效 `active_channel` ∪ watch 渠道」执行 `register + start`；Popup 不可用且候选为空时，全发所有可用 IM 兜底；开关关 → 旧「全发」逻辑。注意：**「连 IM 收命令」不在 attach**，而由 `ensure_inbound_listeners`（按「有工作中 agent」自门控、与开关无关）负责。
 5. **daemon 级入站消费**：各 Router 暴露原始消息观察者——飞书/Slack `observe_message`、钉钉 `observe_bot`、Telegram **新增** `observe_message`（`telegram/router.rs`，并对 armed 时的斜线文字不路由到卡片）。`ensure_inbound_listeners` 用通用 `spawn_listener` 循环 + 各家 `extract_*` 抽取 `(发送者,文本)`，交 `handle_inbound` 按 §3.4 分派。
 6. **补推在途**：`backfill_inflight` 枚举 `RequestRegistry::in_flight_entries`，对未挂该渠道的请求 `coordinator.register + Channel::start`（`coordinator.has_channel` 去重）。**由 `set_active_channel` 在切槽时统一调用**（不绑定具体命令）——任何方式激活某 IM 都补推，`set_active_channel` 返回 `(是否切换, 补推数)` 供调用方拼激活回执。
 7. **`/status`**：`autochannel::status_text` 由 `agents.snapshot()` 过滤 working/idle 组装（§3.6）→ `reply_channel_text` 经该渠道回消息；i18n。**与开关无关**（§3.2/§3.4）。

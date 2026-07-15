@@ -1455,7 +1455,8 @@ pub(super) async fn backfill_inflight(
         if entry.coordinator.is_terminal() || entry.has_delivery(channel_id) {
             continue;
         }
-        let eligible = confirm_im_candidates(&entry, state, config);
+        let popup_available = popup_should_dispatch(config, has_display());
+        let eligible = confirm_im_candidates(&entry, state, config, popup_available);
         if !eligible.contains(&channel_id) {
             continue;
         }

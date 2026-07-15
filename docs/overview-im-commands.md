@@ -12,7 +12,7 @@
 
 ## 活跃槽与按需发送
 
-`channels.autoActivation` 默认关闭：关闭时，每次提问发送到所有已启用 IM；开启时，通常只投放到当前活跃槽。活跃槽也可以是 `popup`，并持久化于 `~/.askhuman/state/auto-channel.json`。
+`channels.autoActivation` 默认关闭：关闭时，每次提问发送到所有已启用 IM；开启时，通常只投放到当前有效活跃槽。活跃槽也可以是 `popup`，并持久化于 `~/.askhuman/state/auto-channel.json`。Popup 不可用且「活跃槽 ∪ watch 渠道」选不出任何可用 IM 时，为避免零投递，该次提问会兜底发到所有可用 IM；人在其中某个渠道回复后，它会自然成为新活跃槽。
 
 在某渠道发普通消息、回答问题或执行会改变交互上下文的命令，会把它设为活跃槽；切槽时把在途未答请求补推到新渠道。`channels.autoEndWatch` 开启后，切离某个真实 IM 时会结束该渠道的 watch。具体决策见 `docs/specs/im-auto-end-watch.md` 和相关实现计划。
 

@@ -1284,8 +1284,8 @@ async fn handle_submit_confirm(
 
     // 缓存快照（密钥已解析）：零钥匙串、零磁盘读，见 `config_snapshot`。
     let config = state.config_snapshot();
-    let popup_enabled = config.channels.popup.enabled && has_display();
-    let im_candidates = confirm_im_candidates(&entry, state, &config);
+    let popup_enabled = popup_should_dispatch(&config, has_display());
+    let im_candidates = confirm_im_candidates(&entry, state, &config, popup_enabled);
     if popup_enabled {
         entry.start_delivery("popup");
     }
@@ -1458,13 +1458,16 @@ async fn handle_submit(
     // /watch：提问创建 → 被关注 agent 可能进入「正在等待你的回答」，即时进卡。
     state.watch.notify.notify_one();
 
+    // 按接收请求时的 Daemon 配置快照决定是否投放 Popup。配置禁用或无显示
+    // 环境时必须完全跳过 Helper，让 IM 成为唯一作答渠道。
+    let popup_enabled = popup_should_dispatch(&state.config_snapshot(), has_display());
     // 方案3（spec §6.1）：尽早 spawn GUI Helper（独立短命进程，带一次性 token），让其 WebView
     // 初始化与下面的「入站监听 + IM 建连」并行——token 在 `registry.create()` 即登记，helper 可
     // 立即连上，不存在「helper 先连、entry 未注册」竞态。冷启动下这把 IM 建连（数百 ms）整段移出
     // 弹窗端到端关键路径。
     // 方案6：优先领用热池中的预热弹窗（秒级上屏）；池空 / 关 / 无显示 / holder 死 → 回退冷 spawn。
-    let popup_ok = dispatch_popup(&entry, state, &perf_id, perf_autodismiss);
-    if !popup_ok {
+    let popup_ok = popup_enabled && dispatch_popup(&entry, state, &perf_id, perf_autodismiss);
+    if popup_enabled && !popup_ok {
         let _ = ipc::write_msg(
             &mut w,
             &ServerMsg::Warn {
@@ -1491,7 +1494,7 @@ async fn handle_submit(
     // 确保入站消费在线（自身按「有工作中 agent」自门控；与开关无关，使 /status 等命令独立可用）。
     ensure_inbound_listeners(state).await;
     // 挂接可用的 IM 渠道（钉钉/…）到本请求的协调器，与弹窗并行抢答。
-    let im_attached = attach_im_channels(&entry, state, &mut w, lang).await;
+    let im_attached = attach_im_channels(&entry, state, &mut w, lang, popup_enabled).await;
     crate::perf::mark(&perf_id, "dmn.im_done");
     // /watch 跟底：提问卡即将出现在渠道会话里，是一次「非 watch」扰动（提问期间跟底被抑制，
     // 这里先记水位线，供答复完结后立即跟底）。
@@ -2116,11 +2119,54 @@ fn any_im_enabled(config: &AppConfig) -> bool {
     ch.dingding.enabled || ch.feishu.enabled || ch.telegram.enabled || ch.slack.enabled
 }
 
+/// 当前配置完整、可实际投递的 IM 渠道，顺序与既有投递顺序一致。
+fn available_im_channels(config: &AppConfig) -> Vec<&'static str> {
+    let mut available = Vec::new();
+    if crate::app::is_dingding_active(config) {
+        available.push("dingding");
+    }
+    if crate::app::is_feishu_active(config) {
+        available.push("feishu");
+    }
+    if crate::app::is_telegram_active(config) {
+        available.push("telegram");
+    }
+    if crate::app::is_slack_active(config) {
+        available.push("slack");
+    }
+    available
+}
+
+/// 按需发送的统一候选规则：优先活跃槽 ∪ watch；若 Popup 不可用且交集为空，
+/// 兜底所有可用 IM，保证不会因失效活跃槽造成零投递。
+fn select_im_delivery_candidates(
+    auto_activation: bool,
+    available: &[&'static str],
+    active: Option<&str>,
+    watching: &[String],
+    popup_available: bool,
+) -> Vec<&'static str> {
+    if !auto_activation {
+        return available.to_vec();
+    }
+    let selected: Vec<&'static str> = available
+        .iter()
+        .copied()
+        .filter(|id| active == Some(*id) || watching.iter().any(|watched| watched.as_str() == *id))
+        .collect();
+    if selected.is_empty() && !popup_available {
+        available.to_vec()
+    } else {
+        selected
+    }
+}
+
 async fn attach_im_channels(
     entry: &Arc<RequestEntry>,
     state: &Arc<ServerState>,
     w: &mut OwnedWriteHalf,
     lang: Lang,
+    popup_available: bool,
 ) -> bool {
     // 方案4（spec §4）的「仅弹窗用户零钥匙串」目标现由缓存快照达成：快照在启动 / 配置变更时
     // 已解析密钥，这里读缓存即可，热路径不再触碰钥匙串与磁盘。
@@ -2132,11 +2178,9 @@ async fn attach_im_channels(
     let sink = entry.coordinator.clone();
     let mut attached = false;
 
-    // 「IM 会话期自动激活」：开关开时，投放渠道 = 当前活跃槽 ∪ 正在 watch 本次调用方 agent 的
-    // 渠道（watch 卡显示「等待回答」却收不到提问卡的困惑，计划 §6 M4 定案；多渠道并发时
-    // 抢答收尾机制原样复用）。其余 IM 由入站监听器保持连接、只监听 here，不发卡片。
-    // 开关关时维持旧「全发」行为。
-    let auto = config.channels.auto_activation;
+    // 「IM 会话期自动激活」：开关开时，投放渠道 = 当前有效活跃槽 ∪ 正在 watch 本次调用方
+    // agent 的渠道。若 Popup 不可用且候选为空，则全发可用 IM 作为可达性兜底。其余情况下，
+    // 非候选 IM 由入站监听器保持连接、只监听 here，不发卡片。开关关时维持旧「全发」行为。
     let active = state.active_channel.lock().unwrap().clone();
     let watching: Vec<String> = match entry.agent_session_id.as_ref() {
         Some(sid) => state
@@ -2150,11 +2194,16 @@ async fn attach_im_channels(
             .collect(),
         None => Vec::new(),
     };
-    let want = |id: &str| -> bool {
-        !auto || active.as_deref() == Some(id) || watching.iter().any(|w| w == id)
-    };
+    let available = available_im_channels(&config);
+    let candidates = select_im_delivery_candidates(
+        config.channels.auto_activation,
+        &available,
+        active.as_deref(),
+        &watching,
+        popup_available,
+    );
 
-    if want("dingding") && crate::app::is_dingding_active(&config) {
+    if candidates.contains(&"dingding") {
         let dd = &config.channels.dingding;
         match ensure_dd_router(state, dd.client_id.trim(), dd.client_secret.trim()).await {
             Some(router) => {
@@ -2180,7 +2229,7 @@ async fn attach_im_channels(
         }
     }
 
-    if want("feishu") && crate::app::is_feishu_active(&config) {
+    if candidates.contains(&"feishu") {
         let fs = &config.channels.feishu;
         match ensure_fs_router(state, fs).await {
             Some(router) => {
@@ -2206,7 +2255,7 @@ async fn attach_im_channels(
         }
     }
 
-    if want("telegram") && crate::app::is_telegram_active(&config) {
+    if candidates.contains(&"telegram") {
         let tg = &config.channels.telegram;
         match ensure_tg_router(state, tg).await {
             Some(router) => {
@@ -2232,7 +2281,7 @@ async fn attach_im_channels(
         }
     }
 
-    if want("slack") && crate::app::is_slack_active(&config) {
+    if candidates.contains(&"slack") {
         let sl = &config.channels.slack;
         match ensure_sl_router(state, sl).await {
             Some(router) => {
@@ -2265,8 +2314,8 @@ fn confirm_im_candidates(
     entry: &Arc<request::ConfirmEntry>,
     state: &Arc<ServerState>,
     config: &AppConfig,
+    popup_available: bool,
 ) -> Vec<&'static str> {
-    let auto = config.channels.auto_activation;
     let active = state.active_channel.lock().unwrap().clone();
     let watching: Vec<String> = state
         .watch
@@ -2277,23 +2326,14 @@ fn confirm_im_candidates(
         .filter(|watch| watch.session_id == entry.agent_session_id && !watch.rewatchable)
         .map(|watch| watch.channel.clone())
         .collect();
-    let want = |id: &str| {
-        !auto || active.as_deref() == Some(id) || watching.iter().any(|watch| watch == id)
-    };
-    let mut candidates = Vec::new();
-    if want("dingding") && crate::app::is_dingding_active(config) {
-        candidates.push("dingding");
-    }
-    if want("feishu") && crate::app::is_feishu_active(config) {
-        candidates.push("feishu");
-    }
-    if want("telegram") && crate::app::is_telegram_active(config) {
-        candidates.push("telegram");
-    }
-    if want("slack") && crate::app::is_slack_active(config) {
-        candidates.push("slack");
-    }
-    candidates
+    let available = available_im_channels(config);
+    select_im_delivery_candidates(
+        config.channels.auto_activation,
+        &available,
+        active.as_deref(),
+        &watching,
+        popup_available,
+    )
 }
 
 async fn attach_confirm_im_channels(
@@ -2664,12 +2704,22 @@ fn spawn_warm_helper() -> std::io::Result<()> {
     cmd.spawn().map(|_| ())
 }
 
+/// Popup 渠道是否应当投放。显示环境显式传入，便于覆盖完整真值表。
+fn popup_should_dispatch(config: &AppConfig, display_available: bool) -> bool {
+    config.channels.popup.enabled && display_available
+}
+
+/// 配置上是否需要预热 Popup。Popup 渠道关闭时不应保留隐藏 WebView。
+fn popup_prewarm_requested(config: &AppConfig) -> bool {
+    config.channels.popup.enabled && config.general.popup_prewarm
+}
+
 /// 弹窗预热是否启用（配置开关，读最近一次配置快照，无磁盘 I/O）。
 fn warm_enabled(state: &Arc<ServerState>) -> bool {
     state
         .config
         .lock()
-        .map(|c| c.general.popup_prewarm)
+        .map(|c| popup_prewarm_requested(&c))
         .unwrap_or(false)
 }
 
@@ -3037,11 +3087,92 @@ fn print_status(info: &StatusInfo) {
 #[cfg(test)]
 mod tests {
     use super::{
-        pending_launch_matches, task_workspace_options, InboundRegistry, PendingLaunchWatch,
+        pending_launch_matches, popup_prewarm_requested, popup_should_dispatch,
+        select_im_delivery_candidates, task_workspace_options, InboundRegistry, PendingLaunchWatch,
     };
     use crate::agents::AgentKind;
+    use crate::config::AppConfig;
     use crate::i18n::Lang;
     use std::sync::Arc;
+
+    #[test]
+    fn popup_delivery_requires_channel_and_display() {
+        let mut config = AppConfig::default();
+        assert!(popup_should_dispatch(&config, true));
+        assert!(!popup_should_dispatch(&config, false));
+
+        config.channels.popup.enabled = false;
+        assert!(!popup_should_dispatch(&config, true));
+        assert!(!popup_should_dispatch(&config, false));
+    }
+
+    #[test]
+    fn popup_prewarm_requires_popup_channel() {
+        let mut config = AppConfig::default();
+        assert!(popup_prewarm_requested(&config));
+
+        config.channels.popup.enabled = false;
+        assert!(!popup_prewarm_requested(&config));
+
+        config.channels.popup.enabled = true;
+        config.general.popup_prewarm = false;
+        assert!(!popup_prewarm_requested(&config));
+    }
+
+    #[test]
+    fn im_delivery_falls_back_only_when_popup_cannot_receive() {
+        let available = ["dingding", "feishu", "telegram", "slack"];
+        let none = Vec::<String>::new();
+
+        assert_eq!(
+            select_im_delivery_candidates(false, &available, Some("popup"), &none, true),
+            available
+        );
+        assert!(
+            select_im_delivery_candidates(true, &available, Some("popup"), &none, true).is_empty()
+        );
+        assert_eq!(
+            select_im_delivery_candidates(true, &available, Some("popup"), &none, false),
+            available
+        );
+        assert_eq!(
+            select_im_delivery_candidates(true, &available, None, &none, false),
+            available
+        );
+        assert_eq!(
+            select_im_delivery_candidates(true, &available, Some("disabled-channel"), &none, false,),
+            available
+        );
+    }
+
+    #[test]
+    fn im_delivery_prefers_valid_active_and_watch_candidates() {
+        let available = ["dingding", "feishu", "telegram", "slack"];
+        assert_eq!(
+            select_im_delivery_candidates(true, &available, Some("feishu"), &[], false),
+            vec!["feishu"]
+        );
+        assert_eq!(
+            select_im_delivery_candidates(
+                true,
+                &available,
+                Some("popup"),
+                &["slack".to_string()],
+                false,
+            ),
+            vec!["slack"]
+        );
+        assert_eq!(
+            select_im_delivery_candidates(
+                true,
+                &available,
+                Some("feishu"),
+                &["slack".to_string()],
+                false,
+            ),
+            vec!["feishu", "slack"]
+        );
+    }
 
     #[test]
     fn inbound_claim_is_exclusive() {

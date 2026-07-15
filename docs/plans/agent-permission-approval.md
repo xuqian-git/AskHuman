@@ -269,7 +269,7 @@ ServerMsg::ConfirmFallback { reason }
 1. 提交时立即分配 request id，优先领用预热本地弹窗；
 2. `attach_im_channels` 根据现有配置投放：
    - `auto_activation=false`：所有已启用且可用 IM；
-   - `auto_activation=true`：当前活跃槽，加上正在 watch 本次 agent session 的渠道；
+   - `auto_activation=true`：当前有效活跃槽，加上正在 watch 本次 agent session 的渠道；Popup 不可用且候选为空时，全发所有可用 IM 作可达性兜底；
 3. 用户在另一 IM 执行 `/here` 或其它激活动作时，`backfill_inflight` 也补推尚未答复的确认卡；
 4. 首答胜出后更新活跃槽，与普通 Ask 一致；
 5. 其它弹窗/卡片定格为“已通过 X 提交批准决定”或“已通过 X 提交拒绝决定”，不能继续点击；终态只确认

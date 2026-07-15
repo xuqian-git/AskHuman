@@ -143,7 +143,7 @@ TODO 行），`daemon/mod.rs` 的 `WatchState`/`watch_tick`/`ensure_watch_routes
   机制，只改投放渠道选取——按需发送（autoActivation）开启时，除最后活跃渠道外，再并上
   「正在 watch 该 agent 的渠道」一起投放提问卡，收尾仍走既有多渠道抢答逻辑。动机：用户在
   A 渠道 watch、在 B 渠道（如弹窗）作答时，A 的 watch 卡显示「正在等待你的回答」但 A 收不到
-  提问卡，非常迷惑。
+  提问卡，非常迷惑。后续可达性修正：Popup 不可用且「有效活跃槽 ∪ watch」为空时，全发所有可用 IM 兜底。
 
 ## 7. 实现落点备忘（M0–M3 已落地）
 
@@ -165,7 +165,7 @@ TODO 行），`daemon/mod.rs` 的 `WatchState`/`watch_tick`/`ensure_watch_routes
   探针 `cli/debug_cmd.rs`。M4：`watch::channel_supported` 放行 dingding、`WatchClient::DingTalk`
   （send=createAndDeliver 铸 outTrackId / edit=update_card_private）、`ensure_watch_route_for` 接
   共享 DdRouter（`set_active(otid, "")` 只认领卡回调；Reader 放行 watch actionId 转发，空 ACK 后
-  OpenAPI 就地编辑）、提问投放并集（`attach_im_channels` 的 `want` = 活跃槽 ∪ watch 该
-  agent 的渠道，§6 定案）。
+  OpenAPI 就地编辑）、提问投放并集（`select_im_delivery_candidates` 优先活跃槽 ∪ watch 该
+  agent 的渠道，并在 Popup 不可用且候选为空时全发可用 IM，§6 定案）。
 - M4 验收期反馈（已修）：状态行时长从「回合时长」改为**整个 agent 会话运行时长**
   （`startedAt` 起算，文案「已运行 X」；四渠道同步生效，spec 已更新）。

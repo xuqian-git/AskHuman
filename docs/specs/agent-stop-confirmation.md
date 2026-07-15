@@ -102,7 +102,7 @@
   全部 fail-open，输出 no-op 让 Agent 正常停止。
 - 投放规则直接复用普通 Ask：
   - `autoActivation` 关闭：全部已启用渠道；
-  - `autoActivation` 开启：当前活跃槽 ∪ 正在 watch 该 session 的渠道；
+  - `autoActivation` 开启：当前有效活跃槽 ∪ 正在 watch 该 session 的渠道；Popup 不可用且候选为空时，全发所有可用 IM 作可达性兜底；
   - popup 按现有启用状态与 display 可用性参与抢答；
   - 首个合法答复胜出，其它端异步定格。
 
