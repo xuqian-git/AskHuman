@@ -234,13 +234,17 @@ fn pending_launch_matches(
 /// 「跟底」重发节流：同一订阅两次跟底之间的最短间隔（用户定案 30s）。
 const WATCH_MOVE_THROTTLE_MS: u64 = 30_000;
 
+/// MCP clears Agent environment markers, so IM delivery briefly waits for daemon's already-running
+/// process-tree resolution. Popup remains non-blocking and receives its existing async update.
+const IM_AGENT_RESOLVE_WAIT_MS: u64 = 200;
+
 /// rewatchable entry 保留时限（秒）：超时后自动清理（路由失效、按钮不再可用）。
 const REWATCHABLE_TTL_SECS: u64 = 600;
 
 /// `/watch` 实时关注子系统的 daemon 侧状态。
 #[derive(Default)]
 struct WatchState {
-    /// 活动订阅（agent 结束 / 用户取消即移除；每渠道上限 `watch::MAX_WATCHES`）。
+    /// 活动订阅（agent 结束 / 空闲宽限期到期 / 用户取消即移除；每渠道上限 `watch::MAX_WATCHES`）。
     subs: Mutex<Vec<WatchEntry>>,
     /// 引擎唤醒信号（AgentEvent / 提问创建、完结 / 订阅变化）。
     notify: tokio::sync::Notify,
@@ -273,7 +277,7 @@ struct WatchEntry {
     last_edit_ms: u64,
     /// 连续编辑失败次数（≥5 自动退订：超时不可改 / 卡被删等）。
     fails: u32,
-    /// 上一帧是否「工作中」（引擎自适应 tick：有工作中 2s，否则 10s）。
+    /// 上一帧是否「工作中」（引擎自适应 tick：有工作中 2s，否则 10s；Idle 宽限期走后者）。
     working: bool,
     /// 当前卡发出时刻（Unix 毫秒）：与渠道 disturb 水位比较判定卡是否已被淹没。
     sent_at_ms: u64,
@@ -1505,7 +1509,7 @@ async fn handle_submit(
 
     // 方案5(b)：从 caller_pid 异步向上 walk 进程树解析 agent（家族 + pid，含 env 判不出时的 MCP 兜底），
     // 完成后补刷注册表活动并把结果后推弹窗 badge。整段在独立任务里跑，绝不阻塞本请求的关键路径。
-    spawn_agent_resolve(
+    let agent_resolution = spawn_agent_resolve(
         entry.clone(),
         state.clone(),
         caller_pid,
@@ -1520,7 +1524,17 @@ async fn handle_submit(
     // 确保入站消费在线（自身按「有工作中 agent」自门控；与开关无关，使 /status 等命令独立可用）。
     ensure_inbound_listeners(state).await;
     // 挂接可用的 IM 渠道（钉钉/…）到本请求的协调器，与弹窗并行抢答。
-    let im_attached = attach_im_channels(&entry, state, &mut w, lang, popup_enabled).await;
+    let im_attached = attach_im_channels(
+        &entry,
+        state,
+        &mut w,
+        lang,
+        popup_enabled,
+        kind_env,
+        from_mcp,
+        agent_resolution,
+    )
+    .await;
     crate::perf::mark(&perf_id, "dmn.im_done");
     // /watch 跟底：提问卡即将出现在渠道会话里，是一次「非 watch」扰动（提问期间跟底被抑制，
     // 这里先记水位线，供答复完结后立即跟底）。
@@ -2079,10 +2093,11 @@ fn spawn_agent_resolve(
     from_mcp: bool,
     auto: bool,
     cwd: Option<String>,
-) {
+) -> Option<tokio::sync::oneshot::Receiver<Option<AgentKind>>> {
     if caller_pid == 0 {
-        return;
+        return None;
     }
+    let (resolved_tx, resolved_rx) = tokio::sync::oneshot::channel();
     tokio::spawn(async move {
         let resolved = tokio::task::spawn_blocking(move || match kind_env {
             Some(kind) => {
@@ -2095,6 +2110,9 @@ fn spawn_agent_resolve(
         .await
         .ok()
         .flatten();
+
+        // Unblock IM title construction before the remaining registry/history/Popup side effects.
+        let _ = resolved_tx.send(resolved.as_ref().map(|(kind, _)| *kind));
 
         let Some((kind, pid)) = resolved else {
             return;
@@ -2136,6 +2154,22 @@ fn spawn_agent_resolve(
             }
         }
     });
+    Some(resolved_rx)
+}
+
+async fn agent_kind_for_im(
+    known: Option<AgentKind>,
+    from_mcp: bool,
+    resolution: Option<tokio::sync::oneshot::Receiver<Option<AgentKind>>>,
+) -> Option<AgentKind> {
+    if known.is_some() || !from_mcp {
+        return known;
+    }
+    let receiver = resolution?;
+    match tokio::time::timeout(Duration::from_millis(IM_AGENT_RESOLVE_WAIT_MS), receiver).await {
+        Ok(Ok(kind)) => kind,
+        Ok(Err(_)) | Err(_) => None,
+    }
 }
 
 /// 是否启用了任一 IM 渠道（仅看非密钥的 `enabled` 标志）。用于方案4 在读钥匙串前的廉价门控：
@@ -2187,12 +2221,34 @@ fn select_im_delivery_candidates(
     }
 }
 
+fn im_conversation_origin(
+    entry: &RequestEntry,
+    resolved_hint: Option<AgentKind>,
+) -> crate::channels::ConversationOrigin {
+    let resolved = entry
+        .resolved_agent
+        .lock()
+        .ok()
+        .and_then(|slot| slot.as_ref().and_then(|agent| agent.kind.clone()))
+        .and_then(|kind| AgentKind::parse(&kind));
+    let initial = entry.show.agent_kind.as_deref().and_then(AgentKind::parse);
+    let kind = resolved_hint.or(resolved).or(initial);
+    crate::channels::ConversationOrigin::new(
+        &entry.show.source,
+        kind.map(AgentKind::as_str),
+        &entry.show.project,
+    )
+}
+
 async fn attach_im_channels(
     entry: &Arc<RequestEntry>,
     state: &Arc<ServerState>,
     w: &mut OwnedWriteHalf,
     lang: Lang,
     popup_available: bool,
+    known_agent_kind: Option<AgentKind>,
+    from_mcp: bool,
+    agent_resolution: Option<tokio::sync::oneshot::Receiver<Option<AgentKind>>>,
 ) -> bool {
     // 方案4（spec §4）的「仅弹窗用户零钥匙串」目标现由缓存快照达成：快照在启动 / 配置变更时
     // 已解析密钥，这里读缓存即可，热路径不再触碰钥匙串与磁盘。
@@ -2228,6 +2284,12 @@ async fn attach_im_channels(
         &watching,
         popup_available,
     );
+    if candidates.is_empty() {
+        return false;
+    }
+    // MCP env_clear means the CLI cannot name its Agent. Wait only when this request will actually
+    // deliver to IM; Popup has already been dispatched and remains independent of this budget.
+    let agent_kind = agent_kind_for_im(known_agent_kind, from_mcp, agent_resolution).await;
 
     if candidates.contains(&"dingding") {
         let dd = &config.channels.dingding;
@@ -2235,7 +2297,8 @@ async fn attach_im_channels(
             Some(router) => {
                 let ch: Arc<dyn Channel> = Arc::new(DingTalkChannel::shared(dd.clone(), router));
                 entry.coordinator.register(ch.clone());
-                ch.start(&request, sink.clone());
+                let origin = im_conversation_origin(entry, agent_kind);
+                ch.start(&request, &origin, sink.clone());
                 attached = true;
             }
             None => {
@@ -2261,7 +2324,8 @@ async fn attach_im_channels(
             Some(router) => {
                 let ch: Arc<dyn Channel> = Arc::new(FeishuChannel::shared(fs.clone(), router));
                 entry.coordinator.register(ch.clone());
-                ch.start(&request, sink.clone());
+                let origin = im_conversation_origin(entry, agent_kind);
+                ch.start(&request, &origin, sink.clone());
                 attached = true;
             }
             None => {
@@ -2287,7 +2351,8 @@ async fn attach_im_channels(
             Some(router) => {
                 let ch: Arc<dyn Channel> = Arc::new(TelegramChannel::shared(tg.clone(), router));
                 entry.coordinator.register(ch.clone());
-                ch.start(&request, sink.clone());
+                let origin = im_conversation_origin(entry, agent_kind);
+                ch.start(&request, &origin, sink.clone());
                 attached = true;
             }
             None => {
@@ -2313,7 +2378,8 @@ async fn attach_im_channels(
             Some(router) => {
                 let ch: Arc<dyn Channel> = Arc::new(SlackChannel::shared(sl.clone(), router));
                 entry.coordinator.register(ch.clone());
-                ch.start(&request, sink.clone());
+                let origin = im_conversation_origin(entry, agent_kind);
+                ch.start(&request, &origin, sink.clone());
                 attached = true;
             }
             None => {
@@ -3113,7 +3179,7 @@ fn print_status(info: &StatusInfo) {
 #[cfg(test)]
 mod tests {
     use super::{
-        pending_launch_matches, popup_prewarm_requested, popup_should_dispatch,
+        agent_kind_for_im, pending_launch_matches, popup_prewarm_requested, popup_should_dispatch,
         select_im_delivery_candidates, task_workspace_options, InboundRegistry, PendingLaunchWatch,
     };
     use crate::agents::AgentKind;
@@ -3198,6 +3264,31 @@ mod tests {
             ),
             vec!["feishu", "slack"]
         );
+    }
+
+    #[tokio::test]
+    async fn im_agent_resolution_uses_known_kind_without_waiting() {
+        let (_tx, rx) = tokio::sync::oneshot::channel();
+        assert_eq!(
+            agent_kind_for_im(Some(AgentKind::Claude), true, Some(rx)).await,
+            Some(AgentKind::Claude)
+        );
+    }
+
+    #[tokio::test]
+    async fn im_agent_resolution_accepts_async_mcp_result() {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        tx.send(Some(AgentKind::Codex)).unwrap();
+        assert_eq!(
+            agent_kind_for_im(None, true, Some(rx)).await,
+            Some(AgentKind::Codex)
+        );
+    }
+
+    #[tokio::test]
+    async fn non_mcp_request_does_not_wait_for_agent_resolution() {
+        let (_tx, rx) = tokio::sync::oneshot::channel();
+        assert_eq!(agent_kind_for_im(None, false, Some(rx)).await, None);
     }
 
     #[test]

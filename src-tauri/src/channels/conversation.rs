@@ -2,7 +2,7 @@
 //! 这套与传输无关的编排逻辑抽出来，各渠道（Telegram / 钉钉 / 未来飞书等）只需实现
 //! `MessagingChannel` 的传输相关原语。
 
-use super::{Preemption, ResultSink};
+use super::{ConversationOrigin, Preemption, ResultSink};
 use crate::i18n::{self, Lang};
 use crate::models::{
     AskRequest, ChannelAction, ChannelResult, MessagePrompt, OptionItem, QuestionAnswer,
@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 /// 单道题的上下文（传给 `ask_question`）。
 pub struct QuestionCtx<'a> {
-    /// 题首加粗行：单题无 Message 时为来源头部，多题为 `Question i/n`，否则空。
+    /// Fully assembled title with per-request source / Agent / project context.
     pub header: &'a str,
     pub text: &'a str,
     pub options: &'a [OptionItem],
@@ -39,6 +39,26 @@ pub fn display_text(opt: &OptionItem, lang: Lang) -> String {
     } else {
         opt.text.clone()
     }
+}
+
+fn question_title(
+    origin: &ConversationOrigin,
+    lang: Lang,
+    index: usize,
+    total: usize,
+    has_message: bool,
+) -> String {
+    if total == 1 && !has_message {
+        return origin.source_title(lang, "channel.questionFrom");
+    }
+    let base = if total > 1 {
+        i18n::tr(lang, "channel.questionIndexed")
+            .replace("{i}", &(index + 1).to_string())
+            .replace("{n}", &total.to_string())
+    } else {
+        i18n::tr(lang, "channel.questionTitle").to_string()
+    };
+    origin.question_title(base)
 }
 
 /// 当前自动激活开关（零钥匙串读配置）。供会话回执文案按开关拼装动态引导。
@@ -94,12 +114,12 @@ pub trait MessagingChannel: Send {
     fn id(&self) -> &str;
     /// 建连 / 校验：成功才进入问答；失败返回中文错误（由调用方警告并跳过）。
     async fn open(&mut self) -> Result<(), String>;
-    /// 发送共享 Message（头部 + 文本 + 展示文件）。
+    /// Send the shared Message with its assembled origin title, body, and display attachments.
     async fn send_message_prompt(
         &mut self,
         message: &MessagePrompt,
         is_markdown: bool,
-        source: &str,
+        header: &str,
         lang: Lang,
     );
     /// 发送一道题并等到「用户完成作答」；被抢答（`preempt`）时收尾并返回 `None`。
@@ -114,27 +134,24 @@ pub trait MessagingChannel: Send {
 
 /// 公共驱动：单/多题统一编排，全部完成后投递结果；被抢答则中止不投递。
 ///
-/// 规则（与既有 Telegram 行为一致）：
-/// - 单题且无 Message：单条，题首为来源头部 `「Question from {name}」`；
-/// - 否则：先发共享 Message，再逐题（多题题首 `Question i/n`，单题题首为空）。
+/// Rules shared by all IM transports:
+/// - A single question without a Message uses `Question from {source} · {agent} · {project}`.
+/// - Otherwise the shared Message is sent first, then every question carries the same origin.
 pub async fn run_conversation(
     channel: &mut dyn MessagingChannel,
     request: &AskRequest,
+    origin: &ConversationOrigin,
     preempt: Arc<Preemption>,
     sink: ResultSink,
 ) {
     let n = request.questions.len();
     let has_message = !request.message.text.trim().is_empty() || !request.message.files.is_empty();
-    let source = crate::models::source_name();
     let lang = Lang::current();
     let mut answers: Vec<QuestionAnswer> = Vec::with_capacity(n);
 
     if n == 1 && !has_message {
         let q = &request.questions[0];
-        let header = format!(
-            "「{}」",
-            i18n::source_header(lang, "channel.questionFrom", &source)
-        );
+        let header = question_title(origin, lang, 0, n, has_message);
         let ctx = QuestionCtx {
             header: &header,
             text: &q.message,
@@ -155,17 +172,12 @@ pub async fn run_conversation(
             }
         }
     } else {
+        let message_header = origin.source_title(lang, "channel.messageFrom");
         channel
-            .send_message_prompt(&request.message, request.is_markdown, &source, lang)
+            .send_message_prompt(&request.message, request.is_markdown, &message_header, lang)
             .await;
         for (index, question) in request.questions.iter().enumerate() {
-            let header = if n > 1 {
-                i18n::tr(lang, "channel.questionIndexed")
-                    .replace("{i}", &(index + 1).to_string())
-                    .replace("{n}", &n.to_string())
-            } else {
-                String::new()
-            };
+            let header = question_title(origin, lang, index, n, has_message);
             let ctx = QuestionCtx {
                 header: &header,
                 text: &question.message,
@@ -195,4 +207,59 @@ pub async fn run_conversation(
         answers,
         source_channel_id,
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn origin_titles_include_agent_and_project_without_duplicates() {
+        let origin = ConversationOrigin::new("Codex", Some("codex"), "/tmp/HumanInLoop");
+        assert_eq!(
+            origin.source_title(Lang::En, "channel.messageFrom"),
+            "Message from Codex · HumanInLoop"
+        );
+        assert_eq!(
+            origin.question_title("Question 1/2".into()),
+            "Question 1/2 · Codex · HumanInLoop"
+        );
+        assert_eq!(
+            question_title(&origin, Lang::En, 0, 1, false),
+            "Question from Codex · HumanInLoop"
+        );
+        assert_eq!(
+            question_title(&origin, Lang::En, 0, 1, true),
+            "Question · Codex · HumanInLoop"
+        );
+        assert_eq!(
+            question_title(&origin, Lang::En, 1, 2, true),
+            "Question 2/2 · Codex · HumanInLoop"
+        );
+    }
+
+    #[test]
+    fn custom_source_keeps_distinct_agent_and_missing_fields_degrade_cleanly() {
+        let custom = ConversationOrigin::new("MyAgent", Some("claude"), "/tmp/api");
+        assert_eq!(
+            custom.source_title(Lang::En, "channel.questionFrom"),
+            "Question from MyAgent · Claude Code · api"
+        );
+
+        let fallback = ConversationOrigin::new("", None, "");
+        assert_eq!(
+            fallback.source_title(Lang::Zh, "channel.messageFrom"),
+            "Message from the Loop"
+        );
+        assert_eq!(fallback.question_title("提问".into()), "提问 · the Loop");
+    }
+
+    #[test]
+    fn resolved_mcp_agent_replaces_generic_loop_source() {
+        let origin = ConversationOrigin::new("the Loop", Some("cursor"), "/repo/web");
+        assert_eq!(
+            origin.source_title(Lang::En, "channel.messageFrom"),
+            "Message from Cursor · web"
+        );
+    }
 }

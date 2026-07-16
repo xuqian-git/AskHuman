@@ -108,7 +108,7 @@ pub struct TaskRequest {
     pub questions: Vec<Question>,
     /// 是否按 Markdown 渲染（全局）。
     pub is_markdown: bool,
-    /// 调用方来源名（来自 `ASKHUMAN_ENV_SOURCE_NAME`，CLI 读取后上送）。
+    /// Per-request caller source (custom environment name, detected Agent label, or `the Loop`).
     pub source: String,
     /// CLI 解析好的界面语言（"en" / "zh"），使 `auto` 跟随调用方而非 Daemon。
     pub lang: String,

@@ -6,7 +6,7 @@
 //!   经 IPC 向 Helper 下发 `cancel`（窗口由 Helper 自行收尾关闭）。投递答案由 GUI 连接处理器
 //!   直接调用协调器 `submit`，不经此 adapter。
 
-use super::{Channel, Interruption, ResultSink};
+use super::{Channel, ConversationOrigin, Interruption, ResultSink};
 use crate::models::AskRequest;
 use tauri::{AppHandle, Manager};
 
@@ -25,7 +25,7 @@ impl Channel for PopupChannel {
         "popup"
     }
 
-    fn start(&self, _request: &AskRequest, _sink: ResultSink) {
+    fn start(&self, _request: &AskRequest, _origin: &ConversationOrigin, _sink: ResultSink) {
         // 窗口已由 setup 创建；用户操作经 submit_popup / cancel_popup 命令进入协调器。
     }
 
@@ -62,7 +62,7 @@ impl Channel for GuiHelperPopupChannel {
         "popup"
     }
 
-    fn start(&self, _request: &AskRequest, _sink: ResultSink) {
+    fn start(&self, _request: &AskRequest, _origin: &ConversationOrigin, _sink: ResultSink) {
         // GUI Helper 进程由请求处理器 spawn；题目经 `show` 下发，答案经 GUI 连接回传协调器。
     }
 

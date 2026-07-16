@@ -70,16 +70,16 @@ impl PopupAnimation {
     }
 }
 
-/// 菜单栏 / 托盘状态图标的三态开关（spec D4）。仅 macOS/Linux 桌面有意义；Windows 隐藏。
+/// Menu bar / tray icon mode (spec D4). Available on macOS and Linux desktops; hidden on Windows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum MenuBarIconMode {
-    /// 不显示图标（GUI 宿主仍按需承载窗口以保证全局单窗）。默认。
-    #[default]
+    /// Hide the icon while keeping the GUI host available on demand for singleton windows.
     Off,
-    /// 活动时显示：daemon 运行时显示图标；daemon 空闲退出且无窗口后图标消失、宿主退出。
+    /// Show the icon while the daemon is active and exit the host after the daemon becomes idle.
     Active,
-    /// 一直显示：图标常驻（宿主开机自启 + 常驻）；daemon 退出后图标转「停止」态。
+    /// Keep the icon resident and launch it at login; show the stopped state when the daemon exits.
+    #[default]
     Always,
 }
 
@@ -140,7 +140,7 @@ pub struct GeneralConfig {
     /// macOS stores a sound name, such as "Glass"; Linux treats any non-empty
     /// value as enabled and plays a freedesktop notification sound.
     pub popup_sound: String,
-    /// 菜单栏 / 托盘状态图标模式（off/active/always，spec D4）。默认 off（旧用户零行为变化）。
+    /// Menu bar / tray icon mode (off/active/always, spec D4). Defaults to always.
     pub menu_bar_icon: MenuBarIconMode,
     /// 弹窗预热（方案6）：daemon 常驻一个已挂载、隐藏待命的 `--popup --warm` 进程，来请求时直接喂
     /// `Show` 上屏（省掉 WebView 初始化 + 页面加载 + 挂载的关键路径开销）。默认开；可关（非实验项）。
@@ -173,7 +173,7 @@ impl Default for GeneralConfig {
             history_limit: default_history_limit(),
             todo_history_limit: default_todo_history_limit(),
             popup_sound: String::new(),
-            menu_bar_icon: MenuBarIconMode::Off,
+            menu_bar_icon: MenuBarIconMode::Always,
             popup_prewarm: true,
             daemon_lifecycle: DaemonLifecycleMode::Activity,
         }
@@ -577,7 +577,7 @@ mod tests {
         assert_eq!(c.general.speech_language, "auto");
         assert_eq!(c.general.speech_shortcut, "cmd+d");
         assert_eq!(c.general.history_limit, 200);
-        assert_eq!(c.general.menu_bar_icon, MenuBarIconMode::Off);
+        assert_eq!(c.general.menu_bar_icon, MenuBarIconMode::Always);
         assert!(c.general.popup_prewarm);
         assert!(c.channels.popup.enabled);
         assert_eq!(c.channels.popup.width, 560.0);
@@ -692,22 +692,31 @@ mod tests {
     }
 
     #[test]
-    fn menu_bar_icon_parses_lowercase_and_defaults() {
-        // 显式值解析（lowercase serde）。
+    fn menu_bar_icon_preserves_explicit_values_and_defaults_to_always() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("config.json");
+
+        std::fs::write(&path, r#"{"general":{"menuBarIcon":"off"}}"#).unwrap();
+        let c = AppConfig::load_from(&path);
+        assert_eq!(c.general.menu_bar_icon, MenuBarIconMode::Off);
+
+        std::fs::write(&path, r#"{"general":{"menuBarIcon":"active"}}"#).unwrap();
+        let c = AppConfig::load_from(&path);
+        assert_eq!(c.general.menu_bar_icon, MenuBarIconMode::Active);
+
         std::fs::write(&path, r#"{"general":{"menuBarIcon":"always"}}"#).unwrap();
         let c = AppConfig::load_from(&path);
         assert_eq!(c.general.menu_bar_icon, MenuBarIconMode::Always);
-        // 缺字段 → 默认 Off（旧配置零影响）。
+
+        // A legacy config without the field adopts the new default.
         std::fs::write(&path, r#"{"general":{"theme":"dark"}}"#).unwrap();
         let c = AppConfig::load_from(&path);
-        assert_eq!(c.general.menu_bar_icon, MenuBarIconMode::Off);
-        // 未知值 → 整个 general 解码失败时走容错默认（这里仅 general 内未知枚举值，
-        // serde 会使该字段报错→因 #[serde(default)] 于 GeneralConfig 级别整体回退默认）。
+        assert_eq!(c.general.menu_bar_icon, MenuBarIconMode::Always);
+
+        // An invalid enum value makes the config fall back to the complete default.
         std::fs::write(&path, r#"{"general":{"menuBarIcon":"bogus"}}"#).unwrap();
         let c = AppConfig::load_from(&path);
-        assert_eq!(c.general.menu_bar_icon, MenuBarIconMode::Off);
+        assert_eq!(c.general.menu_bar_icon, MenuBarIconMode::Always);
     }
 
     #[test]

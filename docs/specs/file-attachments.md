@@ -73,7 +73,9 @@ AskHuman "请看看这个文档有没有问题？" -f ~/Documents/some_file.md -
   - **拖出**到其它应用（引入 `tauri-plugin-drag`，拖到 Dock/应用图标用其打开）；拖拽预览用 `NSWorkspace` 取的真实文件图标（光栅化到 64×64）。拖回窗口内的 `-f` 附件按路径匹配忽略，不计入回复。
   - **右键菜单**（原生 `NSMenu`，Finder 风格）：打开 / 打开方式▸（应用列表+图标、其他…）/ 快速查看 / 在访达中显示 / 拷贝文件 / 拷贝路径。
 - **新增「回复文件」方向（人→AI）**：弹窗支持拖入非图片文件，作为回复文件附件（输入框下方胶囊、可移除），提交后在 stdout 新增 `[文件]` 区块输出其绝对路径（不复制）。注意这与 D1 不冲突：D1 约束的是 `-f` 提问附件（AI→人）不进 stdout；`[文件]` 属于回复方向，与 `[图片]` 同类。
-- **来源名定制**：新增环境变量 `ASKHUMAN_ENV_SOURCE_NAME`，定制弹窗标题与 Telegram 消息头「Question from {名称}」，缺省回退「the Loop」。
+- **来源名定制**：环境变量 `ASKHUMAN_ENV_SOURCE_NAME` 定制弹窗与普通 IM Message / Question 标题的
+  source；缺省优先显示探测到的 Agent，再回退「the Loop」。IM 标题的 Agent / 项目组合规则见
+  `docs/specs/im-request-origin.md`。
 - 因引入 `tauri-plugin-drag`，相应放宽「不引入新 Tauri 插件」约束（仅限该拖出能力）；其余打开/预览/读取缩略图仍为自定义命令。
 
 ### 2026-07（Quick Look 与作答并行）

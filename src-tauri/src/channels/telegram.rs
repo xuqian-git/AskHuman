@@ -4,7 +4,7 @@
 //! 本文件提供传输相关实现 `TelegramSession`（`MessagingChannel`）+ 薄外层 `TelegramChannel`。
 
 use super::conversation::{run_conversation, MessagingChannel, QuestionCtx};
-use super::{Channel, Interruption, Preemption, ResultSink};
+use super::{Channel, ConversationOrigin, Interruption, Preemption, ResultSink};
 use crate::config::TelegramChannelConfig;
 use crate::i18n::{self, Lang};
 use crate::models::{AskRequest, MessagePrompt, QuestionAnswer};
@@ -59,10 +59,11 @@ impl Channel for TelegramChannel {
         "telegram"
     }
 
-    fn start(&self, request: &AskRequest, sink: ResultSink) {
+    fn start(&self, request: &AskRequest, origin: &ConversationOrigin, sink: ResultSink) {
         let config = self.config.clone();
         let preempt = self.preempt.clone();
         let request = request.clone();
+        let origin = origin.clone();
         let transport = self.transport.clone();
         tauri::async_runtime::spawn(async move {
             let lang = Lang::current();
@@ -91,7 +92,7 @@ impl Channel for TelegramChannel {
                 );
                 return;
             }
-            run_conversation(&mut session, &request, preempt, sink).await;
+            run_conversation(&mut session, &request, &origin, preempt, sink).await;
         });
     }
 
@@ -138,11 +139,11 @@ impl MessagingChannel for TelegramSession {
         &mut self,
         message: &MessagePrompt,
         is_markdown: bool,
-        source: &str,
+        header: &str,
         lang: Lang,
     ) {
         if let Some(client) = self.client.as_ref() {
-            send_message_prompt(client, message, is_markdown, source, lang).await;
+            send_message_prompt(client, message, is_markdown, header, lang).await;
         }
     }
 
@@ -176,19 +177,15 @@ impl MessagingChannel for TelegramSession {
     }
 }
 
-/// 发送共享 Message：头部「Question from {名}」+（文本，若有）+ 其展示文件。
+/// Send the shared Message with the fully assembled per-request origin title and attachments.
 async fn send_message_prompt(
     client: &TelegramClient,
     message: &MessagePrompt,
     is_markdown: bool,
-    source: &str,
+    header: &str,
     lang: Lang,
 ) {
-    let header = format!(
-        "「{}」",
-        i18n::source_header(lang, "channel.messageFrom", source)
-    );
-    send_composed(client, &header, &message.text, is_markdown, None).await;
+    send_composed(client, header, &message.text, is_markdown, None).await;
 
     // 发送 Message 的展示文件（图片→sendPhoto，其它→sendDocument）。
     for file in &message.files {
@@ -217,7 +214,7 @@ async fn send_message_prompt(
 }
 
 /// 发送一道题（单卡片：正文 + 补充提示 + inline 选项/提交键盘）并长轮询直到用户点「提交」。
-/// `header` 为题首加粗行（来源头部或 `Question i/n`），为空则只发问题正文。
+/// `header` is the fully assembled question title, including source / Agent / project context.
 /// 卡片发出后、提交前用户在聊天里发的文字会累积进 `user_input`。
 /// 终态：本端胜出→卡片改「✅ 已回复」；被抢答→改「✅ 已在{赢家}回答」并去键盘后返回 None。
 #[allow(clippy::too_many_arguments)]

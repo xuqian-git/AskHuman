@@ -132,7 +132,7 @@ mod tests {
                 content: "跑单测".into(),
                 state: TodoState::InProgress,
             }],
-            started_at: None,
+            active_elapsed_secs: None,
             at: Some(1_700_000_000),
         }
     }

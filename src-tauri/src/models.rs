@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 /// 标题来源名的默认值（环境变量未设置或为空时使用）。
 pub const DEFAULT_SOURCE_NAME: &str = "the Loop";
-/// 定制标题来源名的环境变量：影响弹窗标题与 Telegram 消息头。
+/// Custom caller name used by Popup and ordinary IM Message / Question titles.
 pub const SOURCE_NAME_ENV: &str = "ASKHUMAN_ENV_SOURCE_NAME";
 
 /// 读取来源名：「Question from {source_name}」。环境变量为空或缺省时回退默认值。

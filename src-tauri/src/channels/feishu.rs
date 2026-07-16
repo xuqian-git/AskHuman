@@ -11,7 +11,7 @@
 //! （`MessagingChannel`）+ 薄外层 `FeishuChannel`。
 
 use super::conversation::{run_conversation, MessagingChannel, QuestionCtx};
-use super::{Channel, Interruption, Preemption, ResultSink};
+use super::{Channel, ConversationOrigin, Interruption, Preemption, ResultSink};
 use crate::config::FeishuChannelConfig;
 use crate::feishu::card;
 use crate::feishu::client::FeishuClient;
@@ -67,10 +67,16 @@ impl Channel for FeishuChannel {
         "feishu"
     }
 
-    fn start(&self, request: &crate::models::AskRequest, sink: ResultSink) {
+    fn start(
+        &self,
+        request: &crate::models::AskRequest,
+        origin: &ConversationOrigin,
+        sink: ResultSink,
+    ) {
         let config = self.config.clone();
         let preempt = self.preempt.clone();
         let request = request.clone();
+        let origin = origin.clone();
         let transport = self.transport.clone();
         tauri::async_runtime::spawn(async move {
             let lang = Lang::current();
@@ -99,7 +105,7 @@ impl Channel for FeishuChannel {
                 );
                 return;
             }
-            run_conversation(&mut session, &request, preempt, sink).await;
+            run_conversation(&mut session, &request, &origin, preempt, sink).await;
         });
     }
 
@@ -147,21 +153,20 @@ impl MessagingChannel for FeishuSession {
         &mut self,
         message: &MessagePrompt,
         is_markdown: bool,
-        source: &str,
+        header: &str,
         lang: Lang,
     ) {
         let Some(client) = self.client.as_ref() else {
             return;
         };
-        let header = i18n::source_header(lang, "channel.messageFrom", source);
         // 飞书无 markdown 文本消息：markdown 模式下用卡片（markdown 组件）渲染正文；
         // 非 markdown 或正文为空则发纯文本。
         let result = if is_markdown && !message.text.trim().is_empty() {
-            let card = card::build_message_card(&header, &message.text);
+            let card = card::build_message_card(header, &message.text);
             client.send_card(&card).await.map(|_| ())
         } else {
             let body = if message.text.trim().is_empty() {
-                header.clone()
+                header.to_string()
             } else {
                 format!("{}\n\n{}", header, message.text)
             };

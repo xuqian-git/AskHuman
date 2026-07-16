@@ -267,6 +267,7 @@ pub fn tr(lang: Lang, key: &'static str) -> &'static str {
         // 自定义来源按界面语言本地化（故此处中文照常给出译文）。
         "channel.questionFrom" => pick(lang, "Question from {source}", "来自 {source} 的提问"),
         "channel.messageFrom" => pick(lang, "Message from {source}", "来自 {source} 的消息"),
+        "channel.questionTitle" => pick(lang, "Question", "提问"),
         "channel.questionIndexed" => pick(lang, "Question {i}/{n}", "问题 {i}/{n}"),
         // 推荐选项的显示文本前缀（尾随空格即与原文的分隔；提交值不含前缀）。
         "channel.recommendedPrefix" => pick(lang, "[👍Recommended] ", "【👍推荐】 "),
@@ -626,8 +627,8 @@ pub fn tr(lang: Lang, key: &'static str) -> &'static str {
         "watch.sendFailed" => pick(lang, "Failed to send the watch card: {e}", "发送关注卡片失败：{e}"),
         // 卡片：样式化头部（{id} 编号、{agent} 家族名、{project} 项目名）。
         "watch.cardHeader" => pick(lang, "Watching [{id}] {agent} — {project}", "实时关注 [{id}] {agent} — {project}"),
-        // 卡片状态行运行时长（`· 已运行 {t}`，整个 agent 会话起算——用户定案：回合时长迷惑）。
-        "watch.statsElapsed" => pick(lang, "up {t}", "已运行 {t}"),
+        // Cumulative active time across turns; true Idle intervals are excluded.
+        "watch.statsActiveElapsed" => pick(lang, "worked {t} total", "累计工作 {t}"),
         // TODO 摘要（`/status` 尾行 / watch 卡折叠面板标题；agent 未用 todo 功能不显示）。
         // 「TODO」不翻译（用户定案）。
         "watch.todoSummary" => pick(

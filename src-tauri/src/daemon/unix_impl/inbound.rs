@@ -1457,7 +1457,8 @@ pub(super) async fn backfill_inflight(
         }
         if let Some(ch) = build_im_channel(channel_id, config, state).await {
             entry.coordinator.register(ch.clone());
-            ch.start(entry.request(), entry.coordinator.clone());
+            let origin = super::im_conversation_origin(&entry, None);
+            ch.start(entry.request(), &origin, entry.coordinator.clone());
             n += 1;
         }
     }

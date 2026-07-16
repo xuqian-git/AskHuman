@@ -2,7 +2,8 @@
 
 > 状态：四渠道均已实现；钉钉使用固定模板，飞书/Telegram/Slack 支持就地刷新或变身。
 >
-> **后续演进（2026-07）**：同一抽象已扩展到 `/msg <内容>` 目标选择，并为工作中 Agent 显示运行时长；
+> **后续演进（2026-07）**：同一抽象已扩展到 `/msg <内容>` 目标选择，并为工作中 Agent 显示跨 Turn
+> 累计、扣除真正 idle 的工作时长（与 Watch 同源 `activeElapsedSecs`）；
 > Watch 跟底只在 picker 仍是会话最后一条消息时抑制，避免忘选旧卡长期阻塞。`autoActivation` 开启时，
 > watch/status/msg 等点选会按 `docs/specs/im-auto-end-watch.md` 激活当前渠道。详见
 > `docs/plans/im-msg-select-card.md`。下文的“MVP/后续”和“点选不改活跃槽”是最初分期记录，不再代表
@@ -77,7 +78,8 @@
 - 单行：`[编号] 类型 — 标题（项目）`，与 `/status` 文本列表单行同源（复用
   `autochannel::kind_title_project`）。
 - 徽标（可选，作为 label 前缀或 badge）：状态圆点 `🟢 工作中 / ⚪ 空闲`；`/watch` 卡里已在本渠道
-  关注中的追加「· 关注中」（D8）。
+  关注中的追加「· 关注中」（D8）；工作中 Agent 主行末追加 `· 累计工作 X`（含不足 1 分钟的秒数），
+  取 registry snapshot 的 `activeElapsedSecs`，空闲项不显示。
 - 排序：工作中在前、空闲在后（与 `status_text` 一致）。
 
 ### 命令种类 → 标题 / 选项来源 / 选中动作

@@ -290,7 +290,7 @@ fn poc_frame(i: usize, started: u64) -> crate::watch::WatchFrame {
                 state: TodoState::Pending,
             },
         ],
-        started_at: Some(started),
+        active_elapsed_secs: Some(now_secs().saturating_sub(started)),
         at: Some(now_secs()),
     }
 }

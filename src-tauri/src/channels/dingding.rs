@@ -11,7 +11,7 @@
 //! （`MessagingChannel`）+ 薄外层 `DingTalkChannel`。
 
 use super::conversation::{run_conversation, MessagingChannel, QuestionCtx};
-use super::{Channel, Interruption, Preemption, ResultSink};
+use super::{Channel, ConversationOrigin, Interruption, Preemption, ResultSink};
 use crate::config::DingTalkChannelConfig;
 use crate::dingtalk::card;
 use crate::dingtalk::client::DingTalkClient;
@@ -85,10 +85,16 @@ impl Channel for DingTalkChannel {
         "dingding"
     }
 
-    fn start(&self, request: &crate::models::AskRequest, sink: ResultSink) {
+    fn start(
+        &self,
+        request: &crate::models::AskRequest,
+        origin: &ConversationOrigin,
+        sink: ResultSink,
+    ) {
         let config = self.config.clone();
         let preempt = self.preempt.clone();
         let request = request.clone();
+        let origin = origin.clone();
         let transport = self.transport.clone();
         tauri::async_runtime::spawn(async move {
             let lang = Lang::current();
@@ -121,7 +127,7 @@ impl Channel for DingTalkChannel {
                 );
                 return;
             }
-            run_conversation(&mut session, &request, preempt, sink).await;
+            run_conversation(&mut session, &request, &origin, preempt, sink).await;
         });
     }
 
@@ -164,13 +170,12 @@ impl MessagingChannel for DingTalkSession {
         &mut self,
         message: &MessagePrompt,
         is_markdown: bool,
-        source: &str,
+        header: &str,
         lang: Lang,
     ) {
         let Some(client) = self.client.as_ref() else {
             return;
         };
-        let header = i18n::source_header(lang, "channel.messageFrom", source);
         let result = if is_markdown {
             let body = if message.text.trim().is_empty() {
                 format!("**{}**", header)
@@ -180,7 +185,7 @@ impl MessagingChannel for DingTalkSession {
             client.send_oto_markdown(&header, &body).await
         } else {
             let body = if message.text.trim().is_empty() {
-                header.clone()
+                header.to_string()
             } else {
                 format!("{}\n\n{}", header, message.text)
             };

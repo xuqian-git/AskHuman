@@ -62,6 +62,12 @@ pub struct AgentRecord {
     pub cwd: Option<String>,
     pub started_at: u64,
     pub last_activity: u64,
+    /// Completed active intervals for this session, excluding time spent in the Idle state.
+    #[serde(default)]
+    pub active_elapsed_secs: u64,
+    /// Start of the current active interval. Present while Working and cleared when activity stops.
+    #[serde(default)]
+    pub active_since: Option<u64>,
     pub state: AgentState,
     #[serde(default)]
     pub ended_at: Option<u64>,
@@ -78,9 +84,8 @@ pub struct AgentRecord {
     /// `snapshot()` 注入 `turnSteps`，供 `/watch` 卡状态行「第 N 步」（依赖生命周期 hook，无则恒 0）。
     #[serde(skip)]
     pub turn_steps: u32,
-    /// 本回合开始时刻（Unix 秒；turn-start 置位、首个工具心跳兜底补位、turn-end 清除）。**不落盘**，
-    /// `snapshot()` 注入 `turnStartedAt`（`/watch` 卡时长已改用 `startedAt` 整体运行时长——
-    /// 用户定案：回合时长迷惑；本字段暂无展示消费方，保留数据）。
+    /// Current turn start (Unix seconds). Kept for turn-level diagnostics; cumulative active time
+    /// uses `active_elapsed_secs` and `active_since` instead.
     #[serde(skip)]
     pub turn_started_at: Option<u64>,
 }
@@ -138,6 +143,35 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
+/// Start an active interval if the record is not already accumulating time.
+fn start_active(rec: &mut AgentRecord, now: u64) -> bool {
+    if rec.active_since.is_some() {
+        return false;
+    }
+    rec.active_since = Some(now);
+    true
+}
+
+/// Freeze the current active interval at `end`, preserving the accumulated total.
+fn stop_active(rec: &mut AgentRecord, end: u64) -> bool {
+    let Some(start) = rec.active_since.take() else {
+        return false;
+    };
+    rec.active_elapsed_secs = rec
+        .active_elapsed_secs
+        .saturating_add(end.saturating_sub(start));
+    true
+}
+
+/// Effective cumulative active time at `now`, including the current Working interval.
+fn active_elapsed_at(rec: &AgentRecord, now: u64) -> u64 {
+    rec.active_elapsed_secs.saturating_add(
+        rec.active_since
+            .map(|start| now.saturating_sub(start))
+            .unwrap_or(0),
+    )
+}
+
 impl AgentRegistry {
     pub fn new() -> Self {
         Self {
@@ -158,9 +192,21 @@ impl AgentRegistry {
         let now = now_secs();
         let mut inner = reg.inner.lock().unwrap();
         for mut rec in parsed.active {
+            // Legacy records have no active-time fields. Start them at daemon restore instead of
+            // approximating from `started_at`, which would reintroduce historical idle time.
+            match rec.state {
+                AgentState::Working => {
+                    start_active(&mut rec, now);
+                }
+                AgentState::Idle | AgentState::Ended => {
+                    let end = rec.ended_at.unwrap_or(rec.last_activity).min(now);
+                    stop_active(&mut rec, end);
+                }
+            }
             // 复核存活：有 pid 且已死 → 结束；无 pid 留给 TTL。
             if let Some(pid) = rec.pid {
                 if !pid_alive(pid) {
+                    stop_active(&mut rec, now);
                     rec.state = AgentState::Ended;
                     rec.ended_at = Some(now);
                     push_ended(&mut inner.ended, rec);
@@ -169,7 +215,9 @@ impl AgentRegistry {
             }
             inner.active.push(rec);
         }
-        for rec in parsed.ended {
+        for mut rec in parsed.ended {
+            let end = rec.ended_at.unwrap_or(rec.last_activity).min(now);
+            stop_active(&mut rec, end);
             push_ended(&mut inner.ended, rec);
         }
         // 盘上旧 seq 一律忽略：按序（活动在前、已结束在后）重排，保证「当前 daemon 生命周期内」稳定、从 1 起。
@@ -238,6 +286,7 @@ impl AgentRegistry {
                 r.pid == Some(pid) && r.session_id != session_id
             });
             for mut r in rotated {
+                stop_active(&mut r, now);
                 r.state = AgentState::Ended;
                 r.ended_at = Some(now);
                 push_ended(&mut inner.ended, r);
@@ -270,6 +319,8 @@ impl AgentRegistry {
                     cwd,
                     started_at: now,
                     last_activity: now,
+                    active_elapsed_secs: 0,
+                    active_since: None,
                     state: AgentState::Idle,
                     ended_at: None,
                     terminal: None,
@@ -290,13 +341,15 @@ impl AgentRegistry {
             LifecycleEvent::SessionStart => { /* 已确保登记，保持 Idle */ }
             LifecycleEvent::TurnStart => {
                 inner.active[idx].state = AgentState::Working;
-                // 新回合：步数清零、记回合开始时刻（供 /watch「第 N 步 · 已 N 分钟」）。
+                changed |= start_active(&mut inner.active[idx], now);
+                // Reset turn-local diagnostics without resetting the session's active total.
                 inner.active[idx].turn_steps = 0;
                 inner.active[idx].turn_started_at = Some(now);
                 changed |= prev != AgentState::Working;
             }
             LifecycleEvent::Activity => {
                 inner.active[idx].state = AgentState::Working;
+                changed |= start_active(&mut inner.active[idx], now);
                 // turn-start 缺失（hook 竞态 / 半装）时以首个心跳兜底记回合开始。
                 if inner.active[idx].turn_started_at.is_none() {
                     inner.active[idx].turn_started_at = Some(now);
@@ -304,6 +357,7 @@ impl AgentRegistry {
                 changed |= prev != AgentState::Working;
             }
             LifecycleEvent::TurnEnd => {
+                changed |= stop_active(&mut inner.active[idx], now);
                 inner.active[idx].state = AgentState::Idle;
                 inner.active[idx].current_tool = None; // 回合结束不应残留在跑工具
                 inner.active[idx].turn_steps = 0;
@@ -312,6 +366,7 @@ impl AgentRegistry {
             }
             LifecycleEvent::SessionEnd => {
                 let mut r = inner.active.remove(idx);
+                stop_active(&mut r, now);
                 r.state = AgentState::Ended;
                 r.ended_at = Some(now);
                 r.current_tool = None; // 会话结束清除
@@ -391,6 +446,7 @@ impl AgentRegistry {
         {
             r.state = AgentState::Working;
             r.last_activity = now;
+            start_active(r, now);
             if r.pid.is_none() && pid.is_some() {
                 r.pid = pid;
             }
@@ -445,13 +501,14 @@ impl AgentRegistry {
             let was_working = r.state == AgentState::Working;
             r.state = AgentState::Working;
             r.last_activity = now;
+            let timing_changed = start_active(r, now);
             if r.pid.is_none() && pid.is_some() {
                 r.pid = pid;
             }
             if r.cwd.is_none() && cwd.is_some() {
                 r.cwd = cwd;
             }
-            !was_working
+            !was_working || timing_changed
         } else {
             let seq = inner.alloc_seq();
             inner.active.push(AgentRecord {
@@ -463,6 +520,8 @@ impl AgentRegistry {
                 cwd,
                 started_at: now,
                 last_activity: now,
+                active_elapsed_secs: 0,
+                active_since: Some(now),
                 state: AgentState::Working,
                 ended_at: None,
                 terminal: None,
@@ -483,6 +542,7 @@ impl AgentRegistry {
         });
         let changed = !dead.is_empty();
         for mut r in dead {
+            stop_active(&mut r, now);
             r.state = AgentState::Ended;
             r.ended_at = Some(now);
             push_ended(&mut inner.ended, r);
@@ -499,6 +559,8 @@ impl AgentRegistry {
         });
         let changed = !expired.is_empty();
         for mut r in expired {
+            let active_end = r.last_activity.min(now);
+            stop_active(&mut r, active_end);
             r.state = AgentState::Ended;
             r.ended_at = Some(now);
             push_ended(&mut inner.ended, r);
@@ -558,6 +620,8 @@ impl AgentRegistry {
         for r in inner.active.iter_mut() {
             if r.state == AgentState::Working && now.saturating_sub(r.last_activity) > timeout_secs
             {
+                let active_end = r.last_activity.min(now);
+                stop_active(r, active_end);
                 r.state = AgentState::Idle;
                 changed = true;
             }
@@ -575,8 +639,11 @@ impl AgentRegistry {
             .iter_mut()
             .find(|r| r.session_id == session_id && r.state == AgentState::Working)
         {
+            let now = now_secs();
+            let active_end = r.last_activity.min(now);
+            stop_active(r, active_end);
             r.state = AgentState::Idle;
-            r.last_activity = now_secs();
+            r.last_activity = now;
             return true;
         }
         false
@@ -695,13 +762,18 @@ impl AgentRegistry {
         for r in inner.ended.iter() {
             list.push(r.clone());
         }
-        // current_tool / turn_steps / turn_started_at 标了 serde(skip)，默认序列化不含 →
-        // 手动注入 `currentTool` / `turnSteps` / `turnStartedAt`（仅进 snapshot，不落盘）。
+        // Inject transient turn/tool state and replace persisted completed time with the effective
+        // cumulative value for the current snapshot.
+        let now = now_secs();
         let arr: Vec<Value> = list
             .iter()
             .map(|r| {
                 let mut v = serde_json::to_value(r).unwrap_or(Value::Null);
                 if let Some(obj) = v.as_object_mut() {
+                    obj.insert(
+                        "activeElapsedSecs".to_string(),
+                        serde_json::json!(active_elapsed_at(r, now)),
+                    );
                     if let Some(ct) = &r.current_tool {
                         obj.insert(
                             "currentTool".to_string(),
@@ -812,6 +884,135 @@ mod tests {
     }
 
     #[test]
+    fn active_time_accumulates_across_turns_without_idle_gaps() {
+        let r = reg();
+        r.apply_event(
+            AgentKind::Codex,
+            LifecycleEvent::TurnStart,
+            "s1",
+            None,
+            None,
+            100,
+        );
+        r.apply_event(
+            AgentKind::Codex,
+            LifecycleEvent::TurnEnd,
+            "s1",
+            None,
+            None,
+            160,
+        );
+        let idle = r.snapshot();
+        let idle = idle
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["sessionId"] == "s1")
+            .unwrap();
+        assert_eq!(idle["activeElapsedSecs"].as_u64(), Some(60));
+
+        // A one-day Idle gap contributes nothing; the second active interval resumes the total.
+        r.apply_event(
+            AgentKind::Codex,
+            LifecycleEvent::TurnStart,
+            "s1",
+            None,
+            None,
+            86_560,
+        );
+        {
+            let inner = r.inner.lock().unwrap();
+            let rec = inner
+                .active
+                .iter()
+                .find(|item| item.session_id == "s1")
+                .unwrap();
+            assert_eq!(rec.active_elapsed_secs, 60);
+            assert_eq!(rec.active_since, Some(86_560));
+            assert_eq!(active_elapsed_at(rec, 86_590), 90);
+        }
+        r.apply_event(
+            AgentKind::Codex,
+            LifecycleEvent::TurnEnd,
+            "s1",
+            None,
+            None,
+            86_590,
+        );
+        let idle = r.snapshot();
+        let idle = idle
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["sessionId"] == "s1")
+            .unwrap();
+        assert_eq!(idle["activeElapsedSecs"].as_u64(), Some(90));
+    }
+
+    #[test]
+    fn session_end_freezes_active_time_for_ended_snapshots() {
+        let r = reg();
+        r.apply_event(
+            AgentKind::Cursor,
+            LifecycleEvent::TurnStart,
+            "s1",
+            None,
+            None,
+            10,
+        );
+        r.apply_event(
+            AgentKind::Cursor,
+            LifecycleEvent::SessionEnd,
+            "s1",
+            None,
+            None,
+            70,
+        );
+        let snapshot = r.snapshot();
+        let ended = snapshot
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["sessionId"] == "s1")
+            .unwrap();
+        assert_eq!(ended["state"], "ended");
+        assert_eq!(ended["activeElapsedSecs"].as_u64(), Some(60));
+        assert!(ended["activeSince"].is_null());
+    }
+
+    #[test]
+    fn legacy_records_default_active_time_to_zero() {
+        let rec: AgentRecord = serde_json::from_value(serde_json::json!({
+            "kind": "codex",
+            "sessionId": "legacy",
+            "startedAt": 10,
+            "lastActivity": 20,
+            "state": "idle"
+        }))
+        .unwrap();
+        assert_eq!(rec.active_elapsed_secs, 0);
+        assert_eq!(rec.active_since, None);
+    }
+
+    #[test]
+    fn active_time_fields_round_trip_for_daemon_restore() {
+        let r = reg();
+        r.apply_event(
+            AgentKind::Claude,
+            LifecycleEvent::TurnStart,
+            "s1",
+            None,
+            None,
+            50,
+        );
+        let rec = r.inner.lock().unwrap().active[0].clone();
+        let restored: AgentRecord =
+            serde_json::from_value(serde_json::to_value(rec).unwrap()).unwrap();
+        assert_eq!(restored.active_elapsed_secs, 0);
+        assert_eq!(restored.active_since, Some(50));
+    }
+
+    #[test]
     fn activity_keeps_working_and_refreshes() {
         // Pre/PostToolUse → Activity：置工作中 + 刷新活动，不结束回合。
         let r = reg();
@@ -853,6 +1054,15 @@ mod tests {
         assert!(r.working_backstop_sweep(10));
         assert_eq!(r.working_count(), 0);
         assert_eq!(r.idle_count(), 1);
+        let snapshot = r.snapshot();
+        let stuck = snapshot
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["sessionId"] == "stuck")
+            .unwrap();
+        // The backstop grace period is not counted as active work.
+        assert_eq!(stuck["activeElapsedSecs"].as_u64(), Some(0));
         // 再扫一次无变化（已是空闲）。
         assert!(!r.working_backstop_sweep(10));
     }

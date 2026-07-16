@@ -404,12 +404,15 @@ fn run_headless(request: AskRequest, config: AppConfig) -> ! {
         + is_feishu_active(&config) as usize
         + is_slack_active(&config) as usize;
     let preempt = Arc::new(crate::channels::Preemption::new());
+    let project = crate::project::detect();
+    let source = crate::models::source_name();
+    let origin = crate::channels::ConversationOrigin::new(&source, None, &project);
     let coordinator = Coordinator::new_headless(
         request.clone(),
         preempt.clone(),
         messaging_count,
-        crate::project::detect(),
-        crate::models::source_name(),
+        project,
+        source,
     );
 
     rt.block_on(async move {
@@ -422,6 +425,7 @@ fn run_headless(request: AskRequest, config: AppConfig) -> ! {
             let req = request.clone();
             let sink = coordinator.clone();
             let preempt = preempt.clone();
+            let origin = origin.clone();
             handles.push(tokio::spawn(async move {
                 // 单进程：每进程起一个仅挂本会话的 Router（统一走 Router 路径，单一 offset）。
                 let router = match TgRouter::connect(&cfg).await {
@@ -445,7 +449,7 @@ fn run_headless(request: AskRequest, config: AppConfig) -> ! {
                     ));
                     return;
                 }
-                run_conversation(&mut session, &req, preempt, sink).await;
+                run_conversation(&mut session, &req, &origin, preempt, sink).await;
             }));
         }
 
@@ -456,6 +460,7 @@ fn run_headless(request: AskRequest, config: AppConfig) -> ! {
             let req = request.clone();
             let sink = coordinator.clone();
             let preempt = preempt.clone();
+            let origin = origin.clone();
             handles.push(tokio::spawn(async move {
                 // 单进程：每进程起一个仅挂本会话的 Router（统一走 Router 路径）。
                 let router =
@@ -480,7 +485,7 @@ fn run_headless(request: AskRequest, config: AppConfig) -> ! {
                     ));
                     return;
                 }
-                run_conversation(&mut session, &req, preempt, sink).await;
+                run_conversation(&mut session, &req, &origin, preempt, sink).await;
             }));
         }
 
@@ -491,6 +496,7 @@ fn run_headless(request: AskRequest, config: AppConfig) -> ! {
             let req = request.clone();
             let sink = coordinator.clone();
             let preempt = preempt.clone();
+            let origin = origin.clone();
             handles.push(tokio::spawn(async move {
                 // 单进程：每进程起一个仅挂本会话的 Router（统一走 Router 路径）。
                 let router = match FsRouter::connect(&cfg).await {
@@ -514,7 +520,7 @@ fn run_headless(request: AskRequest, config: AppConfig) -> ! {
                     ));
                     return;
                 }
-                run_conversation(&mut session, &req, preempt, sink).await;
+                run_conversation(&mut session, &req, &origin, preempt, sink).await;
             }));
         }
 
@@ -525,6 +531,7 @@ fn run_headless(request: AskRequest, config: AppConfig) -> ! {
             let req = request.clone();
             let sink = coordinator.clone();
             let preempt = preempt.clone();
+            let origin = origin.clone();
             handles.push(tokio::spawn(async move {
                 // 单进程：每进程起一个仅挂本会话的 Router（统一走 Router 路径，独占一条 Socket Mode 连接）。
                 let router = match SlRouter::connect(&cfg).await {
@@ -548,7 +555,7 @@ fn run_headless(request: AskRequest, config: AppConfig) -> ! {
                     ));
                     return;
                 }
-                run_conversation(&mut session, &req, preempt, sink).await;
+                run_conversation(&mut session, &req, &origin, preempt, sink).await;
             }));
         }
 
@@ -1246,6 +1253,11 @@ fn launch(state: AppState, view: View, popup_ipc: Option<PopupIpc>) -> tauri::Re
                             let project = app.state::<AppState>().project.clone();
                             let source = app.state::<AppState>().source.clone();
                             let agent_kind = app.state::<AppState>().agent_kind.clone();
+                            let origin = crate::channels::ConversationOrigin::new(
+                                &source,
+                                agent_kind.as_deref(),
+                                &project,
+                            );
                             let coordinator = Coordinator::new(
                                 app.handle().clone(),
                                 request.clone(),
@@ -1260,7 +1272,7 @@ fn launch(state: AppState, view: View, popup_ipc: Option<PopupIpc>) -> tauri::Re
                             let config = app.state::<AppState>().config.clone();
                             for ch in active_messaging_channels(&config) {
                                 coordinator.register(ch.clone());
-                                ch.start(&request, coordinator.clone());
+                                ch.start(&request, &origin, coordinator.clone());
                             }
                             app.manage(coordinator);
                         }
