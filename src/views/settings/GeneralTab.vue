@@ -24,6 +24,7 @@ const {
   previewSound,
   changeMenuBarIcon,
   changeHistoryLimit,
+  changeTodoHistoryLimit,
   overLimit,
   cleanHistoryNow,
   SPEECH_LANGUAGES,
@@ -305,6 +306,20 @@ const config = computed(() => ctx.config.value!);
         </button>
       </div>
     </template>
+    <hr class="divider" />
+    <div class="row">
+      <span class="label">{{ t("settings.history.todoLimit") }}</span>
+      <span class="spacer"></span>
+      <input
+        class="input num"
+        type="number"
+        min="0"
+        step="1"
+        :value="config.general.todoHistoryLimit"
+        @change="changeTodoHistoryLimit(Number(($event.target as HTMLInputElement).value))"
+      />
+    </div>
+    <p class="card-desc">{{ t("settings.history.todoLimitHint") }}</p>
   </div>
 
   <!-- 语音输入（仅 macOS） -->

@@ -312,8 +312,18 @@ pub fn todos_list(project: String) -> Vec<crate::todos::TodoEntry> {
 }
 
 #[tauri::command]
-pub fn todos_add(project: String, text: String) -> Option<crate::todos::TodoEntry> {
-    crate::todos::add(&project, &text)
+pub fn todos_add(project: String, text: String, auto: Option<bool>) -> Option<crate::todos::TodoEntry> {
+    if auto.unwrap_or(false) {
+        crate::todos::add_auto(&project, &text)
+    } else {
+        crate::todos::add(&project, &text)
+    }
+}
+
+/// 切换自动执行标记（第 17 轮定案）；返回新状态，条目不存在返回 None。
+#[tauri::command]
+pub fn todos_set_auto(project: String, id: String, auto: bool) -> Option<bool> {
+    crate::todos::set_auto(&project, &id, auto)
 }
 
 #[tauri::command]
@@ -324,6 +334,30 @@ pub fn todos_remove(project: String, id: String) -> bool {
 #[tauri::command]
 pub fn todos_clear(project: String) -> usize {
     crate::todos::clear(&project)
+}
+
+/// 拖拽排序（GUI 待办窗口，第 14 轮定案）：按给定 id 顺序重排；并发增删 best-effort。
+#[tauri::command]
+pub fn todos_reorder(project: String, ids: Vec<String>) -> bool {
+    crate::todos::reorder(&project, &ids)
+}
+
+/// 执行历史（第 16 轮定案）：最新在前。
+#[tauri::command]
+pub fn todos_history(project: String) -> Vec<crate::todos::DoneTodoEntry> {
+    crate::todos::history(&project)
+}
+
+/// 从历史一键恢复回待办队列末尾。
+#[tauri::command]
+pub fn todos_restore(project: String, id: String) -> bool {
+    crate::todos::restore(&project, &id)
+}
+
+/// 清空本项目的执行历史（第 18 轮定案）。
+#[tauri::command]
+pub fn todos_history_clear(project: String) -> usize {
+    crate::todos::clear_history(&project)
 }
 
 /// 待办窗口初始化负载：主题 + 语言（与 `agents_init` 同模式）。

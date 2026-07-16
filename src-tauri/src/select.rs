@@ -55,6 +55,16 @@ pub enum SelectAction {
     Stage,
     /// 导出会话 transcript。
     Transcript,
+    /// `/todo` 无参的选 agent 卡（点它打开该 agent 项目的待办管理卡，spec todo-whats-next D8）。
+    Todo,
+    /// `/todo-rm` 无参的选 agent 卡（点它进入该项目的逐条删除选择卡）。
+    TodoRm,
+    /// 待办逐条删除卡（选项＝待办条目，按钮「删除」红色）。
+    TodoRmEntry,
+    /// `/todo-auto` 无参的选 agent 卡（点它进入该项目的切换自动执行卡，第 17 轮定案）。
+    TodoAuto,
+    /// 待办自动执行切换卡（选项＝待办条目，已自动的带 ⚡ 徽标；按钮「切换」，点击即开/关）。
+    TodoAutoEntry,
 }
 
 impl SelectAction {
@@ -71,6 +81,11 @@ impl SelectAction {
             SelectAction::Diff => "select.btnDiff",
             SelectAction::Stage => "select.btnStage",
             SelectAction::Transcript => "select.btnTranscript",
+            SelectAction::Todo => "select.btnTodo",
+            SelectAction::TodoRm => "select.btnChoose",
+            SelectAction::TodoRmEntry => "select.btnTodoRmEntry",
+            SelectAction::TodoAuto => "select.btnChoose",
+            SelectAction::TodoAutoEntry => "select.btnTodoAutoEntry",
         };
         i18n::tr(lang, key).to_string()
     }
@@ -152,6 +167,61 @@ pub fn title_stage(lang: Lang) -> String {
 }
 pub fn title_transcript(lang: Lang) -> String {
     i18n::tr(lang, "select.titleTranscript").to_string()
+}
+pub fn title_todo(lang: Lang) -> String {
+    i18n::tr(lang, "select.titleTodo").to_string()
+}
+pub fn title_todo_rm(lang: Lang) -> String {
+    i18n::tr(lang, "select.titleTodoRm").to_string()
+}
+
+/// `/todo-rm` 逐条删除卡标题：`「<项目名>」的待办（点删除即移除）：`。
+pub fn title_todo_rm_entries(project_name: &str, lang: Lang) -> String {
+    i18n::tr(lang, "select.titleTodoRmEntries").replace("{project}", project_name)
+}
+
+pub fn title_todo_auto(lang: Lang) -> String {
+    i18n::tr(lang, "select.titleTodoAuto").to_string()
+}
+
+/// `/todo-auto` 切换卡标题：`「<项目名>」的待办（点切换开/关自动执行）：`。
+pub fn title_todo_auto_entries(project_name: &str, lang: Lang) -> String {
+    i18n::tr(lang, "select.titleTodoAutoEntries").replace("{project}", project_name)
+}
+
+/// 由项目待办队列组装逐条删除卡选项：编号＝FIFO 序（1 起），主文本＝待办原文（渲染层自行截断）。
+pub fn todo_rm_options(entries: &[crate::todos::TodoEntry]) -> Vec<SelectOption> {
+    entries
+        .iter()
+        .enumerate()
+        .map(|(i, e)| SelectOption {
+            id: e.id.clone(),
+            dot: None,
+            seq: Some((i + 1) as u64),
+            primary: e.text.clone(),
+            badge: None,
+            elapsed: None,
+            secondary: None,
+        })
+        .collect()
+}
+
+/// `/todo-auto` 切换卡选项：同删除卡，但已自动的条目带 ⚡ 徽标（第 17 轮定案）。
+pub fn todo_auto_options(entries: &[crate::todos::TodoEntry], lang: Lang) -> Vec<SelectOption> {
+    let mark = i18n::tr(lang, "todo.autoMark");
+    entries
+        .iter()
+        .enumerate()
+        .map(|(i, e)| SelectOption {
+            id: e.id.clone(),
+            dot: None,
+            seq: Some((i + 1) as u64),
+            primary: e.text.clone(),
+            badge: e.auto.then(|| mark.to_string()),
+            elapsed: None,
+            secondary: None,
+        })
+        .collect()
 }
 
 pub fn title_task_workspace(lang: Lang) -> String {
@@ -476,6 +546,58 @@ mod tests {
     }
 
     #[test]
+    fn todo_rm_options_are_numbered_by_fifo_order() {
+        let entries = vec![
+            crate::todos::TodoEntry {
+                id: "id-a".into(),
+                text: "修复登录".into(),
+                created_at_ms: 1,
+                auto: false,
+            },
+            crate::todos::TodoEntry {
+                id: "id-b".into(),
+                text: "写文档".into(),
+                created_at_ms: 2,
+                auto: false,
+            },
+        ];
+        let opts = todo_rm_options(&entries);
+        assert_eq!(opts.len(), 2);
+        assert_eq!(opts[0].id, "id-a");
+        assert_eq!(opts[0].seq, Some(1));
+        assert_eq!(opts[0].primary, "修复登录");
+        assert!(opts[0].dot.is_none() && opts[0].secondary.is_none());
+        assert_eq!(opts[1].seq, Some(2));
+        // 标题带项目名。
+        assert!(title_todo_rm_entries("proj", Lang::Zh).contains("proj"));
+    }
+
+    #[test]
+    fn todo_auto_options_badge_marks_auto_entries_only() {
+        let entries = vec![
+            crate::todos::TodoEntry {
+                id: "id-a".into(),
+                text: "修复登录".into(),
+                created_at_ms: 1,
+                auto: true,
+            },
+            crate::todos::TodoEntry {
+                id: "id-b".into(),
+                text: "写文档".into(),
+                created_at_ms: 2,
+                auto: false,
+            },
+        ];
+        let opts = todo_auto_options(&entries, Lang::Zh);
+        assert_eq!(opts.len(), 2);
+        // 已自动的带 ⚡ 徽标；未自动的无徽标。
+        assert!(opts[0].badge.as_deref().unwrap_or_default().contains('⚡'));
+        assert!(opts[1].badge.is_none());
+        assert_eq!(opts[0].seq, Some(1));
+        assert!(title_todo_auto_entries("proj", Lang::Zh).contains("proj"));
+    }
+
+    #[test]
     fn action_button_labels() {
         assert_eq!(SelectAction::Watch.button_label(Lang::Zh), "关注");
         assert_eq!(SelectAction::Status.button_label(Lang::Zh), "查看");
@@ -484,6 +606,11 @@ mod tests {
         assert_eq!(SelectAction::Diff.button_label(Lang::Zh), "差异");
         assert_eq!(SelectAction::Stage.button_label(Lang::Zh), "暂存");
         assert_eq!(SelectAction::Transcript.button_label(Lang::Zh), "会话");
+        assert_eq!(SelectAction::Todo.button_label(Lang::Zh), "待办");
+        assert_eq!(SelectAction::TodoRm.button_label(Lang::Zh), "选择");
+        assert_eq!(SelectAction::TodoRmEntry.button_label(Lang::Zh), "删除");
+        assert_eq!(SelectAction::TodoAuto.button_label(Lang::Zh), "选择");
+        assert_eq!(SelectAction::TodoAutoEntry.button_label(Lang::Zh), "切换");
         let more = SelectOption {
             id: MORE_OPTION_ID.into(),
             dot: None,

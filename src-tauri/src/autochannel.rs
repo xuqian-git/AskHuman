@@ -74,6 +74,16 @@ pub enum Command {
     Stage(Option<u64>),
     /// `/transcript [编号]`：导出 agent 完整会话渲染（无参 → 单选卡）。
     Transcript(Option<u64>),
+    /// `/todo`、`/待办`（spec todo-whats-next D8）：无参 → 选 agent 单选卡（定位其项目）；
+    /// `Some(n)` 无文本 → 该 agent 项目的待办管理卡；`Some(n)` 带文本 → 直接追加一条待办。
+    /// 无编号带文本（无法定位项目）→ 由调用方回用法提示。文本保留原始换行。
+    Todo(Option<u64>, Option<String>),
+    /// `/todo-rm`、`/删待办`：无参 → 选 agent 单选卡；`Some(n)` → 该项目的逐条删除选择卡。
+    TodoRm(Option<u64>),
+    /// `/todo-auto`、`/自动待办`（第 17 轮定案）：语法镜像 `/todo`——无参 → 选 agent 卡；
+    /// `Some(n)` 无文本 → 该项目的「切换自动执行」卡（每条一按钮，点击切换开/关并就地刷新）；
+    /// `Some(n)` 带文本 → 直接新增一条**自动执行**待办。
+    TodoAuto(Option<u64>, Option<String>),
     /// `/help`、`/帮助`、`/?`：返回动态引导文案（可发什么、可用命令）。
     Help,
 }
@@ -183,6 +193,45 @@ pub fn classify(text: &str) -> Parsed {
             let sel = tokens.next().and_then(|s| s.parse::<u64>().ok());
             Parsed::Command(Command::Transcript(sel))
         }
+        "todo" | "待办" => {
+            // 与 `/msg` 同构：首 token 为纯数字 → 编号 + 其后原文（含换行）为待办文本；
+            // 首 token 非数字 → 无编号 + 整段 rest 作文本（调用方回用法提示）；空 → 管理入口。
+            let (first, content) = match rest.find(char::is_whitespace) {
+                Some(i) => (&rest[..i], rest[i..].trim_start()),
+                None => (rest, ""),
+            };
+            match first.parse::<u64>() {
+                Ok(n) => {
+                    let content = (!content.is_empty()).then(|| content.to_string());
+                    Parsed::Command(Command::Todo(Some(n), content))
+                }
+                Err(_) => {
+                    let content = (!rest.is_empty()).then(|| rest.to_string());
+                    Parsed::Command(Command::Todo(None, content))
+                }
+            }
+        }
+        "todo-rm" | "删待办" => {
+            let sel = tokens.next().and_then(|s| s.parse::<u64>().ok());
+            Parsed::Command(Command::TodoRm(sel))
+        }
+        "todo-auto" | "自动待办" => {
+            // 语法同 /todo：`<n> <text>` → 新增自动待办；`<n>` / 无参 → 切换卡。
+            let (first, content) = match rest.find(char::is_whitespace) {
+                Some(i) => (&rest[..i], rest[i..].trim_start()),
+                None => (rest, ""),
+            };
+            match first.parse::<u64>() {
+                Ok(n) => {
+                    let content = (!content.is_empty()).then(|| content.to_string());
+                    Parsed::Command(Command::TodoAuto(Some(n), content))
+                }
+                Err(_) => {
+                    let content = (!rest.is_empty()).then(|| rest.to_string());
+                    Parsed::Command(Command::TodoAuto(None, content))
+                }
+            }
+        }
         "help" | "帮助" | "?" | "？" => Parsed::Command(Command::Help),
         _ if bang => Parsed::Text,
         _ => Parsed::UnknownCommand,
@@ -266,6 +315,13 @@ pub fn help_text(
     out.push_str(&i18n::tr(lang, "autoChannel.helpCmdStage").replace("{p}", prefix));
     out.push('\n');
     out.push_str(&i18n::tr(lang, "autoChannel.helpCmdTranscript").replace("{p}", prefix));
+    // `/todo` · `/todo-rm`：项目待办（spec todo-whats-next D8），与 /status 同门控。
+    out.push('\n');
+    out.push_str(&i18n::tr(lang, "autoChannel.helpCmdTodo").replace("{p}", prefix));
+    out.push('\n');
+    out.push_str(&i18n::tr(lang, "autoChannel.helpCmdTodoRm").replace("{p}", prefix));
+    out.push('\n');
+    out.push_str(&i18n::tr(lang, "autoChannel.helpCmdTodoAuto").replace("{p}", prefix));
     out.push('\n');
     out.push_str(&i18n::tr(lang, "autoChannel.helpCmdHelp").replace("{p}", prefix));
     if auto {
@@ -961,6 +1017,85 @@ mod tests {
             classify("!MSG-CLEAR 7"),
             Parsed::Command(Command::MsgClear(Some(7)))
         );
+    }
+
+    #[test]
+    fn classify_todo_and_todo_rm() {
+        // `/todo`（无参）→ 管理入口；`/todo <n>` → 直达；`/todo <n> <text>` → 追加（保留换行）。
+        assert_eq!(classify("/todo"), Parsed::Command(Command::Todo(None, None)));
+        assert_eq!(
+            classify("/todo 3"),
+            Parsed::Command(Command::Todo(Some(3), None))
+        );
+        assert_eq!(
+            classify("/todo 3 修复登录\n再跑测试"),
+            Parsed::Command(Command::Todo(
+                Some(3),
+                Some("修复登录\n再跑测试".to_string())
+            ))
+        );
+        // 无编号有内容（首 token 非数字）→ 由调用方回用法提示。
+        assert_eq!(
+            classify("/todo fix login"),
+            Parsed::Command(Command::Todo(None, Some("fix login".to_string())))
+        );
+        // 中文同义词 + `!` 前缀。
+        assert_eq!(
+            classify("/待办 2 写文档"),
+            Parsed::Command(Command::Todo(Some(2), Some("写文档".to_string())))
+        );
+        assert_eq!(classify("!todo"), Parsed::Command(Command::Todo(None, None)));
+        // `/todo-rm`。
+        assert_eq!(classify("/todo-rm"), Parsed::Command(Command::TodoRm(None)));
+        assert_eq!(
+            classify("/todo-rm 5"),
+            Parsed::Command(Command::TodoRm(Some(5)))
+        );
+        assert_eq!(classify("/删待办"), Parsed::Command(Command::TodoRm(None)));
+        // 非数字参数 → 无参（同 /diff 的宽松处理）。
+        assert_eq!(
+            classify("/todo-rm abc"),
+            Parsed::Command(Command::TodoRm(None))
+        );
+    }
+
+    #[test]
+    fn classify_todo_auto() {
+        // 语法镜像 /todo：无参 → 选 agent；<n> → 切换卡；<n> <text> → 直接新增自动待办。
+        assert_eq!(
+            classify("/todo-auto"),
+            Parsed::Command(Command::TodoAuto(None, None))
+        );
+        assert_eq!(
+            classify("/todo-auto 3"),
+            Parsed::Command(Command::TodoAuto(Some(3), None))
+        );
+        assert_eq!(
+            classify("/todo-auto 3 每晚跑回归"),
+            Parsed::Command(Command::TodoAuto(Some(3), Some("每晚跑回归".to_string())))
+        );
+        // 首 token 非数字 → 无编号有内容（调用方回用法提示）。
+        assert_eq!(
+            classify("/todo-auto run tests"),
+            Parsed::Command(Command::TodoAuto(None, Some("run tests".to_string())))
+        );
+        // 中文同义词。
+        assert_eq!(
+            classify("/自动待办 2"),
+            Parsed::Command(Command::TodoAuto(Some(2), None))
+        );
+    }
+
+    #[test]
+    fn help_text_lists_todo_commands() {
+        for lang in [Lang::En, Lang::Zh] {
+            let t = help_text(true, false, true, "/", lang);
+            assert!(t.contains("todo"), "{t}");
+            assert!(t.contains("todo-rm"), "{t}");
+            assert!(t.contains("todo-auto"), "{t}");
+            let off = help_text(false, false, false, "/", lang);
+            assert!(off.contains("todo") && off.contains("todo-rm") && off.contains("todo-auto"));
+        }
     }
 
     #[test]

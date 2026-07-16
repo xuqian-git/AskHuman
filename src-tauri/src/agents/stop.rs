@@ -79,21 +79,26 @@ fn run_inner(args: &[String]) -> Option<Value> {
     let lang = Lang::current();
     // Todo dispatch on the Stop card (spec todo-whats-next D5): the hook's cwd maps to the git
     // root, whose pending todos become leading options. Dequeue happens centrally in the
-    // Coordinator (options carry todo_id), not here.
+    // Coordinator (options carry todo_id), not here. Only the first MAX_OPTION_TODOS entries
+    // become options (channel option-count limits, round 14); the overflow note goes into the
+    // question text. `parse_ask_decision` gets the same truncated list (index math stays aligned).
     let project = cwd
         .as_deref()
         .map(|c| crate::project::detect_from(Path::new(c)))
         .unwrap_or_default();
-    let todos = if project.is_empty() {
+    let mut todos = if project.is_empty() {
         Vec::new()
     } else {
         crate::todos::list(&project)
     };
+    let total_todos = todos.len();
+    todos.truncate(crate::todos::MAX_OPTION_TODOS);
     let task = build_task(
         kind,
         &session_id,
         &project,
         &todos,
+        total_todos,
         last_message.display.as_deref(),
         lang,
     );
@@ -206,6 +211,7 @@ fn build_task(
     session_id: &str,
     project: &str,
     todos: &[crate::todos::TodoEntry],
+    total_todos: usize,
     last_message: Option<&str>,
     lang: Lang,
 ) -> TaskRequest {
@@ -225,16 +231,26 @@ fn build_task(
     };
     let message = last_message.unwrap_or(unavailable).to_string();
     // Options: todo chips first (spec D5), then the two original actions. Index math in
-    // `parse_ask_decision` relies on this order.
+    // `parse_ask_decision` relies on this order. Labels carry the "Run todo: " display prefix
+    // (same as whats-next); the continuation text comes from the raw entry via index, not the label.
+    let prefix = crate::i18n::tr(lang, "whatsNext.todoPrefix");
     let mut options: Vec<OptionItem> = todos
         .iter()
-        .map(|entry| OptionItem::with_todo(entry.text.clone(), entry.id.clone()))
+        .map(|entry| {
+            OptionItem::with_todo(format!("{}{}", prefix, entry.text), entry.id.clone())
+        })
         .collect();
     options.push(OptionItem::new(continue_label, true));
     options.push(OptionItem::new(end_label, false));
+    // Overflow note (round 14): appended to the question text when the queue exceeds the cap.
+    let mut question = question.to_string();
+    if let Some(note) = crate::todos::overflow_note(total_todos, lang) {
+        question.push_str("\n\n");
+        question.push_str(&note);
+    }
     TaskRequest {
         message: MessagePrompt::new(message, Vec::new()),
-        questions: vec![Question::new(question.to_string(), options)],
+        questions: vec![Question::new(question, options)],
         is_markdown: true,
         source: crate::models::source_name_for_agent(Some(kind)),
         lang: lang.code().to_string(),
@@ -397,11 +413,13 @@ mod tests {
                 id: "id-1".into(),
                 text: "修复登录 bug".into(),
                 created_at_ms: 1,
+                auto: false,
             },
             crate::todos::TodoEntry {
                 id: "id-2".into(),
                 text: "写发布说明".into(),
                 created_at_ms: 2,
+                auto: false,
             },
         ]
     }
@@ -543,7 +561,7 @@ mod tests {
 
     #[test]
     fn internal_task_is_single_free_text_and_skips_history() {
-        let task = build_task(AgentKind::Codex, "s1", "/tmp/p", &[], Some("done"), Lang::En);
+        let task = build_task(AgentKind::Codex, "s1", "/tmp/p", &[], 0, Some("done"), Lang::En);
         assert!(task.single);
         assert!(!task.select_only);
         assert!(!task.record_history);
@@ -563,12 +581,16 @@ mod tests {
             "s1",
             "/tmp/p",
             &two_todos(),
+            2,
             Some("done"),
             Lang::En,
         );
         let options = &task.questions[0].predefined_options;
         assert_eq!(options.len(), 4);
-        assert_eq!(options[0].text, "修复登录 bug");
+        // 未超上限 → 问题正文无溢出提示。
+        assert!(!task.questions[0].message.contains("not listed"));
+        // 展示前缀「Run todo: 」（与 whats-next 一致）；continuation 仍按索引取待办原文。
+        assert_eq!(options[0].text, "Run todo: 修复登录 bug");
         assert_eq!(options[0].todo_id.as_deref(), Some("id-1"));
         assert!(!options[0].recommended);
         assert_eq!(options[1].todo_id.as_deref(), Some("id-2"));
@@ -576,6 +598,32 @@ mod tests {
         assert!(options[2].recommended);
         assert!(options[2].todo_id.is_none());
         assert_eq!(options[3].text, "End conversation");
+    }
+
+    #[test]
+    fn stop_card_appends_overflow_note_above_cap() {
+        // 队列超上限（第 14 轮定案）：run_inner 截断后传入截断列表 + 原始总数；
+        // 问题正文带溢出提示，选项数 = 上限 + 2。
+        let todos: Vec<crate::todos::TodoEntry> = (0..crate::todos::MAX_OPTION_TODOS)
+            .map(|i| crate::todos::TodoEntry {
+                id: format!("id-{i}"),
+                text: format!("task {i}"),
+                created_at_ms: i as u64,
+                auto: false,
+            })
+            .collect();
+        let task = build_task(
+            AgentKind::Codex,
+            "s1",
+            "/tmp/p",
+            &todos,
+            crate::todos::MAX_OPTION_TODOS + 4,
+            Some("done"),
+            Lang::En,
+        );
+        let options = &task.questions[0].predefined_options;
+        assert_eq!(options.len(), crate::todos::MAX_OPTION_TODOS + 2);
+        assert!(task.questions[0].message.contains("4 more"), "{}", task.questions[0].message);
     }
 
     #[test]

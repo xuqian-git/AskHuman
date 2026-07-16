@@ -161,9 +161,25 @@ pub fn tr(lang: Lang, key: &'static str) -> &'static str {
         // —— whats-next 固定提问（spec todo-whats-next D2）——
         "whatsNext.question" => pick(lang, "What should we do next?", "接下来做什么？"),
         "whatsNext.endOption" => pick(lang, "End this turn", "结束本轮"),
+        // 待办选项的展示前缀（whats-next / Stop 卡共用）；发给 agent 的任务文本会剥掉它
+        // （`output::strip_todo_prefix`，两种语言都尝试）。
+        "whatsNext.todoPrefix" => pick(lang, "Run todo: ", "执行待办："),
+        // 选项类展示点超过 MAX_OPTION_TODOS 时的溢出提示（附正文尾部，第 14 轮定案）。
+        "todo.moreNote" => pick(
+            lang,
+            "…{n} more todo(s) not listed (view or reorder in the Todos window or /todo).",
+            "……还有 {n} 条待办未列出（可在待办窗口或 /todo 查看调序）。",
+        ),
 
         // —— CLI todo 子命令（spec todo-whats-next D6）——
         "todo.added" => pick(lang, "Added todo #{n}: {text}", "已添加待办 #{n}: {text}"),
+        "todo.addedAuto" => pick(
+            lang,
+            "Added auto-run todo #{n}: {text}",
+            "已添加自动执行待办 #{n}: {text}",
+        ),
+        // 列表 / 卡片中自动执行待办的标记（第 17 轮定案）。
+        "todo.autoMark" => pick(lang, "⚡auto", "⚡自动"),
         "todo.empty" => pick(lang, "No pending todos for this project", "本项目暂无待办"),
         "todo.listHeader" => pick(lang, "Pending todos ({project}):", "待办列表（{project}）:"),
         "todo.removed" => pick(lang, "Removed todo #{n}: {text}", "已删除待办 #{n}: {text}"),
@@ -494,6 +510,21 @@ pub fn tr(lang: Lang, key: &'static str) -> &'static str {
             "• {p}transcript [n] — full session transcript for agent n (attachment)",
             "• {p}transcript [编号] — 导出该 agent 完整会话记录（附件）",
         ),
+        "autoChannel.helpCmdTodo" => pick(
+            lang,
+            "• {p}todo [n] [text] — project todos for agent n (with text: add one)",
+            "• {p}todo [编号] [内容] — 该 agent 项目的待办（带内容＝直接新增）",
+        ),
+        "autoChannel.helpCmdTodoRm" => pick(
+            lang,
+            "• {p}todo-rm [n] — delete todos of agent n's project",
+            "• {p}todo-rm [编号] — 删除该 agent 项目的待办",
+        ),
+        "autoChannel.helpCmdTodoAuto" => pick(
+            lang,
+            "• {p}todo-auto [n] [text] — toggle auto-run todos (with text: add an auto-run one)",
+            "• {p}todo-auto [编号] [内容] — 切换待办自动执行（带内容＝新增自动待办）",
+        ),
         "autoChannel.helpCmdHelp" => pick(lang, "• {p}help — show this help", "• {p}help — 显示此帮助"),
         "autoChannel.helpCmdHere" => pick(lang, "• {p}here — route questions to this channel", "• {p}here — 把提问切到此渠道接收"),
         // 有在途提问时的作答指引。
@@ -660,6 +691,8 @@ pub fn tr(lang: Lang, key: &'static str) -> &'static str {
         "select.btnStage" => pick(lang, "Stage", "暂存"),
         "select.btnTranscript" => pick(lang, "Transcript", "会话"),
         "select.btnChoose" => pick(lang, "Choose", "选择"),
+        "select.btnTodo" => pick(lang, "Todos", "待办"),
+        "select.btnTodoRmEntry" => pick(lang, "Delete", "删除"),
         "select.titleDiff" => pick(
             lang,
             "Pick an agent for unstaged diff:",
@@ -674,6 +707,105 @@ pub fn tr(lang: Lang, key: &'static str) -> &'static str {
             lang,
             "Pick an agent for full transcript:",
             "选择要导出完整会话的 Agent：",
+        ),
+        // —— /todo · /todo-rm（spec todo-whats-next D8）——
+        "select.titleTodo" => pick(
+            lang,
+            "Pick an agent to open its project todos:",
+            "选择 Agent 查看其项目的待办：",
+        ),
+        "select.titleTodoRm" => pick(
+            lang,
+            "Pick an agent to delete its project todos:",
+            "选择 Agent 删除其项目的待办：",
+        ),
+        "select.titleTodoRmEntries" => pick(
+            lang,
+            "Todos of \"{project}\" (tap Delete to remove):",
+            "「{project}」的待办（点删除即移除）：",
+        ),
+        "select.todoRmAllDoneCard" => pick(
+            lang,
+            "All todos in this project are gone.",
+            "本项目待办已全部删除/清空。",
+        ),
+        "select.todoRmDeleted" => pick(lang, "Deleted: {text}", "已删除：{text}"),
+        // `/todo-auto`（第 17 轮定案）。
+        "select.btnTodoAutoEntry" => pick(lang, "Toggle", "切换"),
+        "select.titleTodoAuto" => pick(
+            lang,
+            "Pick an agent to toggle auto-run todos of its project:",
+            "选择 Agent 切换其项目待办的自动执行：",
+        ),
+        "select.titleTodoAutoEntries" => pick(
+            lang,
+            "Todos of \"{project}\" (tap Toggle to switch auto-run; ⚡ = auto):",
+            "「{project}」的待办（点切换开/关自动执行；⚡＝已自动）：",
+        ),
+        "select.todoAutoEmptyCard" => pick(
+            lang,
+            "No pending todos in this project.",
+            "本项目暂无待办。",
+        ),
+        // 管理卡 / 直达追加的文本回执。
+        "todoIm.added" => pick(
+            lang,
+            "Added to \"{project}\" todos ({n} pending).",
+            "已加入「{project}」待办（现有 {n} 条）。",
+        ),
+        "todoIm.listTitle" => pick(lang, "Todos of \"{project}\"", "「{project}」的待办"),
+        "todoIm.empty" => pick(lang, "(no pending todos)", "（暂无待办）"),
+        "todoIm.addHint" => pick(
+            lang,
+            "Add: send {p}todo {n} <text>; delete: {p}todo-rm {n}.",
+            "新增：发送 {p}todo {n} <内容>；删除：{p}todo-rm {n}。",
+        ),
+        // 卡片自带输入框（飞书/钉钉）时正文只提示删除入口。
+        "todoIm.rmHint" => pick(
+            lang,
+            "Delete: send {p}todo-rm {n}.",
+            "删除：发送 {p}todo-rm {n}。",
+        ),
+        "todoIm.cardInputPlaceholder" => pick(
+            lang,
+            "Type a new todo and submit to add",
+            "输入新待办，提交即新增",
+        ),
+        "todoIm.cardAddButton" => pick(lang, "Add todo", "新增待办"),
+        "todoIm.noAgents" => pick(
+            lang,
+            "No live agent sessions; cannot locate a project. Todos can still be managed via the popup, tray window, or `AskHuman todo`.",
+            "当前没有存活的 Agent 会话，无法定位项目。仍可在弹窗、托盘待办窗口或 `AskHuman todo` 命令中管理待办。",
+        ),
+        "todoIm.notFound" => pick(
+            lang,
+            "No agent with number {n}. Send {p}status to list.",
+            "没有编号为 {n} 的 agent。发送 {p}status 查看列表。",
+        ),
+        "todoIm.noProject" => pick(
+            lang,
+            "That agent has no working directory; cannot locate its project.",
+            "该 Agent 没有工作目录，无法定位项目。",
+        ),
+        "todoIm.rmEmpty" => pick(
+            lang,
+            "No pending todos in \"{project}\".",
+            "「{project}」当前没有待办。",
+        ),
+        "todoIm.usage" => pick(
+            lang,
+            "Usage: {p}todo [n] [text] — no n: pick an agent first; n only: open that project's todo card; with text: add it directly.",
+            "用法：{p}todo [编号] [内容]——不带编号＝先选 Agent；仅编号＝打开该项目待办卡；带内容＝直接新增。",
+        ),
+        "todoIm.addedAuto" => pick(
+            lang,
+            "Added to \"{project}\" todos as auto-run ⚡ ({n} pending).",
+            "已加入「{project}」待办并设为自动执行 ⚡（现有 {n} 条）。",
+        ),
+        "todoIm.usageAuto" => pick(
+            lang,
+            "Usage: {p}todo-auto [n] [text] — no n: pick an agent first; n only: open the auto-run toggle card; with text: add an auto-run todo directly.",
+            "用法：{p}todo-auto [编号] [内容]——不带编号＝先选 Agent；仅编号＝打开自动执行切换卡；带内容＝直接新增自动执行待办。",
         ),
         "select.diffDoneCard" => pick(lang, "Diff sent for [{id}]", "已发送 [{id}] 的 diff"),
         "select.stageOpenedCard" => pick(
@@ -737,6 +869,13 @@ pub fn tr(lang: Lang, key: &'static str) -> &'static str {
         "export.sendFailed" => pick(lang, "Failed to send file: {err}", "发送文件失败：{err}"),
         // 选项超上限截断说明（{n} = 实际展示数）。
         "select.truncated" => pick(lang, "(showing first {n})", "（仅列前 {n} 个）"),
+        // graceful 关停时活动卡片的定格文案（第 15 轮定案：daemon 台账不持久化，
+        // 退出前主动去掉按钮并留提示，避免重启后旧卡静默无响应）。
+        "select.expiredCard" => pick(
+            lang,
+            "This card has expired (service restarted). Send the command again.",
+            "卡片已失效（服务已重启），请重新发送命令。",
+        ),
         // `/unwatch` 单选卡取到 0 个后定格文案。
         "select.unwatchAllDoneCard" => pick(lang, "All unwatched.", "已全部取消关注。"),
         // 钉钉 `/watch` 单选卡点选后定格文案（{id} = 所选 agent 展示编号）：钉钉不能就地变身，
@@ -950,6 +1089,8 @@ pub fn tr(lang: Lang, key: &'static str) -> &'static str {
             "发送消息…（有待送达）",
         ),
         "tray.agentFocusTerminal" => pick(lang, "Focus Terminal", "聚焦终端"),
+        // Agent 子菜单「添加待办」：打开待办窗口并预选该 agent 的项目、聚焦新增输入框。
+        "tray.agentAddTodo" => pick(lang, "Add Todo…", "添加待办…"),
         "tray.agentAskNow" => pick(lang, "Ask Me Now", "要求提问"),
         "tray.checkUpdate" => pick(lang, "Check for Updates", "检查更新"),
         "tray.checkingUpdate" => pick(lang, "Checking for updates…", "正在检查更新…"),

@@ -2,14 +2,6 @@
 
 按具体任务 / 需求记录待办与当前进展。任务 / 需求完成后删除其 section（历史留在 git）。
 
-## 进行中：Todo 队列 + whats-next（本 worktree feat/todo-whats-next）
-
-设计定案见 `docs/specs/todo-whats-next.md`。已完成：存储（todos.json）、CLI todo 子命令、
-whats-next CLI/MCP、rules 变更、Popup 折叠待办区、Stop 卡待办派发、GUI 待办窗口 +
-托盘/AgentsView 入口（cargo test 693 通过 + vitest 34 通过）。
-当前：待经 AskHuman 确认 IM `/todo` 系的钉钉卡内输入方案（需新注册模板，无法纯代码实现）
-与测试 bot 配置，然后实现 D8 并统一验收。
-
 ## 待办：TCC 弹窗修复真机验证
 
 TCC（文件权限）弹窗修复用户尚未真机验证（Agent 任务确认弹层已验收）。

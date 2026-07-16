@@ -64,10 +64,11 @@ const {
         <MessageSection />
         <QuestionCards v-if="verticalMode" />
         <SequentialPane v-else />
+        <!-- 待办下拉区：跟在最后一个问题后面（sequential 多题时仅最后一题面板显示） -->
+        <TodoSection />
       </template>
     </div>
 
-    <TodoSection v-if="!isConfirm" />
     <ComposerDock v-if="!isConfirm" />
 
     <input

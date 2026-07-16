@@ -42,10 +42,11 @@ AskHuman/
   src/                       Vue 前端（Vite 根目录）
     index.html               前端入口、首帧关键样式与平台探测
     main.ts                  挂载 App、引入全局样式
-    App.vue                  按 URL 路由 popup/settings/history/agents/interject
+    App.vue                  按 URL 路由 popup/settings/history/agents/interject/todos
     views/PopupView.vue      提问与回答弹窗（编排层；状态与区块组件在 views/popup/）
     views/AgentsView.vue     Agent 生命周期状态窗口
     views/InterjectView.vue  Agent 插话编辑器
+    views/TodosView.vue      项目待办窗口（项目选择 + 增删清空）
     views/SettingsView.vue   设置页（编排层；各 tab 组件与域逻辑在 views/settings/）
     views/HistoryView.vue    回复历史列表、搜索与筛选
     components/HistoryDetail.vue  单条历史的只读详情
@@ -75,6 +76,7 @@ AskHuman/
         agents_cmd.rs        agents 模式、状态与 capability 子命令
         doctor.rs            daemon、渠道和 Agent 集成体检
         debug_cmd.rs         不进入 help 的调试子命令
+        todo_cmd.rs          todo add/list/rm/clear 子命令
         file_attachment.rs   -f 路径解析与校验
         output.rs            文本/JSON 结果格式化
         image_writer.rs      回复图片落盘
@@ -86,6 +88,7 @@ AskHuman/
       secrets.rs             系统钥匙串与密钥回退
       project.rs             从 cwd 识别项目根
       history.rs             JSONL 回复历史存储
+      todos.rs               项目级待办队列（todos.json 直读直写 + 文件锁）
       autochannel.rs         IM 命令分类、活跃槽与共享文案
       perf.rs                跨进程性能埋点
       prompts.rs             CLI/MCP Agent 参考提示词
@@ -179,6 +182,7 @@ AskHuman/
           watch.rs           watch 订阅持久化、tick 刷新与卡片回调
           select.rs          跨渠道单选卡发送、路由与回调分发
           inbound.rs         IM 入站命令层与共享命令处理
+          todo.rs            IM /todo·/todo-rm·/todo-auto 命令与待办管理卡
           subs.rs            GUI/托盘/Agent 订阅广播与 Interject 连接
           detect.rs          渠道自动识别流程
         lifecycle.rs         单实例、指纹与空闲生命周期
@@ -249,7 +253,7 @@ Popup 的窗口、附件、来源标题与交互实现地图见 `docs/overview-p
 四种 IM 共用 Daemon 内的入站命令层，平台模块只负责传输、渲染和回调；Daemon 存活时即持续监听消息，不要求已有提问。详细能力与代码入口见 `docs/overview-im-commands.md`。
 
 - `channels.autoActivation` 关闭时向所有启用 IM 投放，开启时以当前活跃槽为主；切槽会补推在途请求，watch 渠道仍会加入对应 Agent 新提问的投放并集。
-- 共享命令包括 `/new`、`/help`、`/here`、`/status`、`/watch`、`/unwatch`、`/msg`、`/msg-clear`、`/diff`、`/stage` 和 `/transcript`；Slack 使用 `!` 作为可输入的备用前缀。
+- 共享命令包括 `/new`、`/help`、`/here`、`/status`、`/watch`、`/unwatch`、`/msg`、`/msg-clear`、`/diff`、`/stage`、`/transcript`、`/todo`、`/todo-rm` 和 `/todo-auto`；Slack 使用 `!` 作为可输入的备用前缀。
 - macOS 开启 `agentTasks` 后，`/new` 依次选择 workspace、已就绪 Agent 与权限，在新的 Terminal.app 窗口启动真实交互会话；Daemon 只负责启动前流程，之后复用 lifecycle/watch。
 - Agent 数字编号在 daemon 生命周期内稳定，供状态、关注、插话和 Git/会话导出共用；无参目标选择复用跨渠道单选卡模型。
 - Watch 订阅持久化并就地更新原卡；`/stage` 必须经过跨渠道 Confirm，不能直接执行暂存。
@@ -295,6 +299,15 @@ Popup 的窗口、附件、来源标题与交互实现地图见 `docs/overview-p
 - Agent 下一次 PreToolUse 读取并原子消费消息；composer 已打开时 hook 可等待提交或取消，热路径不做文件 IO。
 - 排队消息被实际读取后向来源 IM 发阅读回执；即时送达、撤回、覆盖或未消费的消息不回执。
 - 入口为 Agent 状态窗口、托盘菜单和 IM `/msg`；队列实现位于 `agents/interject.rs`。
+
+## 项目待办 + whats-next
+
+> 规格 `docs/specs/todo-whats-next.md`。
+
+- 待办按项目（git 根）归属，`~/.askhuman/state/todos.json` 是唯一数据源：所有进程直读直写 + 文件锁串行化，不依赖 daemon 存活，跨平台。
+- Agent 完成任务后必须调 `AskHuman --whats-next`（MCP 为 `whats_next` 工具）：固定提问 + 待办 chip 选项 + 恒有「结束本轮」；结果复用 Ask 标准区块（派活 `[user_input]`、准许结束 `[selected_options]`、取消 `[status]`）。选中的待办按 id best-effort 出队（Coordinator 汇聚点统一处理）。标记为「自动执行」（⚡）的待办在 whats-next 时不发卡、直接按队列顺序派发最靠前一条。
+- 送达面：whats-next / 普通提问 Popup 折叠待办区 / Stop 确认卡（兜底）都以选项形式呈现待办；输入面：CLI `todo` 子命令、Popup 内新增、GUI 待办窗口（托盘/AgentsView 入口）、IM `/todo`。
+- IM `/todo`（管理卡：飞书代码卡自带输入表单，钉钉复用提问卡模板 `allow_input`，TG/Slack 文本 + 命令提示）、`/todo-rm`（复用单选卡逐条删除、就地刷新）与 `/todo-auto`（切换自动执行标记）仅 Unix，实现在 `daemon/unix_impl/todo.rs`。
 
 ## 菜单栏图标 + 统一 GUI Host（Unix 桌面）
 

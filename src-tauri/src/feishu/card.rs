@@ -555,12 +555,18 @@ fn select_button_type(action: crate::select::SelectAction) -> &'static str {
         | crate::select::SelectAction::TaskWorkspace
         | crate::select::SelectAction::TaskAgent
         | crate::select::SelectAction::TaskPermission
-        | crate::select::SelectAction::Msg
-        | crate::select::SelectAction::Stage => "primary",
+        |         crate::select::SelectAction::Msg
+        | crate::select::SelectAction::Stage
+        | crate::select::SelectAction::TodoRm
+        | crate::select::SelectAction::TodoAuto => "primary",
         crate::select::SelectAction::Status
         | crate::select::SelectAction::Diff
-        | crate::select::SelectAction::Transcript => "default",
-        crate::select::SelectAction::Unwatch => "danger",
+        | crate::select::SelectAction::Transcript
+        | crate::select::SelectAction::Todo
+        | crate::select::SelectAction::TodoAutoEntry => "default",
+        crate::select::SelectAction::Unwatch | crate::select::SelectAction::TodoRmEntry => {
+            "danger"
+        }
     }
 }
 
@@ -658,6 +664,32 @@ pub fn build_select_card(v: &crate::select::SelectView) -> Value {
         "config": { "update_multi": true },
         "body": { "elements": body },
     })
+}
+
+/// 待办管理卡（spec todo-whats-next D8）：样式化头部（标题）+ markdown 列表正文 +
+/// 表单（输入框 + 「新增待办」提交按钮）。提交回调与提问卡同构（`form_value.user_input`），
+/// 由 daemon select 路由按台账 kind 分派（不与提问会话冲突）。
+pub fn build_todo_manage_card(
+    title: &str,
+    body_md: &str,
+    input_placeholder: &str,
+    submit_label: &str,
+) -> Value {
+    let elements = vec![
+        body_text(body_md, true),
+        build_form(
+            &[],
+            &[],
+            None,
+            false,
+            false,
+            false,
+            input_placeholder,
+            submit_label,
+            "",
+        ),
+    ];
+    assemble_card(title, elements, true)
 }
 
 /// 定格单选卡为一段纯文本（无按钮）——`/unwatch` 取到 0 个后用。
@@ -922,6 +954,32 @@ mod tests {
             .find(|e| e["tag"] == "form")
             .unwrap()
             .clone()
+    }
+
+    #[test]
+    fn todo_manage_card_has_list_body_and_add_form() {
+        let card = build_todo_manage_card(
+            "「proj」的待办",
+            "1. 修复登录\n2. 写文档\n\n<font color='grey'>删除：发送 /todo-rm 3。</font>",
+            "输入新待办，提交即新增",
+            "新增待办",
+        );
+        assert_eq!(card["schema"], "2.0");
+        let elements = card["body"]["elements"].as_array().unwrap();
+        // 样式化头部 + hr + markdown 列表正文。
+        assert_eq!(elements[0]["text"]["content"], "「proj」的待办");
+        assert_eq!(elements[2]["tag"], "markdown");
+        assert!(elements[2]["content"].as_str().unwrap().contains("修复登录"));
+        // 表单只有输入框 + 提交按钮（无勾选器）。
+        let form = form_of(&card);
+        let fe = form["elements"].as_array().unwrap();
+        assert_eq!(fe.len(), 2);
+        assert_eq!(fe[0]["tag"], "input");
+        assert_eq!(fe[0]["name"], INPUT_NAME);
+        assert_eq!(fe[1]["tag"], "button");
+        assert_eq!(fe[1]["text"]["content"], "新增待办");
+        // 提交回调与提问卡同构（parse_card_submit 可解析）。
+        assert_eq!(fe[1]["behaviors"][0]["value"]["action"], "submit");
     }
 
     #[test]

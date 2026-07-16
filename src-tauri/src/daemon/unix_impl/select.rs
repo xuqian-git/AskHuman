@@ -108,6 +108,13 @@ pub(super) async fn send_agent_picker(
         PickerKind::Diff => crate::select::SelectAction::Diff,
         PickerKind::Stage => crate::select::SelectAction::Stage,
         PickerKind::Transcript => crate::select::SelectAction::Transcript,
+        PickerKind::Todo => crate::select::SelectAction::Todo,
+        PickerKind::TodoRm => crate::select::SelectAction::TodoRm,
+        PickerKind::TodoRmEntry => crate::select::SelectAction::TodoRmEntry,
+        PickerKind::TodoAuto => crate::select::SelectAction::TodoAuto,
+        PickerKind::TodoAutoEntry => crate::select::SelectAction::TodoAutoEntry,
+        // 管理卡不经单选卡通道发送（见 todo.rs::send_todo_manage / register_todo_manage）。
+        PickerKind::TodoManage => return false,
     };
     let view = crate::select::build_view(title, options, action, lang);
     let session_ids: Vec<String> = view.options.iter().map(|o| o.id.clone()).collect();
@@ -120,6 +127,7 @@ pub(super) async fn send_agent_picker(
             channel: channel_id.to_string(),
             message_id: mid,
             kind,
+            title: view.title.clone(),
             options: session_ids,
             payload,
             created_at: now_secs(),
@@ -228,6 +236,71 @@ pub(super) fn remove_picker(state: &Arc<ServerState>, channel_id: &str, message_
         if cleared {
             state.watch.notify.notify_one();
         }
+    }
+}
+
+/// graceful 关停前把所有活动单选/确认卡就地定格为「已失效」终态（第 15 轮定案）：
+/// 台账不持久化（spec im-select-card D7），重启后旧卡点击本会静默无响应——退出前主动
+/// 去掉按钮/表单并留「请重新发送命令」提示。best-effort（渠道不可用/更新失败仅记日志），
+/// 调用方需自行限时以免拖住关停。
+pub(super) async fn finalize_all_select_cards(state: &Arc<ServerState>) {
+    let pickers: Vec<PickerEntry> = std::mem::take(&mut *state.select.pickers.lock().unwrap());
+    let confirms: Vec<ConfirmEntry> = std::mem::take(&mut *state.select.confirms.lock().unwrap());
+    if pickers.is_empty() && confirms.is_empty() {
+        return;
+    }
+    let lang = Lang::current();
+    let config = state.config_snapshot();
+    let label = crate::i18n::tr(lang, "select.expiredCard");
+    for p in &pickers {
+        match p.channel.as_str() {
+            "feishu" => {
+                let card = crate::feishu::card::build_select_final_card(&p.title, label);
+                if let Ok(client) =
+                    crate::feishu::client::FeishuClient::new(&config.channels.feishu)
+                {
+                    if let Err(err) = client.patch_card(&p.message_id, &card).await {
+                        log(&format!("select: expire feishu card failed: {}", err));
+                    }
+                }
+            }
+            "dingding" => {
+                if p.kind == PickerKind::TodoManage {
+                    // 管理卡走提问卡模板：置私有 `submitted=true` 关表单 + 公有终态文案。
+                    if let Ok(client) =
+                        crate::dingtalk::client::DingTalkClient::new(&config.channels.dingding)
+                    {
+                        if let Err(err) = client
+                            .update_card_private(
+                                &p.message_id,
+                                serde_json::json!({ "submit_status": label }),
+                                serde_json::json!({ "submitted": "true" }),
+                            )
+                            .await
+                        {
+                            log(&format!(
+                                "select: expire dingtalk manage card failed: {}",
+                                err
+                            ));
+                        }
+                    }
+                } else {
+                    dd_finalize_select_card(&config, &p.message_id, label).await;
+                }
+            }
+            _ => {
+                finalize_select_card_edit(&p.channel, &config, &p.message_id, &p.title, label)
+                    .await
+            }
+        }
+    }
+    for c in &confirms {
+        let fv = crate::confirm::ConfirmFinalView {
+            title: c.view.title.clone(),
+            body: label.to_string(),
+            label: crate::confirm::transport::truncate_for_label(label),
+        };
+        crate::confirm::transport::finalize(&c.channel, &config, &c.message_id, &fv, None).await;
     }
 }
 
@@ -363,8 +436,14 @@ pub(super) async fn ensure_select_route_for(
                         _ = stop2.notified() => break,
                         ev = routed.recv() => match ev {
                             Some(crate::dingtalk::router::DdInbound::Card { data, ack }) => {
-                                // 先空 ACK 满足 3 秒回包（钉钉无「回调同步回卡」，卡片变化走 OpenAPI）。
-                                let _ = ack.send(serde_json::json!({}));
+                                // 先 ACK 满足 3 秒回包（钉钉无「回调同步回卡」，卡片变化走 OpenAPI）。
+                                // 提问模板的「提交」（待办管理卡）须回成功裁决（空包会显示「请求失败」）；
+                                // 其余（单选/确认按钮）空包即可。
+                                let _ = ack.send(if crate::dingtalk::card::is_submit(&data) {
+                                    crate::dingtalk::card::submit_ack_success()
+                                } else {
+                                    serde_json::json!({})
+                                });
                                 handle_select_dd_action(&st, &data).await;
                             }
                             Some(_) => {} // 未认领聊天消息，不会到达；防御性忽略。
@@ -449,7 +528,8 @@ pub(super) async fn handle_select_card_action(
         return;
     }
     let Some((mid, idx)) = crate::feishu::card::parse_select_action(data) else {
-        let _ = ack.send(None);
+        // 非单选点击：可能是待办管理卡的表单提交（本路由上唯一带表单的卡）；否则空 ACK。
+        fs_todo_manage_submit(state, data, ack).await;
         return;
     };
     let picker = {
@@ -520,6 +600,29 @@ pub(super) async fn handle_select_card_action(
             )
             .await;
             activate_channel_on_action(state, channel_id, &config, lang).await;
+        }
+        // /todo · /todo-rm（spec todo-whats-next D8）。
+        PickerKind::Todo => {
+            fs_select_pick_todo(state, &mid, &session_id, lang, ack).await;
+            activate_channel_on_action(state, channel_id, &config, lang).await;
+        }
+        PickerKind::TodoRm => {
+            fs_select_pick_todo_rm(state, &mid, &session_id, lang, ack).await;
+            activate_channel_on_action(state, channel_id, &config, lang).await;
+        }
+        PickerKind::TodoRmEntry => {
+            fs_select_pick_todo_rm_entry(state, &mid, &session_id, &picker, lang, ack).await;
+        }
+        PickerKind::TodoAuto => {
+            fs_select_pick_todo_auto(state, &mid, &session_id, lang, ack).await;
+            activate_channel_on_action(state, channel_id, &config, lang).await;
+        }
+        PickerKind::TodoAutoEntry => {
+            fs_select_pick_todo_auto_entry(state, &mid, &session_id, &picker, lang, ack).await;
+        }
+        // 管理卡无行按钮（options 恒空，上方取选项即已短路）；防御性空 ACK。
+        PickerKind::TodoManage => {
+            let _ = ack.send(None);
         }
     }
 }
@@ -762,6 +865,10 @@ pub(super) async fn handle_select_dd_action(state: &Arc<ServerState>, data: &ser
     if handle_stage_dd_submit(state, data).await {
         return;
     }
+    // 待办管理卡「新增」提交（提问卡模板复用，spec todo-whats-next D8）。
+    if handle_todo_dd_submit(state, data).await {
+        return;
+    }
     let Some((otid, session_id)) = crate::dingtalk::select::parse_select_action(data) else {
         return;
     };
@@ -831,6 +938,27 @@ pub(super) async fn handle_select_dd_action(state: &Arc<ServerState>, data: &ser
             .await;
             activate_channel_on_action(state, "dingding", &config, lang).await;
         }
+        // /todo · /todo-rm（spec todo-whats-next D8）。
+        PickerKind::Todo => {
+            dd_select_pick_todo(state, &otid, &session_id, &config, lang).await;
+            activate_channel_on_action(state, "dingding", &config, lang).await;
+        }
+        PickerKind::TodoRm => {
+            dd_select_pick_todo_rm(state, &otid, &session_id, &config, lang).await;
+            activate_channel_on_action(state, "dingding", &config, lang).await;
+        }
+        PickerKind::TodoRmEntry => {
+            dd_select_pick_todo_rm_entry(state, &otid, &session_id, &picker, &config, lang).await;
+        }
+        PickerKind::TodoAuto => {
+            dd_select_pick_todo_auto(state, &otid, &session_id, &config, lang).await;
+            activate_channel_on_action(state, "dingding", &config, lang).await;
+        }
+        PickerKind::TodoAutoEntry => {
+            dd_select_pick_todo_auto_entry(state, &otid, &session_id, &picker, &config, lang).await;
+        }
+        // 管理卡提交已在上方 handle_todo_dd_submit 处理；行按钮不存在。
+        PickerKind::TodoManage => {}
     }
 }
 
@@ -1168,6 +1296,45 @@ pub(super) async fn dispatch_select_pick(
             .await;
             activate_channel_on_action(state, channel_id, config, lang).await;
         }
+        // /todo · /todo-rm（spec todo-whats-next D8）。
+        PickerKind::Todo => {
+            select_pick_todo_text(state, channel_id, mid, &session_id, config, lang).await;
+            activate_channel_on_action(state, channel_id, config, lang).await;
+        }
+        PickerKind::TodoRm => {
+            select_pick_todo_rm_inplace(state, channel_id, mid, &session_id, config, lang).await;
+            activate_channel_on_action(state, channel_id, config, lang).await;
+        }
+        PickerKind::TodoRmEntry => {
+            select_pick_todo_rm_entry_inplace(
+                state,
+                channel_id,
+                mid,
+                &session_id,
+                &picker,
+                config,
+                lang,
+            )
+            .await;
+        }
+        PickerKind::TodoAuto => {
+            select_pick_todo_auto_inplace(state, channel_id, mid, &session_id, config, lang).await;
+            activate_channel_on_action(state, channel_id, config, lang).await;
+        }
+        PickerKind::TodoAutoEntry => {
+            select_pick_todo_auto_entry_inplace(
+                state,
+                channel_id,
+                mid,
+                &session_id,
+                &picker,
+                config,
+                lang,
+            )
+            .await;
+        }
+        // 管理卡在 TG/Slack 上是纯文本形态，不会有卡片回调。
+        PickerKind::TodoManage => {}
     }
 }
 

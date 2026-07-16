@@ -36,12 +36,14 @@ mod detect;
 mod inbound;
 mod select;
 mod subs;
+mod todo;
 mod watch;
 
 use detect::*;
 use inbound::*;
 use select::*;
 use subs::*;
+use todo::*;
 use watch::*;
 
 type Reader = BufReader<OwnedReadHalf>;
@@ -370,6 +372,18 @@ enum PickerKind {
     Diff,
     Stage,
     Transcript,
+    /// `/todo` 无参的选 agent 卡：点选后另发该 agent 项目的待办管理卡（spec todo-whats-next D8）。
+    Todo,
+    /// `/todo-rm` 无参的选 agent 卡：点选后本卡就地变身为该项目的逐条删除卡。
+    TodoRm,
+    /// 待办逐条删除卡：`options`＝待办条目 id，`payload`＝项目 key；点「删除」即移除并就地刷新。
+    TodoRmEntry,
+    /// `/todo-auto` 无参的选 agent 卡：点选后本卡就地变身为该项目的切换自动执行卡（第 17 轮）。
+    TodoAuto,
+    /// 待办自动执行切换卡：`options`＝待办条目 id，`payload`＝项目 key；点「切换」即开/关并就地刷新。
+    TodoAutoEntry,
+    /// 待办管理卡（飞书代码卡 / 钉钉提问卡模板）：无行按钮，仅表单「新增」提交；`payload`＝项目 key。
+    TodoManage,
 }
 
 /// `/stage` 确认卡台账（不持久化）。业务状态留在此处；通用 view 只负责展示与动作槽映射。
@@ -392,9 +406,13 @@ struct PickerEntry {
     channel: String,
     message_id: String,
     kind: PickerKind,
-    /// 各选项的 session_id（下标 = 按钮 `select:<idx>`）。
+    /// 卡片当前标题快照（变身时随卡更新）：关停定格「已失效」终态卡时复用（第 15 轮定案）。
+    title: String,
+    /// 各选项的稳定 id（下标 = 按钮 `select:<idx>`）：agent 卡＝session_id；
+    /// `TodoRmEntry` 卡＝待办条目 id。
     options: Vec<String>,
-    /// `Msg` 卡的待发送内容（点「发送」时投递）；其它 kind 恒 `None`。
+    /// `Msg` 卡＝待发送内容（点「发送」时投递）；`TodoRmEntry`/`TodoManage` 卡＝项目 key；
+    /// 其它 kind 恒 `None`。
     payload: Option<String>,
     created_at: u64,
     /// 发卡时刻的渠道扰动水位（Unix 毫秒，同 `WatchState::disturb` 量纲）：与当前渠道水位比较判定
@@ -837,6 +855,14 @@ async fn serve(_lock: LockGuard) -> i32 {
     if state.registry.cancel_all_requests() > 0 {
         tokio::time::sleep(Duration::from_millis(2000)).await;
     }
+
+    // 第 15 轮定案：graceful 关停（drain/stop/install 换新）前把活动单选/确认卡定格「已失效」，
+    // 避免重启后旧卡（台账不持久化）点击静默无响应。限时兜底，不拖关停。
+    let _ = tokio::time::timeout(
+        Duration::from_secs(8),
+        finalize_all_select_cards(&state),
+    )
+    .await;
 
     // 方案6：关停前回收热实例（drop 连接 → 热进程收 EOF 自杀，不悬挂）。先置 `draining` 再回收，
     // 否则被回收的热实例走死亡分支会 `maybe_topup_warm` 又拉起一个新热进程（孤儿，daemon 已停）。

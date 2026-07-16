@@ -1151,27 +1151,31 @@
   flex: 1 1 auto;
   pointer-events: none;
 }
-/* 折叠待办区（spec todo-whats-next D7）：页脚上方 */
+/* 待办下拉区（spec todo-whats-next D7 第 11 轮改版）：内容区里、最后一个问题之后。
+   收起＝一行「▸ 待办 N」；展开＝复用 .options/.option（与预选答案同构）+ 行内删除。 */
 .todo-section {
-  flex: 0 0 auto;
-  border-top: 1px solid var(--border);
-  font-size: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
 }
-.todo-header {
+.todo-toggle {
   display: flex;
   align-items: center;
   gap: 6px;
-  width: 100%;
-  padding: 6px var(--space-4);
-  border: none;
-  background: transparent;
+  align-self: flex-start;
+  padding: 4px 10px 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--card-bg);
   color: var(--text-secondary);
   font-size: 12px;
   cursor: default;
   text-align: left;
+  transition: border-color 0.12s ease, background 0.12s ease;
 }
-.todo-header:hover {
-  color: var(--text);
+.todo-toggle:hover {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
 }
 .todo-caret {
   flex: 0 0 auto;
@@ -1198,108 +1202,50 @@
   color: var(--accent, #0a84ff);
   font-size: 11px;
 }
-.todo-body {
-  padding: 0 var(--space-4) var(--space-2);
-  max-height: 180px;
-  overflow-y: auto;
-}
-.todo-empty {
-  margin: 2px 0 6px;
-  color: var(--text-muted, #8e8e93);
-}
-.todo-list {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin-bottom: 6px;
-}
-.todo-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.todo-chip {
-  flex: 1 1 auto;
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  padding: 4px 8px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: transparent;
-  color: var(--text);
-  font-size: 12px;
-  text-align: left;
-  cursor: default;
-}
-.todo-chip:disabled {
-  opacity: 1; /* 不可选（管理模式）时仍按正常文本显示 */
+/* 不可选（严格选择）：无勾选框，正文淡显，仅保留删除。 */
+.todo-option.static .label {
   color: var(--text-secondary);
 }
-.todo-chip.selectable:not(:disabled):hover {
-  border-color: color-mix(in srgb, var(--accent, #0a84ff) 50%, var(--border));
-}
-.todo-chip.selected {
-  border-color: var(--accent, #0a84ff);
-  background: color-mix(in srgb, var(--accent, #0a84ff) 10%, transparent);
-}
-.todo-chip-text {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.todo-del {
+.todo-option .todo-del {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
   justify-content: center;
   width: 18px;
   height: 18px;
+  margin-top: 1px;
   border: none;
   border-radius: 50%;
   background: transparent;
   color: var(--text-muted, #8e8e93);
+  opacity: 0;
   cursor: default;
+  transition: opacity 0.12s ease;
 }
-.todo-del:hover {
+.todo-option:hover .todo-del {
+  opacity: 1;
+}
+.todo-option .todo-del:hover {
   background: rgba(128, 128, 128, 0.2);
   color: var(--text-secondary);
 }
-.todo-add {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.todo-input {
-  flex: 1 1 auto;
-  min-width: 0;
-  padding: 4px 8px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--input-bg, transparent);
-  color: var(--text);
-  font-size: 12px;
-}
-.todo-input:focus {
-  outline: none;
-  border-color: var(--accent, #0a84ff);
-}
-.todo-add-btn {
+/* 删除二次确认态：✕ 变红色文字按钮，再点才真正删除（常显，不随 hover 隐藏）。 */
+.todo-option .todo-del-confirm {
   flex: 0 0 auto;
-  padding: 4px 10px;
-  border: none;
+  margin-top: 1px;
+  padding: 1px 8px;
+  border: 1px solid color-mix(in srgb, #ff453a 45%, transparent);
   border-radius: 6px;
-  background: transparent;
-  color: var(--accent, #0a84ff);
-  font-size: 12px;
-  font-weight: 500;
+  background: color-mix(in srgb, #ff453a 12%, transparent);
+  color: #ff453a;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
   cursor: default;
+  transition: background 0.12s ease;
 }
-.todo-add-btn:hover:not(:disabled) {
-  text-decoration: underline;
-}
-.todo-add-btn:disabled {
-  color: var(--text-muted, #8e8e93);
+.todo-option .todo-del-confirm:hover {
+  background: color-mix(in srgb, #ff453a 22%, transparent);
 }
 /* 回复文件 chip */
 .reply-files {

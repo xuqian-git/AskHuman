@@ -25,7 +25,6 @@ import {
   popupImTipVisible,
   popupImTipDismiss,
   todosList,
-  todosAdd,
   todosRemove,
 } from "../../lib/ipc";
 import { isFocusableTerminal } from "../../lib/terminals";
@@ -557,28 +556,30 @@ export function usePopupCore() {
   // whats-next 提问（spec todo-whats-next D2/D7）：待办已是问题选项本体，折叠区不重复渲染 chip。
   const whatsNext = computed(() => request.value?.whatsNext ?? false);
 
-  // ===== 折叠待办区（spec todo-whats-next D7）=====
+  // ===== 待办下拉区（spec todo-whats-next D7，第 11 轮改版）=====
   // 该提问项目的待办列表；直读 todos.json（经后端命令），渲染后异步加载不阻塞首屏。
   const todos = ref<TodoEntry[]>([]);
   const todosOpen = ref(false);
-  // 选中的待办条目 id（提交时文本并入 userInput、id 送后端出队）。
+  // 选中的待办条目 id（提交时文本并入回答、id 送后端出队）。
   const todoChosenIds = ref<string[]>([]);
-  const todoNewText = ref("");
-  // chip 点选作答仅在单题、非 whats-next、非严格选择时启用（多题归属歧义 / whats-next 已是
-  // 选项本体 / 严格选择禁自由文本）；其余场景折叠区只保留增删查看。
-  const todoChipsEnabled = computed(
-    () => total.value === 1 && !whatsNext.value && !selectOnly.value
-  );
-  // 无项目 key（未知 workspace）时无法归属待办，整区隐藏。
+  // 点选作答在严格选择（禁自由文本）之外都启用；选中文本恒并入**最后一题**的回答。
+  const todoChipsEnabled = computed(() => !selectOnly.value);
+  // 跟在最后一个问题后面、仅在有待办时显示：whats-next 弹窗不显示（待办已是选项本体）；
+  // 无项目 key（未知 workspace）时无法归属，隐藏；sequential 多题模式只在最后一题的面板显示。
   const todoSectionVisible = computed(
-    () => !!projectPath.value && !!request.value
+    () =>
+      !!projectPath.value &&
+      !!request.value &&
+      !whatsNext.value &&
+      todos.value.length > 0 &&
+      (verticalMode.value || current.value === total.value - 1)
   );
   const selectedTodos = computed(() =>
     todos.value.filter((td) => todoChosenIds.value.includes(td.id))
   );
 
   async function loadTodos() {
-    if (!todoSectionVisible.value) return;
+    if (!projectPath.value || whatsNext.value) return;
     try {
       todos.value = await todosList(projectPath.value);
     } catch {
@@ -591,18 +592,6 @@ export function usePopupCore() {
     const i = todoChosenIds.value.indexOf(id);
     if (i >= 0) todoChosenIds.value.splice(i, 1);
     else todoChosenIds.value.push(id);
-  }
-
-  async function addTodo() {
-    const text = todoNewText.value.trim();
-    if (!text || !projectPath.value) return;
-    todoNewText.value = "";
-    try {
-      const entry = await todosAdd(projectPath.value, text);
-      if (entry) todos.value.push(entry);
-    } catch {
-      todoNewText.value = text; // 失败还原输入，避免内容丢失
-    }
   }
 
   async function removeTodo(id: string) {
@@ -1304,12 +1293,18 @@ export function usePopupCore() {
         images: imagesByQ.value[i] ?? [],
         files: (replyFilesByQ.value[i] ?? []).map((f) => f.path),
       };
-      // 折叠待办区选中的 chip（仅单题启用，恒归第 0 题，spec D7）：文本并入 userInput
-      // （与手输文本按空行拼接，待办在前），id 送后端出队。
-      if (i === 0 && todoChipsEnabled.value && selectedTodos.value.length) {
+      // 待办下拉区选中的条目（恒归**最后一题**，spec D7 第 11 轮改版）：每条加「另外看一下
+      // 这个待办任务：」前缀并入 userInput（手输文本在前、待办在后，空行分隔），id 送后端出队。
+      if (
+        i === total.value - 1 &&
+        todoChipsEnabled.value &&
+        selectedTodos.value.length
+      ) {
         answer.userInput = [
-          ...selectedTodos.value.map((td) => td.text),
           answer.userInput,
+          ...selectedTodos.value.map((td) =>
+            t("popup.todos.mergeLine", { text: td.text })
+          ),
         ]
           .filter((s) => s.trim())
           .join("\n\n");
@@ -1606,7 +1601,6 @@ export function usePopupCore() {
     todos.value = [];
     todosOpen.value = false;
     todoChosenIds.value = [];
-    todoNewText.value = "";
     attach.loadThumbs();
     attach.loadDragIcons();
     // 纵向模式（实验开关开 且 多题）：不自动聚焦、保持全部折叠、建哨兵观察。
@@ -1960,15 +1954,13 @@ export function usePopupCore() {
     imTipVisible,
     imTipConfigure,
     imTipDismiss,
-    // 折叠待办区（spec todo-whats-next D7）
+    // 待办下拉区（spec todo-whats-next D7）
     todos,
     todosOpen,
     todoChosenIds,
-    todoNewText,
     todoChipsEnabled,
     todoSectionVisible,
     toggleTodo,
-    addTodo,
     removeTodo,
     // 子域
     ...speech,

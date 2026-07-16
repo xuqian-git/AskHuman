@@ -44,14 +44,23 @@ Interject 是「打断进行中」的纠偏语义，不适合），希望：
 
 - 归属：**项目级**（`project.rs` 的 git 根路径 key，回退 cwd）。同项目的新会话 / 新
   agent / 多 agent 共享一份队列；不随 session 结束清理，长期保留直到出队或删除。
-- 条目：`{ id: uuid, text: String, created_at_ms }`。纯文本，首期不支持附件。
-- 顺序：FIFO 追加，首期不做手动排序/置顶（出队按 id 任选，顺序只影响展示）。
+- 条目：`{ id: uuid, text: String, created_at_ms, auto: bool }`。纯文本，首期不支持附件。
+  `auto`＝**自动执行**标记（第 17 轮定案，见 D2；`false` 不落盘，旧文件兼容）；从历史
+  恢复的条目恒为 `auto: false`。
+- 顺序：FIFO 追加；顺序可在 GUI 待办窗口拖拽调整（第 14 轮定案，见 D9），头部条目在
+  选项类展示点优先出现。
 - 存储（第 9 轮定案，实现简化）：`~/.askhuman/state/todos.json` 即**唯一数据源**，
   所有进程直读直写；写操作（读-改-写）持 flock 串行化（与 `history.jsonl` 跨进程写锁
   同模式；Windows 无锁 best-effort，与 history 现状一致）。**不做** daemon 内存运行态
   ——todo 无热路径（whats-next 每轮一次、增删查是人操作频率），双层结构无收益。
-  文件形态：`{ "projects": { "<project_key>": [ {id,text,createdAtMs}, … ] } }`，
+  文件形态：`{ "projects": { "<project_key>": [ {id,text,createdAtMs}, … ] },
+  "history": { "<project_key>": [ {id,text,createdAtMs,doneAtMs}, … ] } }`，
   空项目键剪除；原子写（tmp + rename）。
+- **执行历史**（第 16 轮定案）：**仅「执行出队」**（whats-next / Stop 卡 / 弹窗点选 →
+  `take`）进入 `history`（时间正序追加，展示倒序）；手动删除、清空**不记**。每项目按
+  设置「待办历史保留条数」（`general.todoHistoryLimit`，默认 20）裁剪最旧；`0`＝停止
+  新增、既有历史保留（与回复历史 `historyLimit` 同语义）。GUI 待办窗口的「历史」折叠区
+  可查看（状态＋完成时间）并**一键恢复**回待办队列末尾。
 - 附带收益：CLI `todo` / `--whats-next` 的待办读写**不依赖 daemon 存活**；
   Unix / Windows 同一套代码，无平台特例分支。
 
@@ -64,10 +73,17 @@ Interject 是「打断进行中」的纠偏语义，不适合），希望：
 - 语义：**必然发出一个提问**，走完全现成的普通 Ask 链路（popup + 四 IM、抢答协调、
   活跃槽 ∪ watch 投放、24h 等待、排空）。项目 key 取 CLI 调用 cwd 的 git 根。
 - 问题固定为「接下来做什么？」（按界面语言本地化）；选项＝该项目当前各待办条目
-  （每条一个 chip/按钮，携带条目 id）+ **恒有**一个「结束本轮」选项（列表末位）。
-  无待办时只有「结束本轮」+ 自由输入框。
+  （每条一个 chip/按钮，展示加「执行待办：」前缀、携带条目 id，第 11 轮定案）+
+  **恒有**一个「结束本轮」选项（列表末位）。无待办时只有「结束本轮」+ 自由输入框。
+  发给 agent 的任务文本剥掉前缀、还原待办原文。whats-next 弹窗**不渲染** D7 待办区
+  （待办已是选项本体）。
 - 回答**写入回复历史**（它承载完成报告，是 agent 的正式提问；区别于 Stop 确认卡的
   hook 兜底卡不写历史）。
+- **自动执行接管**（第 17 轮定案）：发问前先查队列，若存在 `auto` 待办则**不发卡**，
+  直接把**最靠前**的一条自动待办出队（照常进执行历史）并输出其文本——多条自动待办
+  按队列顺序天然形成逐条自动链，跑完后回到正常提问。agent 附带的完成报告照常落
+  **回复历史**（自动路径没有卡片可看，历史窗口是唯一可查处）。仅 whats-next 有此行为；
+  Stop 卡是兜底确认场景，**不自动**（见 D5）。
 
 **MCP**：server 新增第二个工具 `whats_next`（与 `ask` 并列），入参
 `{ message?, files? }`；薄壳实现与 `ask` 一致——spawn `AskHuman --whats-next --output
@@ -88,19 +104,20 @@ json …` 子进程，结果映射进 structuredContent。
 - 单选逐条循环：一次只派一条；agent 做完又回到 whats-next，天然形成逐条循环，
   每条之间都有人工确认点。
 
-### D3 whats-next 结果输出：一段纯文本（评审定案：不要特殊结构）
+### D3 whats-next 结果输出：复用 Ask 标准区块（第 19 轮修订，替代「纯文本」旧案）
 
-whats-next 是固定题目，结果不需要区块结构，stdout 就是一段文本：
+whats-next 是固定题目，输出直接复用普通 Ask 的区块词汇，agent 无需学习新结构：
 
-- 派活（选待办 / 只填文本 / 结束+文本）→ 输出**任务文本本身**：选中待办的原文；
-  有补充文本时按空行拼在其后；只填文本时即该文本。
-- 准许结束 → 输出固定一句（英文，agent 契约）：
-  `The user approved ending this turn — no more tasks.`
-  agent 据 rules 既有 marker 行（保持原文，见 D4）输出 `[user_confirmed_end_turn]`。
+- 派活（选待办 / 只填文本 / 结束+文本）→ `[user_input]` + **任务文本**：选中待办的
+  原文（前缀剥掉）；有补充文本时按空行拼在其后；只填文本时即该文本。D2 的自动执行
+  接管同构输出。
+- 准许结束 → `[selected_options]` + 「结束本轮」选项原文（本地化文案）。第 7 轮的
+  固定英文结束句已废除；agent 据 rules 语义（「returned that I approved ending the
+  turn」）判断可结束，随后按既有 marker 行输出 `[user_confirmed_end_turn]`。
 - 取消 / 超时 → 沿用现有 `[status]` 区块语义（指示继续询问）。
-- MCP `whats_next` 工具返回同一段文本。
-- 普通 Ask 的既有区块（`[selected_options]` / `[user_input]` / `[files]` / `[status]`）
-  完全不变；`--agent-help` 增补 whats-next 用法说明（含 `--stdin` 报告写法，rules 里
+- 附件照旧按 `[files]` 附后；MCP `whats_next` 工具返回同一文本。
+- `--agent-help` 只说用法与语义（用户会给出下一个任务或确认结束），**不描述输出结构**
+  （第 19 轮定案：与 Ask 同语义故无需另行说明；`--stdin` 报告写法仍在 help，rules 里
   不重复）。
 
 ### D4 rules 文案变更草稿（`prompts.rs` 单一来源，始终英文）
@@ -146,7 +163,8 @@ MCP 版 `mcp_reference()` 对应前两行调整为：
   层**兜底——agent 不守规矩直接停时仍有接管卡。两者独立开关、语义兼容：
   经 whats-next 选「结束」→ agent 按 rules 输出 `[user_confirmed_end_turn]` marker →
   Stop hook 现有的 marker 检测静默放行，**不会重复弹卡**。
-- **Stop 卡加入待办派发**（第 8 轮定案）：Stop 确认卡选项变为「各待办 chip +
+- **Stop 卡加入待办派发**（第 8 轮定案）：Stop 确认卡选项变为「各待办 chip（展示加
+  「执行待办：」前缀，与 whats-next 一致，第 11 轮定案；continuation 仍为待办原文）+
   继续对话 + 结束对话」——agent 跑偏直接停时，停下的那一刻仍能一键派下一条。
   与第 1 轮否决的「Stop hook **自动**注入」不同：这是确认卡上的**手动选择**，
   不点待办就不会执行。
@@ -156,31 +174,35 @@ MCP 版 `mcp_reference()` 对应前两行调整为：
     选「结束」＝结束并**丢弃文字**（维持 Stop 卡现有规格，不与 whats-next 强行统一）。
   - continuation prompt 沿用现有各家原生语义分流（Claude 结构化包裹 / Codex、Cursor
     裸传）；Stop 确认按家开关、默认关、Grok 不支持、不写历史等既有约束全部不变。
+  - 自动执行待办在 Stop 卡上**不自动派发**（第 17 轮定案）：照旧作为选项由人点选，
+    选项文本也不加 ⚡ 标（自动待办通常轮不到人点）。
 - 插话不变：任务进行中仍用 Interject / `/msg`；todo 不提供「打断进行中任务」的能力。
 
 ### D6 入口一：CLI `todo` 子命令（跨平台）
 
 ```bash
-AskHuman todo add <text>     # 追加一条（按 cwd 的 git 根归项目）
-AskHuman todo list           # 列出本项目待办（带编号）
-AskHuman todo rm <编号>      # 删除一条
-AskHuman todo clear          # 清空本项目（需交互确认，或 --yes 跳过）
+AskHuman todo add [--auto] <text>  # 追加一条（按 cwd 的 git 根归项目；--auto＝设为自动执行）
+AskHuman todo list                 # 列出本项目待办（带编号；自动执行条带 ⚡auto 标）
+AskHuman todo rm <编号>            # 删除一条
+AskHuman todo clear                # 清空本项目（需交互确认，或 --yes 跳过）
 ```
 
 - Unix 经 daemon（连接或拉起，daemon 内存为准）；非 Unix 直接文件 + 锁。
 - 输出人类可读；后续需要时再加 `--output json`（首期不做）。
 
-### D7 入口二：Popup 折叠待办区（普通提问也显示）
+### D7 入口二：Popup 待办下拉区（第 11 轮改版）
 
-- 弹窗（PopupView）新增**可折叠**「待办」区，显示**该提问项目**的待办列表
-  （项目 key 随 AskRequest 已有传递）：
-  - 每条待办是**可选 chip**：选中＝提交时该条文本并入本次回答送达（进 `[user_input]`，
-    与手输文本按空行拼接），并按 id **best-effort 出队**；
-  - 每条行内**删除**按钮；底部**快速新增**输入框——不打断作答流程顺手记想法；
-  - whats-next 弹窗中待办即问题选项本体（D2），折叠区只保留管理功能（增删），
-    不重复渲染 chip。
-- **chip 点选作答仅在单题弹窗启用**（多题时「待办算哪题的回答」有歧义）；多题弹窗
-  折叠区只保留增删查看。
+- 弹窗（PopupView）在**最后一个问题之后**显示「待办」下拉区（项目 key 随 AskRequest
+  已有传递），**仅在该提问项目有待办时**出现：
+  - 收起时只显示数量（一行「▸ 待办 N」，样式与预选答案同构）；
+  - 展开后每条待办是与预选答案同构的**可选行**：选中＝提交时其文本按
+    「另外看一下这个待办任务：{text}」整行并入**最后一题**回答（手输文本在前、
+    空行分隔，进 `[user_input]`），并按 id **best-effort 出队**；
+  - 每条行内**删除**按钮；**不提供新增**（第 11 轮定案：新增走 CLI/GUI/IM，界面更干净）；
+  - sequential 多题模式只在最后一题的面板显示；严格选择（select-only，禁自由文本）
+    下仅可删除、不可点选。
+- **点选作答多题也启用**（第 11 轮定案，取代「仅单题」旧规）：选中文本恒并入最后一题。
+- whats-next 弹窗**不渲染**本区（待办已是问题选项本体，见 D2）。
 - IM 普通提问卡**不加**待办区（评审定案：任务中途的提问用待办作答易答非所问，
   且多题卡歧义；IM 侧待办送达统一走 whats-next 卡）。
 
@@ -189,21 +211,35 @@ AskHuman todo clear          # 清空本项目（需交互确认，或 --yes 跳
 - `/todo`（无参）→ 复用现有跨渠道**单选卡**选一个存活 agent（agent 定位其项目）；
   `/todo <n>`（n＝`/status` 稳定编号）→ 直达。
 - 确定 agent 后发**管理卡**：列出该项目全部待办 + 新增入口：
-  - 飞书 / 钉钉卡片支持表单输入 → 卡上直接带输入框提交新增；
+  - 飞书 / 钉钉卡片支持表单输入 → 卡上直接带输入框提交新增（飞书为代码组装卡；
+    钉钉**复用提问卡模板**的 `allow_input` 输入框，无需注册新模板，提交后经
+    OpenAPI 复位表单以便连续新增）；
   - Telegram / Slack 无可靠卡内输入 → 卡上提示 `/todo <n> <text>` 直接追加
     （该形式四渠道通用）。
 - `/todo-rm` → 同样先选 agent，再复用现有单选卡逐条选择删除（复用既有卡片模型，
   无新协议）。
+- `/todo-auto`（第 17 轮定案）→ 语法镜像 `/todo`：无参先选 agent；`/todo-auto <n>` →
+  「切换自动执行」卡——每条待办一个「切换」按钮（已自动的带 ⚡ 徽标），点击翻转
+  开/关并**就地刷新**（可连续切多条，队列清空则定格）；`/todo-auto <n> <text>` →
+  直接新增一条**自动执行**待办。管理卡（`/todo`）的新增入口不做自动标记，
+  自动待办经 `/todo-auto` 或 GUI 设置。
 - 无存活 agent 会话时回提示（首期不做「最近 workspace 索引选项目」；GUI/CLI 入口
   不受此限制）。与 `/status` 同门控（daemon 存活即可用）。
 
 ### D9 入口四：GUI 独立待办窗口 + 托盘（Unix，GUI Host 承载）
 
 - 新窗口类型（`WindowKind::Todo`，全局唯一），入口：托盘菜单「待办…」+ Agent 状态
-  窗口各 agent 卡片（预选该 agent 的项目）。
+  窗口各 agent 卡片 + 托盘各 agent 子菜单「添加待办…」（后两者预选该 agent 的项目；
+  带预选项目打开时窗口自动聚焦新增输入框，第 12 轮定案）。
 - 带**项目选择器**：候选＝有待办的项目 ∪ 活跃 agent 的项目 ∪ 最近 workspace 索引。
-- 功能：列表、新增、删除、清空（确认）；实时同步＝宿主进程监听 `todos.json` 文件变化
-  （复用 `config_watch.rs` 的 notify 模式，第 9 轮定案）——daemon 未运行时窗口照样可用。
+- 功能：列表、新增、删除（两段式确认，第 13 轮定案；确认态点击别处即取消）、清空
+  （第 18 轮定案：待办列表与执行历史各有清空入口，位于各自区块尾部/头部右侧；点击弹
+  **模态确认框**提示不可恢复——危险操作需光标移动后二次确认，不用就地展开）、**拖拽排序**
+  （第 14 轮定案：行首 handle 拖动重排，头部条目在各选项类展示点优先出现；仅 GUI 窗口
+  提供调序，新增仍追加到底部）、**自动执行开关**（第 17 轮定案：新增行带「设为自动」
+  开关，已有条目行内 ⚡ 徽标按钮即点即切换）；实时同步＝宿主进程监听 `todos.json`
+  文件变化（复用 `config_watch.rs` 的 notify 模式，第 9 轮定案）——daemon 未运行时
+  窗口照样可用。
 
 ### D10 平台矩阵
 
@@ -212,7 +248,7 @@ AskHuman todo clear          # 清空本项目（需交互确认，或 --yes 跳
 | `--whats-next` / MCP `whats_next` | ✅（提问经 daemon；待办直读文件） | ✅ 单进程回退 |
 | CLI `todo` 子命令 | ✅ 直接文件 + flock | ✅ 直接文件（无锁 best-effort） |
 | Popup 折叠待办区 | ✅ 直读文件 | ✅ 直读文件 |
-| IM `/todo`、`/todo-rm` | ✅ | —（无 daemon） |
+| IM `/todo`、`/todo-rm`、`/todo-auto` | ✅ | —（无 daemon） |
 | GUI 待办窗口 / 托盘入口 | ✅ | —（无 GUI Host / 托盘） |
 
 ### D11 竞态与边界
@@ -223,6 +259,9 @@ AskHuman todo clear          # 清空本项目（需交互确认，或 --yes 跳
   GUI/CLI 删除赶在点卡之前同理。
 - 同一请求内**首答胜出**等既有约定全部沿用（whats-next 就是普通 Ask）。
 - 待办文本超长时 IM 按钮/选项按各渠道既有截断规则展示，送达内容始终为原文全文。
+- **选项条数上限**（第 14 轮定案）：whats-next 卡、Stop 卡、`/todo-rm` 删除卡只列队列
+  **前 10 条**（`todos::MAX_OPTION_TODOS`，渠道选项数硬限制的安全值），超出时正文尾部附
+  「……还有 x 条待办未列出」提示；顺序靠 GUI 窗口拖拽调整（D9）。
 - daemon 重启 / agent 崩溃：队列由 `todos.json` 恢复，无会话绑定故无需清理逻辑。
 - Dev Instance：`ASKHUMAN_HOME` 隔离下各实例有各自的 `todos.json`（自然成立）。
 

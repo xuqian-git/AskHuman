@@ -14,8 +14,17 @@ pub const MARKER_USER_INPUT: &str = "[user_input]";
 pub const MARKER_FILES: &str = "[files]";
 pub const MARKER_STATUS: &str = "[status]";
 
-/// whats-next「准许结束」的固定输出（英文，agent 契约，spec todo-whats-next D3）。
-pub const WHATS_NEXT_END_SENTENCE: &str = "The user approved ending this turn — no more tasks.";
+/// 剥掉待办选项的展示前缀「执行待办：」（`whatsNext.todoPrefix`），还原待办原文。
+/// 构建端与渲染端可能语言不一致（理论上同进程同语言，但求稳）：两种语言的前缀都尝试。
+pub fn strip_todo_prefix(text: &str) -> &str {
+    for lang in [Lang::En, Lang::Zh] {
+        let prefix = tr(lang, "whatsNext.todoPrefix");
+        if let Some(rest) = text.strip_prefix(prefix) {
+            return rest;
+        }
+    }
+    text
+}
 
 /// 取消路径输出。
 pub fn cancel_output(lang: Lang) -> String {
@@ -136,10 +145,11 @@ pub fn send_output(
 /// whats-next 提交的语义映射结果（spec todo-whats-next D2 表格五分支）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WhatsNextReply {
-    /// 派活：stdout 输出任务文本（选中待办原文 ± 空行拼补充，或纯自由文本）。
+    /// 派活：任务文本（选中待办原文 ± 空行拼补充，或纯自由文本）→ `[user_input]`。
     Task(String),
-    /// 准许结束：stdout 输出固定英文结束句（agent 据 rules 输出结束 marker）。
-    End,
+    /// 准许结束：携带「结束本轮」选项原文 → `[selected_options]`（第 19 轮定案：复用
+    /// Ask 标准区块，不再输出固定英文结束句；agent 据 rules 语义判断可结束）。
+    End(String),
     /// 未作答 / 取消：沿用普通 Ask 取消语义（`[status]` 指示继续询问）。
     Cancelled,
 }
@@ -174,9 +184,11 @@ pub fn whats_next_reply(request: &AskRequest, result: &ChannelResult) -> WhatsNe
                 .find(|o| &o.text == sel && o.todo_id.is_some())
         });
     if let Some(todo) = selected_todo {
+        // 选项文本带展示前缀（「执行待办：」），发给 agent 的任务文本还原为待办原文。
+        let raw = strip_todo_prefix(&todo.text);
         let text = match input {
-            Some(extra) => format!("{}\n\n{}", todo.text, extra),
-            None => todo.text.clone(),
+            Some(extra) => format!("{}\n\n{}", raw, extra),
+            None => raw.to_string(),
         };
         return WhatsNextReply::Task(text);
     }
@@ -184,23 +196,29 @@ pub fn whats_next_reply(request: &AskRequest, result: &ChannelResult) -> WhatsNe
         .map(|a| a.selected_options.as_slice())
         .unwrap_or(&[])
         .iter()
-        .any(|sel| options.iter().any(|o| &o.text == sel && o.todo_id.is_none()));
+        .find_map(|sel| {
+            options
+                .iter()
+                .find(|o| &o.text == sel && o.todo_id.is_none())
+                .map(|o| o.text.clone())
+        });
     match (selected_end, input) {
         // 「结束＋文字」＝继续：文字是新指令（有话说＝还没完）。
         (_, Some(text)) => WhatsNextReply::Task(text.to_string()),
-        (true, None) => WhatsNextReply::End,
+        (Some(end_text), None) => WhatsNextReply::End(end_text),
         // 空提交（无选择无文本）：视同未作答，继续询问。
-        (false, None) => WhatsNextReply::Cancelled,
+        (None, None) => WhatsNextReply::Cancelled,
     }
 }
 
-/// whats-next 的 stdout 渲染（spec D3：一段纯文本；取消沿用 `[status]`）。
-/// 回答附带的图片/文件已由调用方落盘为路径，非空时按既有 `[files]` 区块附于文本之后，
-/// 避免静默丢弃用户随任务附带的材料（普通 Ask 同一契约，agent 已认识该标记）。
+/// whats-next 的 stdout 渲染（spec D3，第 19 轮定案：复用 Ask 标准区块）。
+/// 派活 → `[user_input]` + 任务文本；准许结束 → `[selected_options]` + 结束选项原文；
+/// 取消沿用 `[status]`。回答附带的图片/文件已由调用方落盘为路径，非空时按既有
+/// `[files]` 区块附后（普通 Ask 同一契约）。
 pub fn whats_next_output(reply: &WhatsNextReply, file_paths: &[String], lang: Lang) -> String {
     let base = match reply {
-        WhatsNextReply::Task(text) => text.clone(),
-        WhatsNextReply::End => WHATS_NEXT_END_SENTENCE.to_string(),
+        WhatsNextReply::Task(text) => format!("{}\n{}", MARKER_USER_INPUT, text),
+        WhatsNextReply::End(text) => format!("{}\n{}", MARKER_SELECTED_OPTIONS, text),
         WhatsNextReply::Cancelled => return cancel_output(lang),
     };
     if file_paths.is_empty() {
@@ -533,8 +551,8 @@ mod tests {
             vec![Question::new(
                 "What should we do next?".into(),
                 vec![
-                    OptionItem::with_todo("修复登录 bug", "id-1"),
-                    OptionItem::with_todo("写发布说明", "id-2"),
+                    OptionItem::with_todo("执行待办：修复登录 bug", "id-1"),
+                    OptionItem::with_todo("Run todo: 写发布说明", "id-2"),
                     OptionItem::new("End this turn", false),
                 ],
             )],
@@ -554,14 +572,18 @@ mod tests {
     }
 
     #[test]
-    fn whats_next_selected_todo_outputs_its_text() {
-        let reply = whats_next_reply(&wn_request(), &wn_result(&["修复登录 bug"], None));
+    fn whats_next_selected_todo_outputs_its_text_without_prefix() {
+        // 选项带「执行待办：」展示前缀（中/英），任务文本还原为待办原文。
+        let reply = whats_next_reply(&wn_request(), &wn_result(&["执行待办：修复登录 bug"], None));
         assert_eq!(reply, WhatsNextReply::Task("修复登录 bug".into()));
     }
 
     #[test]
     fn whats_next_todo_with_supplement_joins_with_blank_line() {
-        let reply = whats_next_reply(&wn_request(), &wn_result(&["写发布说明"], Some(" 顺带更新截图 ")));
+        let reply = whats_next_reply(
+            &wn_request(),
+            &wn_result(&["Run todo: 写发布说明"], Some(" 顺带更新截图 ")),
+        );
         assert_eq!(
             reply,
             WhatsNextReply::Task("写发布说明\n\n顺带更新截图".into())
@@ -576,11 +598,12 @@ mod tests {
 
     #[test]
     fn whats_next_end_without_text_approves_ending() {
+        // 第 19 轮定案：结束 → `[selected_options]` + 结束选项原文（复用 Ask 标准区块）。
         let reply = whats_next_reply(&wn_request(), &wn_result(&["End this turn"], None));
-        assert_eq!(reply, WhatsNextReply::End);
+        assert_eq!(reply, WhatsNextReply::End("End this turn".into()));
         assert_eq!(
             whats_next_output(&reply, &[], Lang::En),
-            WHATS_NEXT_END_SENTENCE
+            "[selected_options]\nEnd this turn"
         );
     }
 
@@ -609,12 +632,13 @@ mod tests {
 
     #[test]
     fn whats_next_output_appends_files_block() {
+        // 派活 → `[user_input]` + 任务文本（第 19 轮定案）；文件照旧 `[files]` 附后。
         let reply = WhatsNextReply::Task("任务".into());
         assert_eq!(
             whats_next_output(&reply, &s(&["/tmp/a.png"]), Lang::En),
-            "任务\n\n[files]\n/tmp/a.png"
+            "[user_input]\n任务\n\n[files]\n/tmp/a.png"
         );
-        assert_eq!(whats_next_output(&reply, &[], Lang::En), "任务");
+        assert_eq!(whats_next_output(&reply, &[], Lang::En), "[user_input]\n任务");
     }
 
     #[test]

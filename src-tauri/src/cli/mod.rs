@@ -301,6 +301,12 @@ pub fn dispatch() {
                 let message = crate::models::MessagePrompt::new(parsed.message_text, files);
                 // 项目 key（git 根，回退 cwd）：whats-next 取待办 + TaskRequest 归属共用。
                 let project = crate::project::detect();
+                // 自动执行待办（第 17 轮定案）：whats-next 且存在自动待办 → 不发卡提问，直接
+                // 出队最靠前的一条并打印其原文（agent 把它当作下一个任务）；完成报告照常落回复
+                // 历史。被并发拿走（竞态）→ 回落正常提问。Stop 卡不走此路径。
+                if parsed.whats_next && try_whats_next_auto(&project, &message, lang) {
+                    return;
+                }
                 // whats-next（spec D2）：问题与选项由系统固定生成——各待办 chip（带 id）+ 恒有
                 // 的「结束本轮」（末位）；无待办时只有「结束本轮」+ 自由输入框。
                 let questions: Vec<crate::models::Question> = if parsed.whats_next {
@@ -385,18 +391,90 @@ pub fn dispatch() {
     }
 }
 
-/// whats-next 的固定问题（spec todo-whats-next D2）：「接下来做什么？」+ 该项目当前各待办
-/// chip（携带条目 id，供终态出队）+ 恒有的「结束本轮」（末位）。待办直读 `todos.json` 快照。
-fn whats_next_question(project: &str, lang: Lang) -> crate::models::Question {
-    let mut options: Vec<crate::models::OptionItem> = crate::todos::list(project)
+/// whats-next 自动接管（第 17 轮定案）：出队最靠前的自动待办并直接打印其文本；成功返回 true。
+/// 完成报告（Message）落回复历史——自动路径没有卡片可展示，历史窗口是唯一可查处。
+fn try_whats_next_auto(project: &str, message: &crate::models::MessagePrompt, lang: Lang) -> bool {
+    let Some(entry) = crate::todos::first_auto(project) else {
+        return false;
+    };
+    // 出队即历史记录点（take 落待办执行历史）；被并发拿走 → 回落正常提问。
+    let Some(entry) = crate::todos::take(project, std::slice::from_ref(&entry.id))
         .into_iter()
-        .map(|entry| crate::models::OptionItem::with_todo(entry.text, entry.id))
+        .next()
+    else {
+        return false;
+    };
+    let limit = crate::config::AppConfig::load_without_secrets()
+        .general
+        .history_limit;
+    if limit > 0 {
+        #[cfg(unix)]
+        let (agent_kind, _sid) = detect_caller_agent();
+        #[cfg(not(unix))]
+        let agent_kind: Option<String> = None;
+        let resolved = agent_kind
+            .as_deref()
+            .and_then(crate::agents::AgentKind::parse);
+        let prefix = i18n::tr(lang, "whatsNext.todoPrefix");
+        crate::history::record(
+            crate::history::HistoryEntry {
+                id: uuid::Uuid::new_v4().to_string(),
+                timestamp_ms: crate::history::now_ms(),
+                project: project.to_string(),
+                source: crate::models::source_name_for_agent(resolved),
+                agent_kind,
+                channel: "auto".to_string(),
+                action: crate::models::ChannelAction::Send,
+                is_markdown: true,
+                message: message.clone(),
+                questions: vec![crate::models::Question::new(
+                    i18n::tr(lang, "whatsNext.question").to_string(),
+                    Vec::new(),
+                )],
+                answers: vec![crate::history::HistoryAnswer {
+                    selected_options: vec![format!("{}{}", prefix, entry.text)],
+                    user_input: None,
+                    images: Vec::new(),
+                    files: Vec::new(),
+                }],
+            },
+            limit,
+        );
+    }
+    // 与人工路径同构（第 19 轮定案：复用 Ask 标准区块）：派活 → `[user_input]` + 任务文本。
+    print_line(&crate::cli::output::whats_next_output(
+        &crate::cli::output::WhatsNextReply::Task(entry.text.clone()),
+        &[],
+        lang,
+    ));
+    true
+}
+
+/// whats-next 的固定问题（spec todo-whats-next D2）：「接下来做什么？」+ 该项目当前各待办
+/// chip（展示加「执行待办：」前缀、携带条目 id，供终态出队）+ 恒有的「结束本轮」（末位）。
+/// 待办直读 `todos.json` 快照；只列前 `MAX_OPTION_TODOS` 条（渠道选项数硬限制），
+/// 超出时问题正文尾部附溢出提示（第 14 轮定案）。
+fn whats_next_question(project: &str, lang: Lang) -> crate::models::Question {
+    let prefix = i18n::tr(lang, "whatsNext.todoPrefix");
+    let entries = crate::todos::list(project);
+    let total = entries.len();
+    let mut options: Vec<crate::models::OptionItem> = entries
+        .into_iter()
+        .take(crate::todos::MAX_OPTION_TODOS)
+        .map(|entry| {
+            crate::models::OptionItem::with_todo(format!("{}{}", prefix, entry.text), entry.id)
+        })
         .collect();
     options.push(crate::models::OptionItem::new(
         i18n::tr(lang, "whatsNext.endOption"),
         false,
     ));
-    crate::models::Question::new(i18n::tr(lang, "whatsNext.question").to_string(), options)
+    let mut message = i18n::tr(lang, "whatsNext.question").to_string();
+    if let Some(note) = crate::todos::overflow_note(total, lang) {
+        message.push_str("\n\n");
+        message.push_str(&note);
+    }
+    crate::models::Question::new(message, options)
 }
 
 /// 探测发起 `AskHuman` 调用的 Agent 身份的**快速部分**（家族 + 会话 ID，仅读 env，零 ps）。

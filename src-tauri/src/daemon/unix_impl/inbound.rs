@@ -1314,6 +1314,16 @@ pub(super) async fn handle_inbound(state: &Arc<ServerState>, channel_id: &str, t
             )
             .await;
         }
+        // /todo · /todo-rm：项目待办（spec todo-whats-next D8；与 /status 同门控）。
+        Parsed::Command(Command::Todo(sel, content)) => {
+            handle_todo_cmd(state, channel_id, sel, content, &config, lang).await;
+        }
+        Parsed::Command(Command::TodoRm(sel)) => {
+            handle_todo_rm_cmd(state, channel_id, sel, &config, lang).await;
+        }
+        Parsed::Command(Command::TodoAuto(sel, content)) => {
+            handle_todo_auto_cmd(state, channel_id, sel, content, &config, lang).await;
+        }
         Parsed::Command(Command::Help) | Parsed::UnknownCommand => {
             let has_q = has_active_question_on(state, channel_id);
             let _ = reply_channel_text(

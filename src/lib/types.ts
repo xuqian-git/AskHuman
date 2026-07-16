@@ -186,6 +186,16 @@ export interface TodoEntry {
   id: string;
   text: string;
   createdAtMs: number;
+  /** 自动执行：whats-next 时不提问直接派发（后端 auto=false 时省略该字段）。 */
+  auto?: boolean;
+}
+
+/** 已执行的历史待办（仅执行出队进历史）。 */
+export interface TodoDoneEntry {
+  id: string;
+  text: string;
+  createdAtMs: number;
+  doneAtMs: number;
 }
 
 /** 待办窗口项目选择器候选（spec todo-whats-next D9）。 */
@@ -384,6 +394,8 @@ export interface GeneralConfig {
   speechShortcut: string;
   /** 回复历史保留条数上限。默认 200；0 = 停止新增记录（但保留旧记录）。 */
   historyLimit: number;
+  /** 待办执行历史保留条数（每项目）。默认 20；0 = 停止新增记录（保留旧历史）。 */
+  todoHistoryLimit: number;
   /** Built-in popup sound. Empty disables it; macOS stores a name, Linux uses a toggle. */
   popupSound: string;
   /** Menu bar / tray status icon mode (off/active/always). Desktop only (macOS/Linux). */

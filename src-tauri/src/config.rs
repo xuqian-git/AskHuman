@@ -133,6 +133,9 @@ pub struct GeneralConfig {
     pub speech_shortcut: String,
     /// 回复历史保留条数上限。默认 200；`0` 表示停止新增记录（但保留并仍可查看旧记录）。
     pub history_limit: u32,
+    /// 待办执行历史保留条数（按项目各留 N 条，第 16 轮定案）。默认 20；`0` 同 history_limit
+    /// 语义：停止新增记录，既有历史保留。
+    pub todo_history_limit: u32,
     /// Built-in sound played when a popup appears. Empty string disables it.
     /// macOS stores a sound name, such as "Glass"; Linux treats any non-empty
     /// value as enabled and plays a freedesktop notification sound.
@@ -152,6 +155,11 @@ fn default_history_limit() -> u32 {
     200
 }
 
+/// 待办执行历史默认保留条数（每项目）。
+fn default_todo_history_limit() -> u32 {
+    20
+}
+
 impl Default for GeneralConfig {
     fn default() -> Self {
         Self {
@@ -163,6 +171,7 @@ impl Default for GeneralConfig {
             speech_language: "auto".to_string(),
             speech_shortcut: "cmd+d".to_string(),
             history_limit: default_history_limit(),
+            todo_history_limit: default_todo_history_limit(),
             popup_sound: String::new(),
             menu_bar_icon: MenuBarIconMode::Off,
             popup_prewarm: true,

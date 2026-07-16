@@ -19,13 +19,45 @@ pub struct TodoEntry {
     pub text: String,
     #[serde(default)]
     pub created_at_ms: u64,
+    /// 自动执行（第 17 轮定案）：whats-next 时不提问、直接把最靠前的自动待办作为下一个任务返回。
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto: bool,
 }
 
-/// On-disk shape: project key (git root path) → FIFO entries.
+/// 一条已执行的历史待办（第 16 轮定案：仅「执行出队」进历史，手动删除/清空不记）。
+/// 文件内按完成时间正序追加，展示端倒序。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DoneTodoEntry {
+    pub id: String,
+    pub text: String,
+    #[serde(default)]
+    pub created_at_ms: u64,
+    #[serde(default)]
+    pub done_at_ms: u64,
+}
+
+/// 选项类展示点（whats-next 卡 / Stop 卡 / IM `/todo-rm` 删除卡）最多列出的待办条数
+/// （第 14 轮定案：前 10 条 + 溢出提示；TG 键盘 ≤100、Slack actions ≤25 等渠道硬限制的安全值）。
+/// 顺序靠 GUI 待办窗口拖拽调整，头部优先展示。
+pub const MAX_OPTION_TODOS: usize = 10;
+
+/// 溢出提示（第 14 轮定案）：附在问题/卡片正文尾部；`total` ≤ 上限时 None。
+pub fn overflow_note(total: usize, lang: crate::i18n::Lang) -> Option<String> {
+    (total > MAX_OPTION_TODOS).then(|| {
+        crate::i18n::tr(lang, "todo.moreNote")
+            .replace("{n}", &(total - MAX_OPTION_TODOS).to_string())
+    })
+}
+
+/// On-disk shape: project key (git root path) → FIFO entries, plus per-project execution
+/// history (round 16; capped by the `todo_history_limit` setting at record time).
 #[derive(Default, Serialize, Deserialize)]
 struct TodoFile {
     #[serde(default)]
     projects: HashMap<String, Vec<TodoEntry>>,
+    #[serde(default)]
+    history: HashMap<String, Vec<DoneTodoEntry>>,
 }
 
 fn todos_file() -> PathBuf {
@@ -54,6 +86,7 @@ fn load_at(path: &Path) -> TodoFile {
 /// simply keeps its previous on-disk state).
 fn store_at(path: &Path, mut data: TodoFile) {
     data.projects.retain(|_, entries| !entries.is_empty());
+    data.history.retain(|_, entries| !entries.is_empty());
     let Ok(json) = serde_json::to_string_pretty(&data) else {
         return;
     };
@@ -120,6 +153,21 @@ pub fn add(project: &str, text: &str) -> Option<TodoEntry> {
     add_at(&todos_file(), &todos_lock(), project, text)
 }
 
+/// Append one auto-run entry (round 17; CLI `todo add --auto` / GUI toggle / IM `/todo-auto`).
+pub fn add_auto(project: &str, text: &str) -> Option<TodoEntry> {
+    add_auto_at(&todos_file(), &todos_lock(), project, text)
+}
+
+/// Toggle the auto-run flag of one entry (round 17). Returns the new flag, `None` if missing.
+pub fn set_auto(project: &str, id: &str, auto: bool) -> Option<bool> {
+    set_auto_at(&todos_file(), &todos_lock(), project, id, auto)
+}
+
+/// Front-most auto-run entry of a project (whats-next auto-dispatch, round 17).
+pub fn first_auto(project: &str) -> Option<TodoEntry> {
+    list(project).into_iter().find(|e| e.auto)
+}
+
 /// Remove one entry by id. Returns whether it existed.
 pub fn remove(project: &str, id: &str) -> bool {
     remove_at(&todos_file(), &todos_lock(), project, id)
@@ -131,9 +179,38 @@ pub fn clear(project: &str) -> usize {
 }
 
 /// Dequeue entries by id (best-effort: missing ids are skipped, spec D11). Returns the
-/// entries actually removed. This is the "started executing → auto-clear" point.
+/// entries actually removed. This is the "started executing → auto-clear" point, and the only
+/// path that records execution history (round 16; capped by the `todo_history_limit` setting,
+/// `0` = stop recording, existing history kept — same semantics as the reply history limit).
 pub fn take(project: &str, ids: &[String]) -> Vec<TodoEntry> {
-    take_at(&todos_file(), &todos_lock(), project, ids)
+    let limit = crate::config::AppConfig::load_without_secrets()
+        .general
+        .todo_history_limit as usize;
+    take_at(&todos_file(), &todos_lock(), project, ids, limit)
+}
+
+/// Execution history of a project, newest first (GUI history section).
+pub fn history(project: &str) -> Vec<DoneTodoEntry> {
+    history_at(&todos_file(), project)
+}
+
+/// Move a history entry back to the end of the pending queue (GUI "restore", round 16).
+/// Returns whether the entry existed in history.
+pub fn restore(project: &str, id: &str) -> bool {
+    restore_at(&todos_file(), &todos_lock(), project, id)
+}
+
+/// Clear a project's execution history (GUI history section, round 18). Returns the number
+/// of entries removed.
+pub fn clear_history(project: &str) -> usize {
+    clear_history_at(&todos_file(), &todos_lock(), project)
+}
+
+/// Reorder a project's queue to match `ids` (GUI drag handle, round 14). Best-effort under
+/// concurrent add/remove: unknown ids are ignored, entries missing from `ids` keep their
+/// relative order after the listed ones. Returns whether the stored order changed.
+pub fn reorder(project: &str, ids: &[String]) -> bool {
+    reorder_at(&todos_file(), &todos_lock(), project, ids)
 }
 
 /// Collect the todo ids a terminal answer consumed (pure function, spec D2/D5/D7).
@@ -190,6 +267,14 @@ pub fn list_at(path: &Path, project: &str) -> Vec<TodoEntry> {
 }
 
 pub fn add_at(path: &Path, lock: &Path, project: &str, text: &str) -> Option<TodoEntry> {
+    add_impl(path, lock, project, text, false)
+}
+
+pub fn add_auto_at(path: &Path, lock: &Path, project: &str, text: &str) -> Option<TodoEntry> {
+    add_impl(path, lock, project, text, true)
+}
+
+fn add_impl(path: &Path, lock: &Path, project: &str, text: &str, auto: bool) -> Option<TodoEntry> {
     let (project, text) = normalized(project, text)?;
     let _guard = lock_at(lock);
     let mut data = load_at(path);
@@ -197,10 +282,27 @@ pub fn add_at(path: &Path, lock: &Path, project: &str, text: &str) -> Option<Tod
         id: uuid::Uuid::new_v4().to_string(),
         text,
         created_at_ms: now_ms(),
+        auto,
     };
     data.projects.entry(project).or_default().push(entry.clone());
     store_at(path, data);
     Some(entry)
+}
+
+pub fn set_auto_at(path: &Path, lock: &Path, project: &str, id: &str, auto: bool) -> Option<bool> {
+    let _guard = lock_at(lock);
+    let mut data = load_at(path);
+    let entry = data
+        .projects
+        .get_mut(project.trim())?
+        .iter_mut()
+        .find(|e| e.id == id)?;
+    if entry.auto == auto {
+        return Some(auto);
+    }
+    entry.auto = auto;
+    store_at(path, data);
+    Some(auto)
 }
 
 pub fn remove_at(path: &Path, lock: &Path, project: &str, id: &str) -> bool {
@@ -232,7 +334,51 @@ pub fn clear_at(path: &Path, lock: &Path, project: &str) -> usize {
     removed
 }
 
-pub fn take_at(path: &Path, lock: &Path, project: &str, ids: &[String]) -> Vec<TodoEntry> {
+pub fn clear_history_at(path: &Path, lock: &Path, project: &str) -> usize {
+    let _guard = lock_at(lock);
+    let mut data = load_at(path);
+    let removed = data
+        .history
+        .remove(project.trim())
+        .map(|e| e.len())
+        .unwrap_or(0);
+    if removed > 0 {
+        store_at(path, data);
+    }
+    removed
+}
+
+pub fn reorder_at(path: &Path, lock: &Path, project: &str, ids: &[String]) -> bool {
+    let _guard = lock_at(lock);
+    let mut data = load_at(path);
+    let Some(entries) = data.projects.get_mut(project.trim()) else {
+        return false;
+    };
+    let before: Vec<String> = entries.iter().map(|e| e.id.clone()).collect();
+    let mut rest = std::mem::take(entries);
+    let mut listed: Vec<TodoEntry> = Vec::with_capacity(rest.len());
+    for id in ids {
+        if let Some(pos) = rest.iter().position(|e| &e.id == id) {
+            listed.push(rest.remove(pos));
+        }
+    }
+    // `ids` 之外的条目（并发新增等）按原相对顺序压后。
+    listed.append(&mut rest);
+    let changed = !listed.iter().map(|e| &e.id).eq(before.iter());
+    *entries = listed;
+    if changed {
+        store_at(path, data);
+    }
+    changed
+}
+
+pub fn take_at(
+    path: &Path,
+    lock: &Path,
+    project: &str,
+    ids: &[String],
+    history_limit: usize,
+) -> Vec<TodoEntry> {
     if ids.is_empty() {
         return Vec::new();
     }
@@ -251,9 +397,60 @@ pub fn take_at(path: &Path, lock: &Path, project: &str, ids: &[String]) -> Vec<T
         }
     });
     if !taken.is_empty() {
+        // Record execution history (chronological append; trim oldest beyond the cap).
+        if history_limit > 0 {
+            let done_at = now_ms();
+            let hist = data.history.entry(project.trim().to_string()).or_default();
+            for e in &taken {
+                hist.push(DoneTodoEntry {
+                    id: e.id.clone(),
+                    text: e.text.clone(),
+                    created_at_ms: e.created_at_ms,
+                    done_at_ms: done_at,
+                });
+            }
+            if hist.len() > history_limit {
+                let overflow = hist.len() - history_limit;
+                hist.drain(..overflow);
+            }
+        }
         store_at(path, data);
     }
     taken
+}
+
+pub fn history_at(path: &Path, project: &str) -> Vec<DoneTodoEntry> {
+    let mut entries = load_at(path)
+        .history
+        .get(project.trim())
+        .cloned()
+        .unwrap_or_default();
+    entries.reverse(); // newest first
+    entries
+}
+
+pub fn restore_at(path: &Path, lock: &Path, project: &str, id: &str) -> bool {
+    let _guard = lock_at(lock);
+    let mut data = load_at(path);
+    let Some(hist) = data.history.get_mut(project.trim()) else {
+        return false;
+    };
+    let Some(pos) = hist.iter().position(|e| e.id == id) else {
+        return false;
+    };
+    let done = hist.remove(pos);
+    data.projects
+        .entry(project.trim().to_string())
+        .or_default()
+        .push(TodoEntry {
+            id: done.id,
+            text: done.text,
+            created_at_ms: done.created_at_ms,
+            // 恢复为普通待办：带 auto 恢复会立刻重新触发自动链，违背「找回来看看」的意图。
+            auto: false,
+        });
+    store_at(path, data);
+    true
 }
 
 #[cfg(test)]
@@ -340,6 +537,7 @@ mod tests {
             &t.lock(),
             "/p",
             &[a.id.clone(), "missing".to_string()],
+            20,
         );
         assert_eq!(taken.len(), 1);
         assert_eq!(taken[0].text, "a");
@@ -347,9 +545,55 @@ mod tests {
         assert_eq!(left.len(), 1);
         assert_eq!(left[0].id, b.id);
         // Empty ids → no-op.
-        assert!(take_at(&t.file(), &t.lock(), "/p", &[]).is_empty());
+        assert!(take_at(&t.file(), &t.lock(), "/p", &[], 20).is_empty());
         // Unknown project → no-op.
-        assert!(take_at(&t.file(), &t.lock(), "/q", &[b.id.clone()]).is_empty());
+        assert!(take_at(&t.file(), &t.lock(), "/q", std::slice::from_ref(&b.id), 20).is_empty());
+    }
+
+    #[test]
+    fn take_records_history_and_restore_moves_back() {
+        let t = TempStore::new();
+        let a = add_at(&t.file(), &t.lock(), "/p", "a").unwrap();
+        let b = add_at(&t.file(), &t.lock(), "/p", "b").unwrap();
+        take_at(&t.file(), &t.lock(), "/p", std::slice::from_ref(&a.id), 20);
+        take_at(&t.file(), &t.lock(), "/p", std::slice::from_ref(&b.id), 20);
+        // 倒序（最新在前）；带完成时间。
+        let hist = history_at(&t.file(), "/p");
+        assert_eq!(hist.len(), 2);
+        assert_eq!(hist[0].id, b.id);
+        assert_eq!(hist[1].id, a.id);
+        assert!(hist[0].done_at_ms > 0);
+        // 恢复：回到待办队列末尾并从历史移除。
+        assert!(restore_at(&t.file(), &t.lock(), "/p", &a.id));
+        assert!(!restore_at(&t.file(), &t.lock(), "/p", &a.id)); // already restored
+        let entries = list_at(&t.file(), "/p");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id, a.id);
+        assert_eq!(entries[0].text, "a");
+        assert_eq!(history_at(&t.file(), "/p").len(), 1);
+        // 手动删除不进历史。
+        remove_at(&t.file(), &t.lock(), "/p", &a.id);
+        assert_eq!(history_at(&t.file(), "/p").len(), 1);
+    }
+
+    #[test]
+    fn history_caps_at_limit_and_zero_disables_recording() {
+        let t = TempStore::new();
+        for i in 0..4 {
+            let e = add_at(&t.file(), &t.lock(), "/p", &format!("t{i}")).unwrap();
+            take_at(&t.file(), &t.lock(), "/p", &[e.id], 3);
+        }
+        // 超上限丢最旧：只剩最近 3 条（t1..t3，倒序 t3 在前）。
+        let hist = history_at(&t.file(), "/p");
+        assert_eq!(hist.len(), 3);
+        assert_eq!(hist[0].text, "t3");
+        assert_eq!(hist[2].text, "t1");
+        // limit=0：停止新增，但既有历史保留（与回复历史同语义）。
+        let e = add_at(&t.file(), &t.lock(), "/p", "t4").unwrap();
+        take_at(&t.file(), &t.lock(), "/p", &[e.id], 0);
+        let hist = history_at(&t.file(), "/p");
+        assert_eq!(hist.len(), 3);
+        assert_eq!(hist[0].text, "t3");
     }
 
     #[test]
@@ -395,6 +639,96 @@ mod tests {
             source_channel_id: "popup".into(),
         };
         assert!(ids_to_dequeue(&request, &plain).is_empty());
+    }
+
+    #[test]
+    fn clear_history_removes_project_history_only() {
+        let t = TempStore::new();
+        let a = add_at(&t.file(), &t.lock(), "/p", "a").unwrap();
+        let _b = add_at(&t.file(), &t.lock(), "/p", "b").unwrap();
+        take_at(&t.file(), &t.lock(), "/p", std::slice::from_ref(&a.id), 20);
+        assert_eq!(history_at(&t.file(), "/p").len(), 1);
+        assert_eq!(clear_history_at(&t.file(), &t.lock(), "/p"), 1);
+        assert!(history_at(&t.file(), "/p").is_empty());
+        // 待办队列不受影响；未知项目 → 0。
+        assert_eq!(list_at(&t.file(), "/p").len(), 1);
+        assert_eq!(clear_history_at(&t.file(), &t.lock(), "/q"), 0);
+    }
+
+    #[test]
+    fn reorder_moves_listed_ids_and_keeps_unlisted_tail() {
+        let t = TempStore::new();
+        let a = add_at(&t.file(), &t.lock(), "/p", "a").unwrap();
+        let b = add_at(&t.file(), &t.lock(), "/p", "b").unwrap();
+        let c = add_at(&t.file(), &t.lock(), "/p", "c").unwrap();
+        // 完整重排 b, c, a。
+        assert!(reorder_at(
+            &t.file(),
+            &t.lock(),
+            "/p",
+            &[b.id.clone(), c.id.clone(), a.id.clone()]
+        ));
+        let ids: Vec<_> = list_at(&t.file(), "/p").into_iter().map(|e| e.id).collect();
+        assert_eq!(ids, vec![b.id.clone(), c.id.clone(), a.id.clone()]);
+        // 相同顺序 → 未变化，不写盘。
+        assert!(!reorder_at(
+            &t.file(),
+            &t.lock(),
+            "/p",
+            &[b.id.clone(), c.id.clone(), a.id.clone()]
+        ));
+        // 部分 id（含过期 id）：列出的排前，其余压后保持相对顺序；过期 id 忽略（best-effort）。
+        assert!(reorder_at(
+            &t.file(),
+            &t.lock(),
+            "/p",
+            &[a.id.clone(), "missing".to_string()]
+        ));
+        let ids: Vec<_> = list_at(&t.file(), "/p").into_iter().map(|e| e.id).collect();
+        assert_eq!(ids, vec![a.id.clone(), b.id.clone(), c.id.clone()]);
+        // 未知项目 → no-op。
+        assert!(!reorder_at(&t.file(), &t.lock(), "/q", &[a.id]));
+    }
+
+    #[test]
+    fn overflow_note_only_above_cap() {
+        use crate::i18n::Lang;
+        assert!(overflow_note(MAX_OPTION_TODOS, Lang::Zh).is_none());
+        let note = overflow_note(MAX_OPTION_TODOS + 3, Lang::Zh).unwrap();
+        assert!(note.contains('3'), "{note}");
+    }
+
+    #[test]
+    fn auto_flag_add_toggle_and_first_auto_order() {
+        let t = TempStore::new();
+        let a = add_at(&t.file(), &t.lock(), "/p", "normal").unwrap();
+        let b = add_auto_at(&t.file(), &t.lock(), "/p", "auto1").unwrap();
+        let c = add_auto_at(&t.file(), &t.lock(), "/p", "auto2").unwrap();
+        assert!(!a.auto);
+        assert!(b.auto && c.auto);
+        // 最靠前的自动待办 = 队列顺序里第一条 auto（b 在 c 前）。
+        let first = list_at(&t.file(), "/p").into_iter().find(|e| e.auto).unwrap();
+        assert_eq!(first.id, b.id);
+        // 切换：关掉 b 后轮到 c；开回普通条目 a 后 a 最靠前。
+        assert_eq!(set_auto_at(&t.file(), &t.lock(), "/p", &b.id, false), Some(false));
+        let first = list_at(&t.file(), "/p").into_iter().find(|e| e.auto).unwrap();
+        assert_eq!(first.id, c.id);
+        assert_eq!(set_auto_at(&t.file(), &t.lock(), "/p", &a.id, true), Some(true));
+        let first = list_at(&t.file(), "/p").into_iter().find(|e| e.auto).unwrap();
+        assert_eq!(first.id, a.id);
+        // 不存在的 id → None。
+        assert_eq!(set_auto_at(&t.file(), &t.lock(), "/p", "missing", true), None);
+        // 序列化：auto=false 不落盘（skip_serializing_if），旧文件无该字段可读。
+        let raw = std::fs::read_to_string(t.file()).unwrap();
+        assert_eq!(raw.matches("\"auto\"").count(), 2); // a 与 c
+        // 恢复历史不带 auto。
+        take_at(&t.file(), &t.lock(), "/p", std::slice::from_ref(&a.id), 20);
+        assert!(restore_at(&t.file(), &t.lock(), "/p", &a.id));
+        let restored = list_at(&t.file(), "/p")
+            .into_iter()
+            .find(|e| e.id == a.id)
+            .unwrap();
+        assert!(!restored.auto);
     }
 
     #[test]

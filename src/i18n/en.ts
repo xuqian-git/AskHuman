@@ -116,11 +116,11 @@ export default {
     todos: {
       title: "Todos",
       picked: "{n} selected",
-      empty: "No pending todos for this project",
       chipHint: "Select to send with your reply (removed from the list once picked up)",
       delete: "Delete",
-      addPlaceholder: "Add a todo for this project…",
-      add: "Add",
+      deleteConfirm: "Confirm delete",
+      // Line merged into the answer for each selected todo (blank-line separated).
+      mergeLine: "Also look into this todo task: {text}",
     },
   },
   // 后端(Swift/Rust)语音事件以语义 key 上报，前端在此翻译。
@@ -430,6 +430,9 @@ export default {
       overLimit:
         "There are more entries than this; they'll be trimmed on the next AskHuman call.",
       cleanNow: "Clean up now",
+      todoLimit: "Todo history entries",
+      todoLimitHint:
+        "Maximum executed todos kept per project (view and restore them in the Todos window's History section). 0 stops recording; existing history is kept.",
     },
     about: {
       title: "About",
@@ -578,10 +581,23 @@ export default {
     addPlaceholder: "Add a todo for this project…",
     add: "Add",
     delete: "Delete",
-    clear: "Clear all",
-    clearConfirm: "Clear all todos in this project?",
+    deleteConfirm: "Confirm delete",
+    dragHint: "Drag to reorder (top entries appear first on cards and options)",
+    clear: "Clear todos",
+    clearHist: "Clear history",
+    autoLabel: "Auto",
+    clearTitle: "Clear all todos?",
+    clearDesc:
+      "This removes all {n} todos in this project. Cleared todos do not enter history and cannot be recovered.",
+    clearHistTitle: "Clear execution history?",
+    clearHistDesc: "This removes all {n} history entries in this project and cannot be undone.",
     confirmCancel: "Cancel",
     clearOk: "Clear",
+    historyTitle: "History",
+    restore: "Restore to todos",
+    autoOn: "Mark as auto-run (dispatched directly at whats-next, no card)",
+    autoOff: "Unmark auto-run",
+    autoNewHint: "Add new todo as auto-run",
   },
   interject: {
     title: "Message to Agent",

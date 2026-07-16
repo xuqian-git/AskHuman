@@ -12,7 +12,7 @@ pub fn dispatch(args: &[String], lang: Lang) -> ! {
     let project = crate::project::detect();
     if project.is_empty() {
         // cwd 都取不到（极端环境）：无法归属项目。
-        eprintln!("{}{}", i18n::err_prefix(lang), "cannot determine project");
+        eprintln!("{}cannot determine project", i18n::err_prefix(lang));
         exit(1);
     }
     match args.first().map(String::as_str) {
@@ -33,9 +33,21 @@ pub fn dispatch(args: &[String], lang: Lang) -> ! {
 }
 
 fn add(project: &str, args: &[String], lang: Lang) -> ! {
+    // `--auto`（第 17 轮定案）：标记为自动执行——whats-next 时不提问直接派发。
+    let auto = args.iter().any(|a| a == "--auto");
     // 多个参数按空格拼接（`todo add fix the login bug` 免引号）。
-    let text = args.join(" ");
-    let Some(_entry) = crate::todos::add(project, &text) else {
+    let text = args
+        .iter()
+        .filter(|a| *a != "--auto")
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let added = if auto {
+        crate::todos::add_auto(project, &text)
+    } else {
+        crate::todos::add(project, &text)
+    };
+    let Some(_entry) = added else {
         eprintln!(
             "{}{}",
             i18n::err_prefix(lang),
@@ -44,8 +56,9 @@ fn add(project: &str, args: &[String], lang: Lang) -> ! {
         exit(1);
     };
     let n = crate::todos::list(project).len();
+    let key = if auto { "todo.addedAuto" } else { "todo.added" };
     print_line(
-        &i18n::tr(lang, "todo.added")
+        &i18n::tr(lang, key)
             .replace("{n}", &n.to_string())
             .replace("{text}", text.trim()),
     );
@@ -63,7 +76,12 @@ fn list(project: &str, lang: Lang) -> ! {
             .replace("{project}", &crate::project::display_name(project)),
     );
     for (i, entry) in entries.iter().enumerate() {
-        print_line(&format!("{:>3}. {}", i + 1, entry.text));
+        let auto_mark = if entry.auto {
+            format!(" {}", i18n::tr(lang, "todo.autoMark"))
+        } else {
+            String::new()
+        };
+        print_line(&format!("{:>3}. {}{}", i + 1, entry.text, auto_mark));
     }
     exit(0);
 }

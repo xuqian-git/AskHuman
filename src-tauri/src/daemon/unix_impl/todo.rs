@@ -1,0 +1,1342 @@
+//! IM `/todo`、`/todo-rm`、`/todo-auto`：项目待办的入站命令与卡片流（spec todo-whats-next D8）。
+//!
+//! 流程：`/todo`（无参）→ 复用跨渠道单选卡选 agent（定位其项目）→ 发「待办管理卡」；
+//! `/todo <n>` 直达管理卡；`/todo <n> <text>` 直接追加（四渠道通用）。`/todo-rm` 同样先选
+//! agent，再复用单选卡逐条删除（就地刷新）。`/todo-auto` 镜像 `/todo-rm`：切换卡每条待办
+//! 一个「切换」按钮（已自动的带 ⚡ 徽标），点击翻转自动执行标记并就地刷新；
+//! `/todo-auto <n> <text>` 直接新增一条自动执行待办。管理卡新增入口按渠道分化：飞书代码卡自带
+//! 输入框（表单提交）；钉钉复用**提问卡模板**（自带 `allow_input` 输入框，无需新注册模板，
+//! 提交后复位表单以便连续新增）；TG/Slack 无可靠卡内输入 → 文本列表 + `/todo <n> <text>`
+//! 提示。项目定位 = agent cwd 的 git 根（`project::detect_from`）；待办读写直达 `todos.json`。
+
+use super::*;
+
+/// 管理卡台账负载（`PickerEntry::payload` JSON）：重建卡片需要项目 key 与提示用的 agent 编号。
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct TodoManagePayload {
+    project: String,
+    seq: u64,
+}
+
+fn manage_payload(picker: &PickerEntry) -> Option<TodoManagePayload> {
+    serde_json::from_str(picker.payload.as_deref()?).ok()
+}
+
+// ===== 命令入口 =====
+
+pub(super) async fn handle_todo_cmd(
+    state: &Arc<ServerState>,
+    channel_id: &str,
+    sel: Option<u64>,
+    content: Option<String>,
+    config: &AppConfig,
+    lang: Lang,
+) {
+    activate_channel_on_action(state, channel_id, config, lang).await;
+    let prefix = crate::autochannel::cmd_prefix(channel_id);
+    match (sel, content) {
+        (Some(n), content) => {
+            let Some(project) = project_by_seq(state, channel_id, n, config, lang).await else {
+                return;
+            };
+            match content {
+                // `/todo <n> <text>`：直接追加一条（四渠道通用的新增形式）。
+                Some(text) => {
+                    if crate::todos::add(&project, &text).is_none() {
+                        return;
+                    }
+                    let count = crate::todos::list(&project).len();
+                    let msg = crate::i18n::tr(lang, "todoIm.added")
+                        .replace("{project}", &crate::project::display_name(&project))
+                        .replace("{n}", &count.to_string());
+                    let _ = reply_channel_text(channel_id, config, &msg).await;
+                }
+                // `/todo <n>`：直达该项目的管理卡。
+                None => send_todo_manage(state, channel_id, config, &project, n, lang).await,
+            }
+        }
+        // 无编号有内容：无法定位项目 → 用法提示。
+        (None, Some(_)) => {
+            let msg = crate::i18n::tr(lang, "todoIm.usage").replace("{p}", prefix);
+            let _ = reply_channel_text(channel_id, config, &msg).await;
+        }
+        // `/todo`（无参）：选 agent 单选卡（工作中/空闲都列；项目与 agent 状态无关）。
+        (None, None) => {
+            let snapshot = state.agents.snapshot();
+            let opts = crate::select::agent_options(
+                &snapshot,
+                &std::collections::HashSet::new(),
+                now_secs(),
+                lang,
+            );
+            let sent = send_agent_picker(
+                state,
+                channel_id,
+                config,
+                PickerKind::Todo,
+                crate::select::title_todo(lang),
+                opts,
+                None,
+                lang,
+            )
+            .await;
+            if !sent {
+                let _ =
+                    reply_channel_text(channel_id, config, crate::i18n::tr(lang, "todoIm.noAgents"))
+                        .await;
+            }
+        }
+    }
+}
+
+pub(super) async fn handle_todo_rm_cmd(
+    state: &Arc<ServerState>,
+    channel_id: &str,
+    sel: Option<u64>,
+    config: &AppConfig,
+    lang: Lang,
+) {
+    activate_channel_on_action(state, channel_id, config, lang).await;
+    match sel {
+        // `/todo-rm <n>`：直达该项目的逐条删除卡（10 条上限视图，与选卡变身路径一致）。
+        Some(n) => {
+            let Some(project) = project_by_seq(state, channel_id, n, config, lang).await else {
+                return;
+            };
+            let name = crate::project::display_name(&project);
+            let Some((view, ids)) = todo_rm_view(&project, lang) else {
+                let msg = crate::i18n::tr(lang, "todoIm.rmEmpty").replace("{project}", &name);
+                let _ = reply_channel_text(channel_id, config, &msg).await;
+                return;
+            };
+            let sent = send_todo_entry_card(
+                state,
+                channel_id,
+                config,
+                PickerKind::TodoRmEntry,
+                &view,
+                ids,
+                project,
+            )
+            .await;
+            if !sent {
+                let _ = reply_channel_text(channel_id, config, &view_as_text(&view)).await;
+            }
+        }
+        // `/todo-rm`（无参）：选 agent 单选卡。
+        None => {
+            let snapshot = state.agents.snapshot();
+            let opts = crate::select::agent_options(
+                &snapshot,
+                &std::collections::HashSet::new(),
+                now_secs(),
+                lang,
+            );
+            let sent = send_agent_picker(
+                state,
+                channel_id,
+                config,
+                PickerKind::TodoRm,
+                crate::select::title_todo_rm(lang),
+                opts,
+                None,
+                lang,
+            )
+            .await;
+            if !sent {
+                let _ =
+                    reply_channel_text(channel_id, config, crate::i18n::tr(lang, "todoIm.noAgents"))
+                        .await;
+            }
+        }
+    }
+}
+
+/// `/todo-auto`（第 17 轮定案）：语法镜像 `/todo`——`<n> <text>` 新增自动待办；`<n>` / 无参 →
+/// 切换卡（每条待办一个「切换」按钮，已自动的带 ⚡ 徽标，点击即开/关并就地刷新）。
+pub(super) async fn handle_todo_auto_cmd(
+    state: &Arc<ServerState>,
+    channel_id: &str,
+    sel: Option<u64>,
+    content: Option<String>,
+    config: &AppConfig,
+    lang: Lang,
+) {
+    activate_channel_on_action(state, channel_id, config, lang).await;
+    let prefix = crate::autochannel::cmd_prefix(channel_id);
+    match (sel, content) {
+        (Some(n), content) => {
+            let Some(project) = project_by_seq(state, channel_id, n, config, lang).await else {
+                return;
+            };
+            match content {
+                // `/todo-auto <n> <text>`：直接追加一条自动执行待办。
+                Some(text) => {
+                    if crate::todos::add_auto(&project, &text).is_none() {
+                        return;
+                    }
+                    let count = crate::todos::list(&project).len();
+                    let msg = crate::i18n::tr(lang, "todoIm.addedAuto")
+                        .replace("{project}", &crate::project::display_name(&project))
+                        .replace("{n}", &count.to_string());
+                    let _ = reply_channel_text(channel_id, config, &msg).await;
+                }
+                // `/todo-auto <n>`：直达该项目的切换卡。
+                None => {
+                    let Some((view, ids)) = todo_auto_view(&project, lang) else {
+                        let _ = reply_channel_text(
+                            channel_id,
+                            config,
+                            crate::i18n::tr(lang, "select.todoAutoEmptyCard"),
+                        )
+                        .await;
+                        return;
+                    };
+                    let sent = send_todo_entry_card(
+                        state,
+                        channel_id,
+                        config,
+                        PickerKind::TodoAutoEntry,
+                        &view,
+                        ids,
+                        project,
+                    )
+                    .await;
+                    if !sent {
+                        // 渠道不支持卡片（如未接入）→ 文本列表兜底（含 ⚡ 标）。
+                        let _ = reply_channel_text(channel_id, config, &view_as_text(&view)).await;
+                    }
+                }
+            }
+        }
+        // 无编号有内容：无法定位项目 → 用法提示。
+        (None, Some(_)) => {
+            let msg = crate::i18n::tr(lang, "todoIm.usageAuto").replace("{p}", prefix);
+            let _ = reply_channel_text(channel_id, config, &msg).await;
+        }
+        // `/todo-auto`（无参）：选 agent 单选卡。
+        (None, None) => {
+            let snapshot = state.agents.snapshot();
+            let opts = crate::select::agent_options(
+                &snapshot,
+                &std::collections::HashSet::new(),
+                now_secs(),
+                lang,
+            );
+            let sent = send_agent_picker(
+                state,
+                channel_id,
+                config,
+                PickerKind::TodoAuto,
+                crate::select::title_todo_auto(lang),
+                opts,
+                None,
+                lang,
+            )
+            .await;
+            if !sent {
+                let _ =
+                    reply_channel_text(channel_id, config, crate::i18n::tr(lang, "todoIm.noAgents"))
+                        .await;
+            }
+        }
+    }
+}
+
+/// `/todo <n>` 系：seq → 项目 key（cwd 的 git 根）。找不到 / 无 cwd → 回提示并返回 None。
+async fn project_by_seq(
+    state: &Arc<ServerState>,
+    channel_id: &str,
+    n: u64,
+    config: &AppConfig,
+    lang: Lang,
+) -> Option<String> {
+    let prefix = crate::autochannel::cmd_prefix(channel_id);
+    let snapshot = state.agents.snapshot();
+    let Some(rec) = crate::autochannel::find_by_seq(&snapshot, n) else {
+        let text = crate::i18n::tr(lang, "todoIm.notFound")
+            .replace("{n}", &n.to_string())
+            .replace("{p}", prefix);
+        let _ = reply_channel_text(channel_id, config, &text).await;
+        return None;
+    };
+    let key = project_of_record(Some(rec));
+    if key.is_none() {
+        let _ =
+            reply_channel_text(channel_id, config, crate::i18n::tr(lang, "todoIm.noProject")).await;
+    }
+    key
+}
+
+/// 快照记录 → 项目 key（cwd 的 git 根）；无 cwd → None。
+pub(super) fn project_of_record(rec: Option<&serde_json::Value>) -> Option<String> {
+    let cwd = rec?
+        .get("cwd")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())?;
+    let key = crate::project::detect_from(std::path::Path::new(cwd));
+    (!key.is_empty()).then_some(key)
+}
+
+// ===== 内容渲染 =====
+
+/// 待办列表主体（markdown / 纯文本通用）：`1. text` 逐行；空 → 「（暂无待办）」。
+fn todo_lines(entries: &[crate::todos::TodoEntry], lang: Lang) -> String {
+    if entries.is_empty() {
+        return crate::i18n::tr(lang, "todoIm.empty").to_string();
+    }
+    entries
+        .iter()
+        .enumerate()
+        .map(|(i, e)| format!("{}. {}", i + 1, e.text))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn manage_title(project: &str, lang: Lang) -> String {
+    crate::i18n::tr(lang, "todoIm.listTitle")
+        .replace("{project}", &crate::project::display_name(project))
+}
+
+fn rm_hint(prefix: &str, seq: u64, lang: Lang) -> String {
+    crate::i18n::tr(lang, "todoIm.rmHint")
+        .replace("{p}", prefix)
+        .replace("{n}", &seq.to_string())
+}
+
+/// TG/Slack（及卡片发送失败兜底）的文本列表：标题 + 列表 + 新增/删除提示。
+fn todo_list_text(
+    project: &str,
+    entries: &[crate::todos::TodoEntry],
+    prefix: &str,
+    seq: u64,
+    lang: Lang,
+) -> String {
+    let mut out = manage_title(project, lang);
+    out.push('\n');
+    out.push_str(&todo_lines(entries, lang));
+    out.push_str("\n\n");
+    out.push_str(
+        &crate::i18n::tr(lang, "todoIm.addHint")
+            .replace("{p}", prefix)
+            .replace("{n}", &seq.to_string()),
+    );
+    out
+}
+
+/// 组装飞书管理卡（列表 + 灰色删除提示 + 输入框表单）。
+fn fs_manage_card(project: &str, seq: u64, lang: Lang) -> serde_json::Value {
+    let entries = crate::todos::list(project);
+    let prefix = crate::autochannel::cmd_prefix("feishu");
+    let body = format!(
+        "{}\n\n<font color='grey'>{}</font>",
+        todo_lines(&entries, lang),
+        rm_hint(prefix, seq, lang)
+    );
+    crate::feishu::card::build_todo_manage_card(
+        &manage_title(project, lang),
+        &body,
+        crate::i18n::tr(lang, "todoIm.cardInputPlaceholder"),
+        crate::i18n::tr(lang, "todoIm.cardAddButton"),
+    )
+}
+
+/// 钉钉管理卡正文 markdown（提问卡模板的 `markdown` 变量）。
+fn dd_manage_markdown(project: &str, seq: u64, lang: Lang) -> String {
+    let entries = crate::todos::list(project);
+    let prefix = crate::autochannel::cmd_prefix("dingding");
+    format!(
+        "{}\n\n{}",
+        todo_lines(&entries, lang),
+        rm_hint(prefix, seq, lang)
+    )
+}
+
+// ===== 管理卡发送 / 台账 =====
+
+/// 发送一张待办管理卡（飞书代码卡 / 钉钉提问卡模板 / TG·Slack 文本列表）。
+pub(super) async fn send_todo_manage(
+    state: &Arc<ServerState>,
+    channel_id: &str,
+    config: &AppConfig,
+    project: &str,
+    seq: u64,
+    lang: Lang,
+) {
+    let prefix = crate::autochannel::cmd_prefix(channel_id);
+    match channel_id {
+        "feishu" => {
+            let card = fs_manage_card(project, seq, lang);
+            let mid = match crate::feishu::client::FeishuClient::new(&config.channels.feishu) {
+                Ok(client) => client.send_card(&card).await.ok(),
+                Err(_) => None,
+            };
+            match mid {
+                Some(mid) => register_todo_manage(state, channel_id, &mid, project, seq, lang),
+                None => {
+                    let entries = crate::todos::list(project);
+                    let _ = reply_channel_text(
+                        channel_id,
+                        config,
+                        &todo_list_text(project, &entries, prefix, seq, lang),
+                    )
+                    .await;
+                }
+            }
+        }
+        "dingding" => {
+            // 复用提问卡模板：正文 markdown 放列表、options 置空、`allow_input` 开输入框。
+            let otid = format!("todo-{}", uuid::Uuid::new_v4());
+            let map = crate::dingtalk::card::build_card_param_map(
+                &manage_title(project, lang),
+                &dd_manage_markdown(project, seq, lang),
+                &[],
+                false,
+                false,
+                "",
+            );
+            let private = crate::dingtalk::card::build_card_private_map();
+            let ok = match crate::dingtalk::client::DingTalkClient::new(&config.channels.dingding)
+            {
+                Ok(client) => client
+                    .create_and_deliver_card(
+                        &otid,
+                        crate::channels::dingding::effective_template_id(
+                            &config.channels.dingding,
+                        ),
+                        map,
+                        private,
+                    )
+                    .await
+                    .is_ok(),
+                Err(_) => false,
+            };
+            if ok {
+                register_todo_manage(state, channel_id, &otid, project, seq, lang);
+            } else {
+                let entries = crate::todos::list(project);
+                let _ = reply_channel_text(
+                    channel_id,
+                    config,
+                    &todo_list_text(project, &entries, prefix, seq, lang),
+                )
+                .await;
+            }
+        }
+        // TG/Slack：无可靠卡内输入 → 文本列表 + `/todo <n> <text>` 提示（spec D8）。
+        _ => {
+            let entries = crate::todos::list(project);
+            let _ = reply_channel_text(
+                channel_id,
+                config,
+                &todo_list_text(project, &entries, prefix, seq, lang),
+            )
+            .await;
+        }
+    }
+}
+
+fn register_todo_manage(
+    state: &Arc<ServerState>,
+    channel_id: &str,
+    mid: &str,
+    project: &str,
+    seq: u64,
+    lang: Lang,
+) {
+    let payload = serde_json::to_string(&TodoManagePayload {
+        project: project.to_string(),
+        seq,
+    })
+    .ok();
+    register_picker(
+        state,
+        PickerEntry {
+            channel: channel_id.to_string(),
+            message_id: mid.to_string(),
+            kind: PickerKind::TodoManage,
+            title: manage_title(project, lang),
+            options: Vec::new(),
+            payload,
+            created_at: now_secs(),
+            posted_ms: now_ms(),
+        },
+    );
+    state.select.route_refresh.notify_one();
+}
+
+/// 把一张已发出的卡的台账就地改造（飞书变身 / 钉钉同模板刷新后共用）。
+/// `title`＝变身后卡片的标题快照（关停定格终态卡时复用）。
+fn morph_picker(
+    state: &Arc<ServerState>,
+    channel_id: &str,
+    mid: &str,
+    kind: PickerKind,
+    title: String,
+    options: Vec<String>,
+    payload: Option<String>,
+) {
+    if let Some(p) = state
+        .select
+        .pickers
+        .lock()
+        .unwrap()
+        .iter_mut()
+        .find(|p| p.channel == channel_id && p.message_id == mid)
+    {
+        p.kind = kind;
+        p.title = title;
+        p.options = options;
+        p.payload = payload;
+    }
+}
+
+// ===== 选 agent 卡点选（Todo / TodoRm）=====
+
+/// 飞书 `/todo` 选卡点选：本卡就地变身为该项目的待办管理卡（台账同步改 kind）。
+pub(super) async fn fs_select_pick_todo(
+    state: &Arc<ServerState>,
+    mid: &str,
+    session_id: &str,
+    lang: Lang,
+    ack: crate::feishu::router::CardAck,
+) {
+    let snapshot = state.agents.snapshot();
+    let rec = find_agent_by_session(&snapshot, session_id);
+    let Some(project) = project_of_record(rec) else {
+        let card = crate::feishu::card::build_select_final_card(
+            &crate::select::title_todo(lang),
+            crate::i18n::tr(lang, "todoIm.noProject"),
+        );
+        let _ = ack.send(Some(crate::feishu::card::callback_update_card(card)));
+        remove_picker(state, "feishu", mid);
+        return;
+    };
+    let seq = rec
+        .and_then(|r| r.get("seq").and_then(|v| v.as_u64()))
+        .unwrap_or(0);
+    let card = fs_manage_card(&project, seq, lang);
+    let _ = ack.send(Some(crate::feishu::card::callback_update_card(card)));
+    let title = manage_title(&project, lang);
+    let payload = serde_json::to_string(&TodoManagePayload {
+        project,
+        seq,
+    })
+    .ok();
+    morph_picker(
+        state,
+        "feishu",
+        mid,
+        PickerKind::TodoManage,
+        title,
+        Vec::new(),
+        payload,
+    );
+}
+
+/// 钉钉 `/todo` 选卡点选：钉钉不能跨模板变身 → 单选卡定格「已选择 [n]」，另发管理卡。
+pub(super) async fn dd_select_pick_todo(
+    state: &Arc<ServerState>,
+    otid: &str,
+    session_id: &str,
+    config: &AppConfig,
+    lang: Lang,
+) {
+    let snapshot = state.agents.snapshot();
+    let rec = find_agent_by_session(&snapshot, session_id);
+    let Some(project) = project_of_record(rec) else {
+        dd_finalize_select_card(config, otid, crate::i18n::tr(lang, "todoIm.noProject")).await;
+        remove_picker(state, "dingding", otid);
+        return;
+    };
+    let seq = rec
+        .and_then(|r| r.get("seq").and_then(|v| v.as_u64()))
+        .unwrap_or(0);
+    let label = crate::i18n::tr(lang, "select.pickedCard").replace("{id}", &seq.to_string());
+    dd_finalize_select_card(config, otid, &label).await;
+    remove_picker(state, "dingding", otid);
+    send_todo_manage(state, "dingding", config, &project, seq, lang).await;
+}
+
+/// TG/Slack `/todo` 选卡点选：定格本卡「已选择 [n]」+ 回文本列表（无卡内输入形态）。
+pub(super) async fn select_pick_todo_text(
+    state: &Arc<ServerState>,
+    channel_id: &str,
+    mid: &str,
+    session_id: &str,
+    config: &AppConfig,
+    lang: Lang,
+) {
+    let snapshot = state.agents.snapshot();
+    let rec = find_agent_by_session(&snapshot, session_id);
+    let Some(project) = project_of_record(rec) else {
+        finalize_select_card_edit(
+            channel_id,
+            config,
+            mid,
+            &crate::select::title_todo(lang),
+            crate::i18n::tr(lang, "todoIm.noProject"),
+        )
+        .await;
+        remove_picker(state, channel_id, mid);
+        return;
+    };
+    let seq = rec
+        .and_then(|r| r.get("seq").and_then(|v| v.as_u64()))
+        .unwrap_or(0);
+    let label = crate::i18n::tr(lang, "select.pickedCard").replace("{id}", &seq.to_string());
+    finalize_select_card_edit(
+        channel_id,
+        config,
+        mid,
+        &crate::select::title_todo(lang),
+        &label,
+    )
+    .await;
+    remove_picker(state, channel_id, mid);
+    send_todo_manage(state, channel_id, config, &project, seq, lang).await;
+}
+
+/// 组装某项目的逐条删除卡视图；返回 `(view, 条目 id 集)`。空队列 → None。
+/// 只列前 `MAX_OPTION_TODOS` 条（第 14 轮定案，渠道选项数硬限制），超出时以待办版溢出提示
+/// 顶替通用截断说明（`truncated_note` 槽位，四渠道既有渲染路径复用）。
+fn todo_rm_view(project: &str, lang: Lang) -> Option<(crate::select::SelectView, Vec<String>)> {
+    let mut entries = crate::todos::list(project);
+    if entries.is_empty() {
+        return None;
+    }
+    let total = entries.len();
+    entries.truncate(crate::todos::MAX_OPTION_TODOS);
+    let name = crate::project::display_name(project);
+    let mut view = crate::select::build_view(
+        crate::select::title_todo_rm_entries(&name, lang),
+        crate::select::todo_rm_options(&entries),
+        crate::select::SelectAction::TodoRmEntry,
+        lang,
+    );
+    view.truncated_note = crate::todos::overflow_note(total, lang);
+    let ids = view.options.iter().map(|o| o.id.clone()).collect();
+    Some((view, ids))
+}
+
+/// 组装某项目的「切换自动执行」卡视图（第 17 轮定案）；同删除卡的 10 条上限与溢出提示，
+/// 已自动的条目带 ⚡ 徽标。空队列 → None。
+fn todo_auto_view(project: &str, lang: Lang) -> Option<(crate::select::SelectView, Vec<String>)> {
+    let mut entries = crate::todos::list(project);
+    if entries.is_empty() {
+        return None;
+    }
+    let total = entries.len();
+    entries.truncate(crate::todos::MAX_OPTION_TODOS);
+    let name = crate::project::display_name(project);
+    let mut view = crate::select::build_view(
+        crate::select::title_todo_auto_entries(&name, lang),
+        crate::select::todo_auto_options(&entries, lang),
+        crate::select::SelectAction::TodoAutoEntry,
+        lang,
+    );
+    view.truncated_note = crate::todos::overflow_note(total, lang);
+    let ids = view.options.iter().map(|o| o.id.clone()).collect();
+    Some((view, ids))
+}
+
+/// 直接发送一张预构建的待办条目卡（删除 / 切换）并登记台账：直达路径用（不经
+/// `send_agent_picker` 的通用 20 条截断，保持 10 条上限视图一致）。发送失败返回 false。
+async fn send_todo_entry_card(
+    state: &Arc<ServerState>,
+    channel_id: &str,
+    config: &AppConfig,
+    kind: PickerKind,
+    view: &crate::select::SelectView,
+    ids: Vec<String>,
+    project: String,
+) -> bool {
+    let Some(mid) = send_select_card(channel_id, config, view).await else {
+        return false;
+    };
+    register_picker(
+        state,
+        PickerEntry {
+            channel: channel_id.to_string(),
+            message_id: mid,
+            kind,
+            title: view.title.clone(),
+            options: ids,
+            payload: Some(project),
+            created_at: now_secs(),
+            posted_ms: now_ms(),
+        },
+    );
+    state.select.route_refresh.notify_one();
+    true
+}
+
+/// 卡片发送失败（渠道不支持）时的文本兜底：标题 + 编号列表（含 ⚡ 徽标）+ 溢出提示。
+fn view_as_text(view: &crate::select::SelectView) -> String {
+    let mut out = view.title.clone();
+    for o in &view.options {
+        out.push('\n');
+        if let Some(n) = o.seq {
+            out.push_str(&format!("{}. ", n));
+        }
+        out.push_str(&o.primary);
+        if let Some(badge) = &o.badge {
+            out.push(' ');
+            out.push_str(badge);
+        }
+    }
+    if let Some(note) = &view.truncated_note {
+        out.push('\n');
+        out.push_str(note);
+    }
+    out
+}
+
+/// 飞书 `/todo-rm` 选卡点选：本卡就地变身为逐条删除卡（空队列 → 定格提示）。
+pub(super) async fn fs_select_pick_todo_rm(
+    state: &Arc<ServerState>,
+    mid: &str,
+    session_id: &str,
+    lang: Lang,
+    ack: crate::feishu::router::CardAck,
+) {
+    let snapshot = state.agents.snapshot();
+    let rec = find_agent_by_session(&snapshot, session_id);
+    let Some(project) = project_of_record(rec) else {
+        let card = crate::feishu::card::build_select_final_card(
+            &crate::select::title_todo_rm(lang),
+            crate::i18n::tr(lang, "todoIm.noProject"),
+        );
+        let _ = ack.send(Some(crate::feishu::card::callback_update_card(card)));
+        remove_picker(state, "feishu", mid);
+        return;
+    };
+    match todo_rm_view(&project, lang) {
+        Some((view, ids)) => {
+            let card = crate::feishu::card::build_select_card(&view);
+            let _ = ack.send(Some(crate::feishu::card::callback_update_card(card)));
+            morph_picker(
+                state,
+                "feishu",
+                mid,
+                PickerKind::TodoRmEntry,
+                view.title.clone(),
+                ids,
+                Some(project),
+            );
+        }
+        None => {
+            let msg = crate::i18n::tr(lang, "todoIm.rmEmpty")
+                .replace("{project}", &crate::project::display_name(&project));
+            let card = crate::feishu::card::build_select_final_card(
+                &crate::select::title_todo_rm(lang),
+                &msg,
+            );
+            let _ = ack.send(Some(crate::feishu::card::callback_update_card(card)));
+            remove_picker(state, "feishu", mid);
+        }
+    }
+}
+
+/// 钉钉 `/todo-rm` 选卡点选：同模板 → 本卡经 OpenAPI 就地刷新为逐条删除卡。
+pub(super) async fn dd_select_pick_todo_rm(
+    state: &Arc<ServerState>,
+    otid: &str,
+    session_id: &str,
+    config: &AppConfig,
+    lang: Lang,
+) {
+    let snapshot = state.agents.snapshot();
+    let rec = find_agent_by_session(&snapshot, session_id);
+    let Some(project) = project_of_record(rec) else {
+        dd_finalize_select_card(config, otid, crate::i18n::tr(lang, "todoIm.noProject")).await;
+        remove_picker(state, "dingding", otid);
+        return;
+    };
+    match todo_rm_view(&project, lang) {
+        Some((view, ids)) => {
+            if let Ok(client) =
+                crate::dingtalk::client::DingTalkClient::new(&config.channels.dingding)
+            {
+                let map = crate::dingtalk::select::build_select_param_map(&view, lang);
+                if let Err(err) = client
+                    .update_card_private(otid, map, serde_json::json!({}))
+                    .await
+                {
+                    log(&format!("todo: refresh dingtalk rm card failed: {}", err));
+                }
+            }
+            morph_picker(
+                state,
+                "dingding",
+                otid,
+                PickerKind::TodoRmEntry,
+                view.title.clone(),
+                ids,
+                Some(project),
+            );
+        }
+        None => {
+            let msg = crate::i18n::tr(lang, "todoIm.rmEmpty")
+                .replace("{project}", &crate::project::display_name(&project));
+            dd_finalize_select_card(config, otid, &msg).await;
+            remove_picker(state, "dingding", otid);
+        }
+    }
+}
+
+/// TG/Slack `/todo-rm` 选卡点选：本卡就地编辑为逐条删除卡。
+pub(super) async fn select_pick_todo_rm_inplace(
+    state: &Arc<ServerState>,
+    channel_id: &str,
+    mid: &str,
+    session_id: &str,
+    config: &AppConfig,
+    lang: Lang,
+) {
+    let snapshot = state.agents.snapshot();
+    let rec = find_agent_by_session(&snapshot, session_id);
+    let Some(project) = project_of_record(rec) else {
+        finalize_select_card_edit(
+            channel_id,
+            config,
+            mid,
+            &crate::select::title_todo_rm(lang),
+            crate::i18n::tr(lang, "todoIm.noProject"),
+        )
+        .await;
+        remove_picker(state, channel_id, mid);
+        return;
+    };
+    match todo_rm_view(&project, lang) {
+        Some((view, ids)) => {
+            refresh_select_card_edit(channel_id, config, mid, &view, lang).await;
+            morph_picker(
+                state,
+                channel_id,
+                mid,
+                PickerKind::TodoRmEntry,
+                view.title.clone(),
+                ids,
+                Some(project),
+            );
+        }
+        None => {
+            let msg = crate::i18n::tr(lang, "todoIm.rmEmpty")
+                .replace("{project}", &crate::project::display_name(&project));
+            finalize_select_card_edit(
+                channel_id,
+                config,
+                mid,
+                &crate::select::title_todo_rm(lang),
+                &msg,
+            )
+            .await;
+            remove_picker(state, channel_id, mid);
+        }
+    }
+}
+
+// ===== 选 agent 卡点选（TodoAuto，第 17 轮定案）=====
+
+/// 飞书 `/todo-auto` 选卡点选：本卡就地变身为切换卡（空队列 → 定格提示）。
+pub(super) async fn fs_select_pick_todo_auto(
+    state: &Arc<ServerState>,
+    mid: &str,
+    session_id: &str,
+    lang: Lang,
+    ack: crate::feishu::router::CardAck,
+) {
+    let snapshot = state.agents.snapshot();
+    let rec = find_agent_by_session(&snapshot, session_id);
+    let Some(project) = project_of_record(rec) else {
+        let card = crate::feishu::card::build_select_final_card(
+            &crate::select::title_todo_auto(lang),
+            crate::i18n::tr(lang, "todoIm.noProject"),
+        );
+        let _ = ack.send(Some(crate::feishu::card::callback_update_card(card)));
+        remove_picker(state, "feishu", mid);
+        return;
+    };
+    match todo_auto_view(&project, lang) {
+        Some((view, ids)) => {
+            let card = crate::feishu::card::build_select_card(&view);
+            let _ = ack.send(Some(crate::feishu::card::callback_update_card(card)));
+            morph_picker(
+                state,
+                "feishu",
+                mid,
+                PickerKind::TodoAutoEntry,
+                view.title.clone(),
+                ids,
+                Some(project),
+            );
+        }
+        None => {
+            let card = crate::feishu::card::build_select_final_card(
+                &crate::select::title_todo_auto(lang),
+                crate::i18n::tr(lang, "select.todoAutoEmptyCard"),
+            );
+            let _ = ack.send(Some(crate::feishu::card::callback_update_card(card)));
+            remove_picker(state, "feishu", mid);
+        }
+    }
+}
+
+/// 钉钉 `/todo-auto` 选卡点选：同模板 → 本卡经 OpenAPI 就地刷新为切换卡。
+pub(super) async fn dd_select_pick_todo_auto(
+    state: &Arc<ServerState>,
+    otid: &str,
+    session_id: &str,
+    config: &AppConfig,
+    lang: Lang,
+) {
+    let snapshot = state.agents.snapshot();
+    let rec = find_agent_by_session(&snapshot, session_id);
+    let Some(project) = project_of_record(rec) else {
+        dd_finalize_select_card(config, otid, crate::i18n::tr(lang, "todoIm.noProject")).await;
+        remove_picker(state, "dingding", otid);
+        return;
+    };
+    match todo_auto_view(&project, lang) {
+        Some((view, ids)) => {
+            dd_refresh_entry_card(config, otid, &view, lang).await;
+            morph_picker(
+                state,
+                "dingding",
+                otid,
+                PickerKind::TodoAutoEntry,
+                view.title.clone(),
+                ids,
+                Some(project),
+            );
+        }
+        None => {
+            dd_finalize_select_card(config, otid, crate::i18n::tr(lang, "select.todoAutoEmptyCard"))
+                .await;
+            remove_picker(state, "dingding", otid);
+        }
+    }
+}
+
+/// TG/Slack `/todo-auto` 选卡点选：本卡就地编辑为切换卡。
+pub(super) async fn select_pick_todo_auto_inplace(
+    state: &Arc<ServerState>,
+    channel_id: &str,
+    mid: &str,
+    session_id: &str,
+    config: &AppConfig,
+    lang: Lang,
+) {
+    let snapshot = state.agents.snapshot();
+    let rec = find_agent_by_session(&snapshot, session_id);
+    let Some(project) = project_of_record(rec) else {
+        finalize_select_card_edit(
+            channel_id,
+            config,
+            mid,
+            &crate::select::title_todo_auto(lang),
+            crate::i18n::tr(lang, "todoIm.noProject"),
+        )
+        .await;
+        remove_picker(state, channel_id, mid);
+        return;
+    };
+    match todo_auto_view(&project, lang) {
+        Some((view, ids)) => {
+            refresh_select_card_edit(channel_id, config, mid, &view, lang).await;
+            morph_picker(
+                state,
+                channel_id,
+                mid,
+                PickerKind::TodoAutoEntry,
+                view.title.clone(),
+                ids,
+                Some(project),
+            );
+        }
+        None => {
+            finalize_select_card_edit(
+                channel_id,
+                config,
+                mid,
+                &crate::select::title_todo_auto(lang),
+                crate::i18n::tr(lang, "select.todoAutoEmptyCard"),
+            )
+            .await;
+            remove_picker(state, channel_id, mid);
+        }
+    }
+}
+
+// ===== 切换卡点「切换」（TodoAutoEntry）=====
+
+/// 切换一条的自动标记并重算视图。返回 `(项目 key, 新视图)`；队列已空（并发清空）→ `(key, None)`。
+fn auto_entry_toggle(
+    picker: &PickerEntry,
+    entry_id: &str,
+    lang: Lang,
+) -> (String, Option<(crate::select::SelectView, Vec<String>)>) {
+    let project = picker.payload.clone().unwrap_or_default();
+    let current = crate::todos::list(&project)
+        .iter()
+        .find(|e| e.id == entry_id)
+        .map(|e| e.auto);
+    if let Some(auto) = current {
+        let _ = crate::todos::set_auto(&project, entry_id, !auto);
+    }
+    let view = todo_auto_view(&project, lang);
+    (project, view)
+}
+
+/// 飞书切换卡点「切换」：翻转 + 就地刷新（空 → 定格）。
+pub(super) async fn fs_select_pick_todo_auto_entry(
+    state: &Arc<ServerState>,
+    mid: &str,
+    entry_id: &str,
+    picker: &PickerEntry,
+    lang: Lang,
+    ack: crate::feishu::router::CardAck,
+) {
+    let (project, view) = auto_entry_toggle(picker, entry_id, lang);
+    match view {
+        Some((view, ids)) => {
+            let card = crate::feishu::card::build_select_card(&view);
+            let _ = ack.send(Some(crate::feishu::card::callback_update_card(card)));
+            morph_picker(
+                state,
+                "feishu",
+                mid,
+                PickerKind::TodoAutoEntry,
+                view.title.clone(),
+                ids,
+                Some(project),
+            );
+        }
+        None => {
+            let card = crate::feishu::card::build_select_final_card(
+                &crate::select::title_todo_auto_entries(
+                    &crate::project::display_name(&project),
+                    lang,
+                ),
+                crate::i18n::tr(lang, "select.todoAutoEmptyCard"),
+            );
+            let _ = ack.send(Some(crate::feishu::card::callback_update_card(card)));
+            remove_picker(state, "feishu", mid);
+        }
+    }
+}
+
+/// 钉钉切换卡点「切换」：翻转 + OpenAPI 就地刷新（空 → 定格）。
+pub(super) async fn dd_select_pick_todo_auto_entry(
+    state: &Arc<ServerState>,
+    otid: &str,
+    entry_id: &str,
+    picker: &PickerEntry,
+    config: &AppConfig,
+    lang: Lang,
+) {
+    let (project, view) = auto_entry_toggle(picker, entry_id, lang);
+    match view {
+        Some((view, ids)) => {
+            dd_refresh_entry_card(config, otid, &view, lang).await;
+            morph_picker(
+                state,
+                "dingding",
+                otid,
+                PickerKind::TodoAutoEntry,
+                view.title.clone(),
+                ids,
+                Some(project),
+            );
+        }
+        None => {
+            dd_finalize_select_card(config, otid, crate::i18n::tr(lang, "select.todoAutoEmptyCard"))
+                .await;
+            remove_picker(state, "dingding", otid);
+        }
+    }
+}
+
+/// TG/Slack 切换卡点「切换」：翻转 + 就地编辑刷新（空 → 定格）。
+pub(super) async fn select_pick_todo_auto_entry_inplace(
+    state: &Arc<ServerState>,
+    channel_id: &str,
+    mid: &str,
+    entry_id: &str,
+    picker: &PickerEntry,
+    config: &AppConfig,
+    lang: Lang,
+) {
+    let (project, view) = auto_entry_toggle(picker, entry_id, lang);
+    match view {
+        Some((view, ids)) => {
+            refresh_select_card_edit(channel_id, config, mid, &view, lang).await;
+            morph_picker(
+                state,
+                channel_id,
+                mid,
+                PickerKind::TodoAutoEntry,
+                view.title.clone(),
+                ids,
+                Some(project),
+            );
+        }
+        None => {
+            finalize_select_card_edit(
+                channel_id,
+                config,
+                mid,
+                &crate::select::title_todo_auto_entries(
+                    &crate::project::display_name(&project),
+                    lang,
+                ),
+                crate::i18n::tr(lang, "select.todoAutoEmptyCard"),
+            )
+            .await;
+            remove_picker(state, channel_id, mid);
+        }
+    }
+}
+
+/// 钉钉：把一张同模板选择卡经 OpenAPI 刷新为给定视图（rm / auto 切换卡共用）。
+async fn dd_refresh_entry_card(
+    config: &AppConfig,
+    otid: &str,
+    view: &crate::select::SelectView,
+    lang: Lang,
+) {
+    if let Ok(client) = crate::dingtalk::client::DingTalkClient::new(&config.channels.dingding) {
+        let map = crate::dingtalk::select::build_select_param_map(view, lang);
+        if let Err(err) = client
+            .update_card_private(otid, map, serde_json::json!({}))
+            .await
+        {
+            log(&format!("todo: refresh dingtalk entry card failed: {}", err));
+        }
+    }
+}
+
+// ===== 逐条删除卡点「删除」（TodoRmEntry）=====
+
+/// 出队一条并重算剩余视图。返回 `(项目 key, 剩余视图)`；剩余为空 → `(key, None)`。
+fn rm_entry_delete(
+    picker: &PickerEntry,
+    entry_id: &str,
+    lang: Lang,
+) -> (String, Option<(crate::select::SelectView, Vec<String>)>) {
+    let project = picker.payload.clone().unwrap_or_default();
+    let _ = crate::todos::remove(&project, entry_id);
+    let view = todo_rm_view(&project, lang);
+    (project, view)
+}
+
+/// 飞书逐条删除卡点「删除」：出队 + 就地刷新（空 → 定格「已全部删除」）。
+pub(super) async fn fs_select_pick_todo_rm_entry(
+    state: &Arc<ServerState>,
+    mid: &str,
+    entry_id: &str,
+    picker: &PickerEntry,
+    lang: Lang,
+    ack: crate::feishu::router::CardAck,
+) {
+    let (project, view) = rm_entry_delete(picker, entry_id, lang);
+    match view {
+        Some((view, ids)) => {
+            let card = crate::feishu::card::build_select_card(&view);
+            let _ = ack.send(Some(crate::feishu::card::callback_update_card(card)));
+            morph_picker(
+                state,
+                "feishu",
+                mid,
+                PickerKind::TodoRmEntry,
+                view.title.clone(),
+                ids,
+                Some(project),
+            );
+        }
+        None => {
+            let card = crate::feishu::card::build_select_final_card(
+                &crate::select::title_todo_rm_entries(
+                    &crate::project::display_name(&project),
+                    lang,
+                ),
+                crate::i18n::tr(lang, "select.todoRmAllDoneCard"),
+            );
+            let _ = ack.send(Some(crate::feishu::card::callback_update_card(card)));
+            remove_picker(state, "feishu", mid);
+        }
+    }
+}
+
+/// 钉钉逐条删除卡点「删除」：出队 + OpenAPI 就地刷新（空 → 定格）。
+pub(super) async fn dd_select_pick_todo_rm_entry(
+    state: &Arc<ServerState>,
+    otid: &str,
+    entry_id: &str,
+    picker: &PickerEntry,
+    config: &AppConfig,
+    lang: Lang,
+) {
+    let (project, view) = rm_entry_delete(picker, entry_id, lang);
+    match view {
+        Some((view, ids)) => {
+            if let Ok(client) =
+                crate::dingtalk::client::DingTalkClient::new(&config.channels.dingding)
+            {
+                let map = crate::dingtalk::select::build_select_param_map(&view, lang);
+                if let Err(err) = client
+                    .update_card_private(otid, map, serde_json::json!({}))
+                    .await
+                {
+                    log(&format!("todo: refresh dingtalk rm card failed: {}", err));
+                }
+            }
+            morph_picker(
+                state,
+                "dingding",
+                otid,
+                PickerKind::TodoRmEntry,
+                view.title.clone(),
+                ids,
+                Some(project),
+            );
+        }
+        None => {
+            dd_finalize_select_card(config, otid, crate::i18n::tr(lang, "select.todoRmAllDoneCard"))
+                .await;
+            remove_picker(state, "dingding", otid);
+        }
+    }
+}
+
+/// TG/Slack 逐条删除卡点「删除」：出队 + 就地编辑刷新（空 → 定格）。
+pub(super) async fn select_pick_todo_rm_entry_inplace(
+    state: &Arc<ServerState>,
+    channel_id: &str,
+    mid: &str,
+    entry_id: &str,
+    picker: &PickerEntry,
+    config: &AppConfig,
+    lang: Lang,
+) {
+    let (project, view) = rm_entry_delete(picker, entry_id, lang);
+    match view {
+        Some((view, ids)) => {
+            refresh_select_card_edit(channel_id, config, mid, &view, lang).await;
+            morph_picker(
+                state,
+                channel_id,
+                mid,
+                PickerKind::TodoRmEntry,
+                view.title.clone(),
+                ids,
+                Some(project),
+            );
+        }
+        None => {
+            finalize_select_card_edit(
+                channel_id,
+                config,
+                mid,
+                &crate::select::title_todo_rm_entries(
+                    &crate::project::display_name(&project),
+                    lang,
+                ),
+                crate::i18n::tr(lang, "select.todoRmAllDoneCard"),
+            )
+            .await;
+            remove_picker(state, channel_id, mid);
+        }
+    }
+}
+
+// ===== 管理卡「新增」提交 =====
+
+/// 飞书待办管理卡表单提交（select 路由上唯一带表单的卡）：新增一条 + 卡片就地刷新。
+/// 无论如何消费 `ack`（无台账匹配 → 空 ACK 静默，D7）。
+pub(super) async fn fs_todo_manage_submit(
+    state: &Arc<ServerState>,
+    data: &serde_json::Value,
+    ack: crate::feishu::router::CardAck,
+) {
+    let Some(submit) = crate::feishu::card::parse_card_submit(data, &[]) else {
+        let _ = ack.send(None);
+        return;
+    };
+    let picker = {
+        let pickers = state.select.pickers.lock().unwrap();
+        pickers
+            .iter()
+            .find(|p| {
+                p.channel == "feishu"
+                    && p.message_id == submit.message_id
+                    && p.kind == PickerKind::TodoManage
+            })
+            .cloned()
+    };
+    let Some(picker) = picker else {
+        let _ = ack.send(None);
+        return;
+    };
+    let Some(payload) = manage_payload(&picker) else {
+        let _ = ack.send(None);
+        return;
+    };
+    if let Some(text) = &submit.user_input {
+        let _ = crate::todos::add(&payload.project, text);
+    }
+    // 空输入提交：不新增，仅刷新列表（顺带同步其它进程的增删结果）。
+    let lang = Lang::current();
+    let card = fs_manage_card(&payload.project, payload.seq, lang);
+    let _ = ack.send(Some(crate::feishu::card::callback_update_card(card)));
+}
+
+/// 钉钉待办管理卡提交（提问卡模板）：同步 ACK 已由路由任务按「提交成功」回包（置灰点击者），
+/// 此处新增 + 经 OpenAPI 刷新列表并复位表单（`submitted=false`）以便连续新增。返回是否已处理。
+pub(super) async fn handle_todo_dd_submit(
+    state: &Arc<ServerState>,
+    data: &serde_json::Value,
+) -> bool {
+    let Some(submit) = crate::dingtalk::card::parse_card_submit(data) else {
+        return false;
+    };
+    let picker = {
+        let pickers = state.select.pickers.lock().unwrap();
+        pickers
+            .iter()
+            .find(|p| {
+                p.channel == "dingding"
+                    && p.message_id == submit.out_track_id
+                    && p.kind == PickerKind::TodoManage
+            })
+            .cloned()
+    };
+    let Some(picker) = picker else {
+        return false;
+    };
+    let Some(payload) = manage_payload(&picker) else {
+        return true;
+    };
+    if let Some(text) = &submit.user_input {
+        let _ = crate::todos::add(&payload.project, text);
+    }
+    let lang = Lang::current();
+    let config = state.config_snapshot();
+    if let Ok(client) = crate::dingtalk::client::DingTalkClient::new(&config.channels.dingding) {
+        if let Err(err) = client
+            .update_card_private(
+                &picker.message_id,
+                serde_json::json!({
+                    "markdown": dd_manage_markdown(&payload.project, payload.seq, lang),
+                    "submit_status": "",
+                }),
+                serde_json::json!({ "submitted": "false", "private_input": "" }),
+            )
+            .await
+        {
+            log(&format!("todo: refresh dingtalk manage card failed: {}", err));
+        }
+    }
+    true
+}

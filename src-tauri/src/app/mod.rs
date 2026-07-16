@@ -968,6 +968,11 @@ fn launch(state: AppState, view: View, popup_ipc: Option<PopupIpc>) -> tauri::Re
             crate::commands::todos_add,
             crate::commands::todos_remove,
             crate::commands::todos_clear,
+            crate::commands::todos_reorder,
+            crate::commands::todos_set_auto,
+            crate::commands::todos_history,
+            crate::commands::todos_restore,
+            crate::commands::todos_history_clear,
             crate::commands::todos_init,
             crate::commands::todos_projects,
             crate::commands::open_todos,
@@ -2110,6 +2115,9 @@ where
         .min_inner_size(400.0, 320.0)
         .center()
         .always_on_top(pin_above_popup)
+        // 拖拽排序用 HTML5 DnD：Tauri 原生 drag-drop 处理器会吞掉 webview 内的
+        // dragover/drop 事件（macOS WKWebView），必须禁用；本窗口不需要文件拖入。
+        .disable_drag_drop_handler()
         .theme(theme);
     #[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
     let win = apply_surface(builder, window_bg, effective_window_effect).build()?;

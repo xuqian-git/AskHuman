@@ -253,9 +253,8 @@ structured content; any images the human attaches are returned as image content.
         name = "whats_next",
         description = "Ask the human what to do next. You MUST call this after completing the \
 current task and before ending your turn; optionally pass `message` with a completion report and \
-`files` with report documents. The human is shown their pending todo queue for this project plus \
-an \"end this turn\" choice. The result is plain text: either the next task to start working on \
-immediately, or a sentence stating the human approved ending the turn."
+`files` with report documents. The human replies with the next task (start it immediately), or \
+approves ending the turn — only then may you end it."
     )]
     async fn whats_next(
         &self,

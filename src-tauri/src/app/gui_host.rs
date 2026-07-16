@@ -693,6 +693,14 @@ fn build_specs(
                     };
                     sub.push(Node::item(format!("ij:{}", a.session_id), text, true));
                 }
+                // 「添加待办」：打开待办窗口并预选该 agent 的项目（需 cwd 才能归属项目）。
+                if a.cwd.as_deref().is_some_and(|c| !c.is_empty()) {
+                    sub.push(Node::item(
+                        format!("todo:{}", a.session_id),
+                        i18n::tr(lang, "tray.agentAddTodo").to_string(),
+                        true,
+                    ));
+                }
                 if a.focusable {
                     sub.push(Node::item(
                         format!("term:{}", a.session_id),
@@ -886,6 +894,24 @@ pub fn on_menu_event(app: &AppHandle, id: &str) {
     // 渠道故障警示行（R7）：打开设置并定位到渠道 tab（错误详情显示在渠道卡片上）。
     if id.starts_with("chissue:") {
         open_window_settings_tab(app, "channel");
+        return;
+    }
+    // Agent 子菜单「添加待办」：打开（或聚焦）待办窗口并预选该 agent 的项目（cwd → git 根）。
+    // 前端收到预选项目即自动聚焦新增输入框。项目解析失败时仍开窗（由前端自选默认）。
+    if let Some(session_id) = id.strip_prefix("todo:") {
+        let cwd = app.try_state::<HostState>().and_then(|s| {
+            s.data
+                .lock()
+                .unwrap()
+                .agents
+                .iter()
+                .find(|a| a.session_id == session_id)
+                .and_then(|a| a.cwd.clone())
+        });
+        let project = cwd
+            .map(|c| crate::project::detect_from(std::path::Path::new(&c)))
+            .filter(|k| !k.is_empty());
+        open_window(app, WindowKind::Todos, false, project, None);
         return;
     }
     // Agent 子菜单「聚焦终端」：AppleScript 可能阻塞（授权弹窗等），放后台线程。

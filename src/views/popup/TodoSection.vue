@@ -1,7 +1,9 @@
 <script setup lang="ts">
-// 折叠待办区（spec todo-whats-next D7）：页脚上方常驻，显示该提问项目的待办队列。
-// 单题弹窗（非 whats-next / 非严格选择）里每条待办是可选 chip：选中＝提交时其文本并入回答、
-// 后端按 id 出队；多题 / whats-next 弹窗只保留增删查看。底部快速新增框随手记想法。
+// 待办下拉区（spec todo-whats-next D7，第 11 轮改版）：跟在最后一个问题后面，仅在
+// 该提问项目有待办时显示。收起时只显示数量；展开后是与预选答案同构的可选行
+// （选中＝提交时其文本加前缀并入最后一题回答、后端按 id 出队）+ 行内删除按钮。
+// whats-next 弹窗不渲染本区（待办已是问题选项本体）；严格选择下仅可删除。
+import { onBeforeUnmount, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { usePopupContext } from "./context";
 
@@ -10,30 +12,47 @@ const {
   todos,
   todosOpen,
   todoChosenIds,
-  todoNewText,
   todoChipsEnabled,
   todoSectionVisible,
   toggleTodo,
-  addTodo,
   removeTodo,
   submitting,
 } = usePopupContext();
 
-// 回车快速新增；IME 组合确认（如中文选字）不触发。
-function onNewTodoKeydown(e: KeyboardEvent) {
-  if (e.isComposing) return;
-  e.preventDefault();
-  addTodo();
+// 删除二次确认（第 13 轮定案，防误删）：首次点 ✕ 变「确认删除」文字，再点才删。
+// 点删除按钮之外的任意区域取消确认态（按钮 @click.stop 不冒泡，能冒泡到 document
+// 的点击都算「别处」）。
+const confirmDeleteId = ref<string | null>(null);
+
+function onDocClick() {
+  confirmDeleteId.value = null;
+}
+
+onMounted(() => document.addEventListener("click", onDocClick));
+onBeforeUnmount(() => document.removeEventListener("click", onDocClick));
+
+function onDelete(id: string) {
+  if (confirmDeleteId.value !== id) {
+    confirmDeleteId.value = id;
+    return;
+  }
+  confirmDeleteId.value = null;
+  void removeTodo(id);
+}
+
+function onToggleOpen() {
+  todosOpen.value = !todosOpen.value;
+  confirmDeleteId.value = null;
 }
 </script>
 
 <template>
   <div v-if="todoSectionVisible" class="todo-section">
     <button
-      class="todo-header"
+      class="todo-toggle"
       type="button"
       :aria-expanded="todosOpen"
-      @click="todosOpen = !todosOpen"
+      @click="onToggleOpen"
     >
       <svg
         class="todo-caret"
@@ -53,59 +72,49 @@ function onNewTodoKeydown(e: KeyboardEvent) {
         />
       </svg>
       <span class="todo-title">{{ t("popup.todos.title") }}</span>
-      <span v-if="todos.length" class="todo-count">{{ todos.length }}</span>
+      <span class="todo-count">{{ todos.length }}</span>
       <span v-if="!todosOpen && todoChosenIds.length" class="todo-picked">
         {{ t("popup.todos.picked", { n: todoChosenIds.length }) }}
       </span>
     </button>
 
-    <div v-if="todosOpen" class="todo-body">
-      <p v-if="!todos.length" class="todo-empty">{{ t("popup.todos.empty") }}</p>
-      <div v-else class="todo-list">
-        <div v-for="td in todos" :key="td.id" class="todo-row">
-          <button
-            class="todo-chip"
-            :class="{
-              selected: todoChosenIds.includes(td.id),
-              selectable: todoChipsEnabled,
-            }"
-            type="button"
-            :disabled="!todoChipsEnabled || submitting"
-            :title="todoChipsEnabled ? t('popup.todos.chipHint') : td.text"
-            @click="toggleTodo(td.id)"
-          >
-            <span class="todo-chip-text">{{ td.text }}</span>
-          </button>
-          <button
-            class="todo-del"
-            type="button"
-            :disabled="submitting"
-            :title="t('popup.todos.delete')"
-            @click="removeTodo(td.id)"
-          >
-            <svg viewBox="0 0 12 12" width="9" height="9" aria-hidden="true">
-              <line x1="2" y1="2" x2="10" y2="10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
-              <line x1="10" y1="2" x2="2" y2="10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
-            </svg>
-          </button>
-        </div>
-      </div>
-      <div class="todo-add">
-        <input
-          v-model="todoNewText"
-          class="todo-input"
-          type="text"
-          :placeholder="t('popup.todos.addPlaceholder')"
-          :disabled="submitting"
-          @keydown.enter.exact="onNewTodoKeydown"
-        />
+    <div v-if="todosOpen" class="options todo-options">
+      <div
+        v-for="td in todos"
+        :key="td.id"
+        class="option todo-option"
+        :class="{
+          selected: todoChosenIds.includes(td.id),
+          static: !todoChipsEnabled,
+        }"
+        :title="todoChipsEnabled ? t('popup.todos.chipHint') : undefined"
+        @click="!submitting && toggleTodo(td.id)"
+      >
+        <span v-if="todoChipsEnabled" class="check">{{
+          todoChosenIds.includes(td.id) ? "✓" : ""
+        }}</span>
+        <span class="label">{{ td.text }}</span>
         <button
-          class="todo-add-btn"
+          v-if="confirmDeleteId === td.id"
+          class="todo-del-confirm"
           type="button"
-          :disabled="!todoNewText.trim() || submitting"
-          @click="addTodo"
+          :disabled="submitting"
+          @click.stop="onDelete(td.id)"
         >
-          {{ t("popup.todos.add") }}
+          {{ t("popup.todos.deleteConfirm") }}
+        </button>
+        <button
+          v-else
+          class="todo-del"
+          type="button"
+          :disabled="submitting"
+          :title="t('popup.todos.delete')"
+          @click.stop="onDelete(td.id)"
+        >
+          <svg viewBox="0 0 12 12" width="9" height="9" aria-hidden="true">
+            <line x1="2" y1="2" x2="10" y2="10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+            <line x1="10" y1="2" x2="2" y2="10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+          </svg>
         </button>
       </div>
     </div>

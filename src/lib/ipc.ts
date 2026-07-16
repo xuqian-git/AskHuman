@@ -36,6 +36,7 @@ import type {
   SlackWaitArgs,
   TelegramTestArgs,
   ThemeMode,
+  TodoDoneEntry,
   TodoEntry,
   TodoProjectInfo,
   TodosInit,
@@ -355,14 +356,34 @@ export const popupUpdateState = () =>
 export const todosList = (project: string) =>
   invoke<TodoEntry[]>("todos_list", { project });
 
-export const todosAdd = (project: string, text: string) =>
-  invoke<TodoEntry | null>("todos_add", { project, text });
+export const todosAdd = (project: string, text: string, auto = false) =>
+  invoke<TodoEntry | null>("todos_add", { project, text, auto });
+
+/** 切换自动执行标记；返回新状态（条目不存在返回 null）。 */
+export const todosSetAuto = (project: string, id: string, auto: boolean) =>
+  invoke<boolean | null>("todos_set_auto", { project, id, auto });
 
 export const todosRemove = (project: string, id: string) =>
   invoke<boolean>("todos_remove", { project, id });
 
 export const todosClear = (project: string) =>
   invoke<number>("todos_clear", { project });
+
+/** 拖拽排序（GUI 待办窗口）：按给定 id 顺序重排。 */
+export const todosReorder = (project: string, ids: string[]) =>
+  invoke<boolean>("todos_reorder", { project, ids });
+
+/** 清空本项目的执行历史。 */
+export const todosHistoryClear = (project: string) =>
+  invoke<number>("todos_history_clear", { project });
+
+/** 执行历史（最新在前）。 */
+export const todosHistory = (project: string) =>
+  invoke<TodoDoneEntry[]>("todos_history", { project });
+
+/** 从历史一键恢复回待办队列末尾。 */
+export const todosRestore = (project: string, id: string) =>
+  invoke<boolean>("todos_restore", { project, id });
 
 /** 待办窗口初始化：主题 + 语言。 */
 export const todosInit = () => invoke<TodosInit>("todos_init");

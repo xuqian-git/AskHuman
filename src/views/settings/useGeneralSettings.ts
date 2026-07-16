@@ -106,6 +106,14 @@ export function useGeneralSettings(core: SettingsCore) {
     await persist();
   }
 
+  // 待办执行历史保留条数（每项目；裁剪发生在下次执行出队记录时）。
+  async function changeTodoHistoryLimit(raw: number) {
+    if (!config.value) return;
+    const v = Number.isFinite(raw) ? Math.max(0, Math.floor(raw)) : 0;
+    config.value.general.todoHistoryLimit = v;
+    await persist();
+  }
+
   async function cleanHistoryNow() {
     const limit = config.value?.general.historyLimit ?? 0;
     historyTotal.value = await trimHistory(limit);
@@ -257,6 +265,7 @@ export function useGeneralSettings(core: SettingsCore) {
     historyTotal,
     overLimit,
     changeHistoryLimit,
+    changeTodoHistoryLimit,
     cleanHistoryNow,
     SPEECH_LANGUAGES,
     changeSpeechLanguage,
