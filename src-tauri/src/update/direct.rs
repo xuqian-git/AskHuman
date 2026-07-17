@@ -23,8 +23,8 @@ impl DirectUpdater {
 
 #[async_trait::async_trait]
 impl Updater for DirectUpdater {
-    async fn check_latest(&self) -> Result<RemoteLatest> {
-        let release = fetch_latest_release().await?;
+    async fn check_latest(&self, fresh: bool) -> Result<RemoteLatest> {
+        let release = fetch_latest_release(fresh).await?;
         let version = super::normalize_version(release["tag_name"].as_str().unwrap_or(""));
         if version.is_empty() {
             return Err(anyhow!("无法解析最新版本号"));
@@ -57,13 +57,16 @@ impl Updater for DirectUpdater {
 }
 
 /// 拉取 `/releases/latest` 的 JSON（用带 token 的 GitHub API 客户端）。
-async fn fetch_latest_release() -> Result<Value> {
-    let resp = super::github_client()
+async fn fetch_latest_release(fresh: bool) -> Result<Value> {
+    let mut request = super::github_client()
         .get(github_api_url("releases/latest"))
-        .header("Accept", "application/vnd.github+json")
-        .send()
-        .await
-        .context("GitHub API 请求失败")?;
+        .header("Accept", "application/vnd.github+json");
+    if fresh {
+        request = request
+            .header(reqwest::header::CACHE_CONTROL, "no-cache")
+            .header(reqwest::header::PRAGMA, "no-cache");
+    }
+    let resp = request.send().await.context("GitHub API 请求失败")?;
     if !resp.status().is_success() {
         return Err(super::github_status_error(resp.status()));
     }
@@ -145,7 +148,7 @@ async fn apply_unix(progress: Option<ProgressCb>) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
     // 取新鲜的资产直链（避免用陈旧的 check 结果）。
-    let release = fetch_latest_release().await?;
+    let release = fetch_latest_release(true).await?;
     let url = asset_url_for_current(&release)
         .ok_or_else(|| anyhow!("未找到当前平台的发布资产，请手动下载"))?;
     if url.contains("/releases/tag/") || !url.contains("://") {

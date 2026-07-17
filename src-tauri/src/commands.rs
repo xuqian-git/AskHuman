@@ -2376,14 +2376,32 @@ pub fn get_app_version() -> String {
     crate::update::current_version()
 }
 
-/// 检查更新：查远端最新正式版并与本地比较。`manual=true` 时清空「忽略」集合。
+/// Check the latest stable release and immediately synchronize a successful result into the GUI
+/// Host and daemon snapshot. Manual checks revalidate upstream caches and clear dismissed versions
+/// in the same persisted-state transaction.
 #[tauri::command]
-pub async fn update_check(manual: bool) -> Result<crate::update::UpdateInfo, String> {
-    if manual {
-        crate::update::state::clear_dismissed();
-    }
-    let info = crate::update::check().await.map_err(|e| e.to_string())?;
-    crate::update::state::record_check(&info.latest_version, &info.release_notes);
+pub async fn update_check(
+    app: AppHandle,
+    manual: bool,
+) -> Result<crate::update::UpdateInfo, String> {
+    let checked = if manual {
+        crate::update::check_fresh().await
+    } else {
+        crate::update::check().await
+    };
+    let info = match checked {
+        Ok(info) => crate::update::persist_check_result(info, manual),
+        Err(error) => {
+            #[cfg(unix)]
+            if manual {
+                crate::app::gui_host::sync_update_check_error(&app, &error.to_string());
+            }
+            return Err(error.to_string());
+        }
+    };
+    #[cfg(unix)]
+    crate::app::gui_host::sync_checked_update(&app, &info, manual);
+    crate::client::notify_update_state_changed().await;
     Ok(info)
 }
 

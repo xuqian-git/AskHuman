@@ -1,22 +1,24 @@
-//! 自更新状态 `~/.askhuman/update.json`：缓存最新版本/日志/检查时间、用户忽略集合、
-//! 以及「盘上已是新版、待 drain 生效」标记。读写均 best-effort（缺失/损坏回默认）。
+//! Self-update state in `~/.askhuman/update.json`: latest version, notes, check time, dismissed
+//! versions, and the pending-restart flag. Writes are best-effort and atomic; Unix writers are also
+//! serialized across processes so the daemon, GUI Host, and Settings cannot overwrite fields.
 
 use crate::paths;
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct UpdateState {
-    /// 上次检查到的最新正式版（规范化版本号）。
+    /// Latest stable release observed by any process, normalized without a `v` prefix.
     pub latest_version: String,
-    /// 最新版日志摘要（markdown），可空。
+    /// Release notes for `latest_version`.
     pub release_notes: String,
-    /// 上次检查时间（unix 秒）。
+    /// Time of the most recent successful remote check (Unix seconds).
     pub checked_at: u64,
-    /// 用户已忽略、不再主动提示的版本号集合。
+    /// Versions the user dismissed from proactive update prompts.
     pub dismissed_versions: Vec<String>,
-    /// 盘上二进制已是新版、等待 daemon drain 换新生效。
+    /// A new binary is on disk and waiting for the daemon/GUI Host to switch over.
     pub pending: bool,
 }
 
@@ -27,66 +29,227 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
-/// 读取状态（缺失 / 解析失败 → 默认）。
+/// Read the current state. A missing or malformed file degrades to defaults.
 pub fn load() -> UpdateState {
-    std::fs::read(paths::update_state_file())
+    load_at(&paths::update_state_file())
+}
+
+fn load_at(path: &Path) -> UpdateState {
+    std::fs::read(path)
         .ok()
-        .and_then(|d| serde_json::from_slice(&d).ok())
+        .and_then(|data| serde_json::from_slice(&data).ok())
         .unwrap_or_default()
 }
 
-/// 原子落盘（best-effort；不存在配置目录则创建）。
-pub fn save(state: &UpdateState) {
-    let path = paths::update_state_file();
+/// Atomic best-effort write. Unique temp names also avoid collisions on platforms where advisory
+/// locking is unavailable.
+fn store_at(path: &Path, state: &UpdateState) {
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
     let Ok(data) = serde_json::to_vec_pretty(state) else {
         return;
     };
-    let tmp = path.with_extension("json.tmp");
+    let tmp = path.with_extension(format!("json.tmp-{}", uuid::Uuid::new_v4()));
     if std::fs::write(&tmp, &data).is_ok() {
-        let _ = std::fs::rename(&tmp, &path);
+        let _ = std::fs::rename(&tmp, path);
     }
 }
 
-/// 记录一次检查结果（更新最新版本 / 日志 / 时间）。
-pub fn record_check(latest_version: &str, release_notes: &str) {
-    let mut s = load();
-    s.latest_version = latest_version.to_string();
-    s.release_notes = release_notes.to_string();
-    s.checked_at = now_secs();
-    save(&s);
+fn mutate_at(path: &Path, lock: &Path, mutate: impl FnOnce(&mut UpdateState)) -> UpdateState {
+    let _guard = lock_at(lock);
+    let mut state = load_at(path);
+    mutate(&mut state);
+    store_at(path, &state);
+    state
 }
 
-/// 该版本是否已被用户忽略。
+/// Record a successful check. The cached latest version is monotonic so a briefly stale remote
+/// response cannot downgrade a version another process has already observed. Manual checks clear
+/// dismissed versions in the same transaction, after the network check succeeds.
+pub fn record_check(
+    latest_version: &str,
+    release_notes: &str,
+    clear_dismissed: bool,
+) -> UpdateState {
+    record_check_at(
+        &paths::update_state_file(),
+        &paths::update_state_lock(),
+        latest_version,
+        release_notes,
+        clear_dismissed,
+    )
+}
+
+fn record_check_at(
+    path: &Path,
+    lock: &Path,
+    latest_version: &str,
+    release_notes: &str,
+    clear_dismissed: bool,
+) -> UpdateState {
+    mutate_at(path, lock, |state| {
+        if state.latest_version.is_empty()
+            || super::compare_versions(latest_version, &state.latest_version) >= 0
+        {
+            state.latest_version = latest_version.to_string();
+            state.release_notes = release_notes.to_string();
+        }
+        if clear_dismissed {
+            state.dismissed_versions.clear();
+        }
+        state.checked_at = now_secs();
+    })
+}
+
+/// Whether a version is currently dismissed.
 pub fn is_dismissed(version: &str) -> bool {
-    load().dismissed_versions.iter().any(|v| v == version)
+    load().dismissed_versions.iter().any(|item| item == version)
 }
 
-/// 忽略某版本（不再主动弹该版本提示）。
+/// Dismiss one version from proactive prompts.
 pub fn dismiss(version: &str) {
-    let mut s = load();
-    if !s.dismissed_versions.iter().any(|v| v == version) {
-        s.dismissed_versions.push(version.to_string());
-        save(&s);
-    }
+    mutate_at(
+        &paths::update_state_file(),
+        &paths::update_state_lock(),
+        |state| {
+            if !state.dismissed_versions.iter().any(|item| item == version) {
+                state.dismissed_versions.push(version.to_string());
+            }
+        },
+    );
 }
 
-/// 清空忽略集合（用户主动「检查更新」时调用）。
+/// Clear all dismissed versions.
 pub fn clear_dismissed() {
-    let mut s = load();
-    if !s.dismissed_versions.is_empty() {
-        s.dismissed_versions.clear();
-        save(&s);
-    }
+    mutate_at(
+        &paths::update_state_file(),
+        &paths::update_state_lock(),
+        |state| state.dismissed_versions.clear(),
+    );
 }
 
-/// 设置「待生效」标记。
+/// Set or clear the pending-restart flag.
 pub fn set_pending(pending: bool) {
-    let mut s = load();
-    if s.pending != pending {
-        s.pending = pending;
-        save(&s);
+    mutate_at(
+        &paths::update_state_file(),
+        &paths::update_state_lock(),
+        |state| state.pending = pending,
+    );
+}
+
+// ===== Cross-process write lock =====
+
+#[cfg(unix)]
+struct LockGuard {
+    _file: std::fs::File,
+}
+
+#[cfg(unix)]
+fn lock_at(path: &Path) -> Option<LockGuard> {
+    use std::os::unix::io::AsRawFd;
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(path)
+        .ok()?;
+    unsafe {
+        libc::flock(file.as_raw_fd(), libc::LOCK_EX);
+    }
+    Some(LockGuard { _file: file })
+}
+
+#[cfg(not(unix))]
+fn lock_at(_path: &Path) -> Option<()> {
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_paths() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("update.json");
+        let lock = dir.path().join("update.lock");
+        (dir, state, lock)
+    }
+
+    #[test]
+    fn record_check_never_downgrades_and_preserves_other_fields() {
+        let (_dir, path, lock) = test_paths();
+        store_at(
+            &path,
+            &UpdateState {
+                latest_version: "0.9.4".to_string(),
+                release_notes: "new".to_string(),
+                dismissed_versions: vec!["0.9.3".to_string()],
+                pending: true,
+                ..Default::default()
+            },
+        );
+
+        let stored = record_check_at(&path, &lock, "0.9.3", "old", false);
+        assert_eq!(stored.latest_version, "0.9.4");
+        assert_eq!(stored.release_notes, "new");
+        assert_eq!(stored.dismissed_versions, vec!["0.9.3"]);
+        assert!(stored.pending);
+        assert!(stored.checked_at > 0);
+        assert_eq!(load_at(&path), stored);
+    }
+
+    #[test]
+    fn manual_record_clears_dismissed_in_same_transaction() {
+        let (_dir, path, lock) = test_paths();
+        store_at(
+            &path,
+            &UpdateState {
+                latest_version: "0.9.3".to_string(),
+                dismissed_versions: vec!["0.9.3".to_string()],
+                ..Default::default()
+            },
+        );
+
+        let stored = record_check_at(&path, &lock, "0.9.4", "notes", true);
+        assert_eq!(stored.latest_version, "0.9.4");
+        assert!(stored.dismissed_versions.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn concurrent_mutations_preserve_independent_fields() {
+        let (_dir, path, lock) = test_paths();
+        let handles = [0, 1, 2]
+            .into_iter()
+            .map(|operation| {
+                let path = path.clone();
+                let lock = lock.clone();
+                std::thread::spawn(move || match operation {
+                    0 => {
+                        record_check_at(&path, &lock, "0.9.4", "notes", false);
+                    }
+                    1 => {
+                        mutate_at(&path, &lock, |state| state.pending = true);
+                    }
+                    _ => {
+                        mutate_at(&path, &lock, |state| {
+                            state.dismissed_versions.push("0.9.3".to_string())
+                        });
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        let stored = load_at(&path);
+        assert_eq!(stored.latest_version, "0.9.4");
+        assert!(stored.pending);
+        assert_eq!(stored.dismissed_versions, vec!["0.9.3"]);
     }
 }

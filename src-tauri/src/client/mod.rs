@@ -92,6 +92,15 @@ pub async fn request_status() -> Option<StatusInfo> {
     }
 }
 
+/// Tell an already-running daemon to reload the persisted update snapshot. This is best-effort and
+/// deliberately does not start the daemon merely because Settings or the tray checked for updates.
+pub async fn notify_update_state_changed() {
+    let Ok((_reader, mut writer)) = connect_split().await else {
+        return;
+    };
+    let _ = ipc::write_msg(&mut writer, &ClientMsg::RefreshUpdateState).await;
+}
+
 /// 请求停止（force=false 为 graceful：有在途请求时 Daemon 排空后退出）；
 /// 收到 Stopping 回应返回 true，未运行返回 false。
 pub async fn request_stop(force: bool) -> bool {

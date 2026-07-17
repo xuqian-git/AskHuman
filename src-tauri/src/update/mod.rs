@@ -76,7 +76,7 @@ pub type ProgressCb = Box<dyn Fn(DownloadProgress) + Send + Sync>;
 #[async_trait::async_trait]
 pub trait Updater: Send + Sync {
     /// 查询远端最新正式版（不做版本比较、不落盘）。
-    async fn check_latest(&self) -> Result<RemoteLatest>;
+    async fn check_latest(&self, fresh: bool) -> Result<RemoteLatest>;
     /// 应用更新：把新二进制写到盘上（DirectUpdater 替换文件 / NpmUpdater 跑 npm）。
     /// **不** restart；换新交给 daemon drain。
     async fn apply(&self, progress: Option<ProgressCb>) -> Result<()>;
@@ -126,9 +126,19 @@ pub fn select_updater() -> Box<dyn Updater> {
 
 /// 完整检查：查远端最新版 + 与本地比较，返回对外结果。
 pub async fn check() -> Result<UpdateInfo> {
+    check_with_freshness(false).await
+}
+
+/// Manual checks ask upstream caches to revalidate so a just-published release is not hidden by a
+/// previously cached `/latest` response.
+pub async fn check_fresh() -> Result<UpdateInfo> {
+    check_with_freshness(true).await
+}
+
+async fn check_with_freshness(fresh: bool) -> Result<UpdateInfo> {
     let kind = detect_install_kind();
     let updater = select_updater();
-    let latest = updater.check_latest().await?;
+    let latest = updater.check_latest(fresh).await?;
     let current = current_version();
     let available = compare_versions(&latest.version, &current) > 0;
     Ok(UpdateInfo {
@@ -139,6 +149,18 @@ pub async fn check() -> Result<UpdateInfo> {
         source_url: latest.source_url,
         is_npm: matches!(kind, InstallKind::Npm),
     })
+}
+
+/// Persist a successful check and reconcile it with the highest version observed by any process.
+/// The returned value is what callers should display and broadcast.
+pub fn persist_check_result(mut info: UpdateInfo, clear_dismissed: bool) -> UpdateInfo {
+    let stored = state::record_check(&info.latest_version, &info.release_notes, clear_dismissed);
+    if stored.latest_version != info.latest_version {
+        info.latest_version = stored.latest_version;
+        info.release_notes = stored.release_notes;
+    }
+    info.available = compare_versions(&info.latest_version, &info.current_version) > 0;
+    info
 }
 
 /// 规范化版本号：去前缀 `v`、丢弃预发布后缀、仅保留数字与点。

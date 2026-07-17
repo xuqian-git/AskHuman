@@ -1204,6 +1204,7 @@ pub fn tr(lang: Lang, key: &'static str) -> &'static str {
         "tray.checkUpdate" => pick(lang, "Check for Updates", "检查更新"),
         "tray.checkingUpdate" => pick(lang, "Checking for updates…", "正在检查更新…"),
         "tray.updateCurrent" => pick(lang, "AskHuman is up to date", "AskHuman 已是最新版"),
+        "tray.updateFound" => pick(lang, "Update found: v{v}", "已检查到新版本 v{v}"),
         "tray.checkUpdateFailed" => pick(
             lang,
             "⚠ Update check failed: {e}",

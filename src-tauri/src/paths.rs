@@ -65,6 +65,11 @@ pub fn update_state_file() -> PathBuf {
     config_dir().join("update.json")
 }
 
+/// Cross-process write lock for `update.json`.
+pub fn update_state_lock() -> PathBuf {
+    config_dir().join("update.lock")
+}
+
 /// 自动集成产物的内部所有权账本 `~/.askhuman/integration-state.json`。
 ///
 /// 它与用户设置 `config.json` 分离，只用于区分“用户预存配置”和“AskHuman 实际追加配置”，

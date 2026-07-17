@@ -372,6 +372,9 @@ pub enum ClientMsg {
     /// 该订阅刻意**不计入 daemon 空闲保活**——图标不得把 daemon 续命（续命只由「有窗口」的
     /// 普通连接承担）。daemon 收到后在 `handle_tray_sub` 中抵消其对 `active` 的占用。
     TraySubscribe,
+    /// A successful manual update check changed `update.json`. Reload and broadcast the snapshot
+    /// without starting or keeping the daemon alive.
+    RefreshUpdateState,
     /// 托盘「待答」子菜单点击：请求 daemon 聚焦 / 闪烁对应请求的弹窗（宿主→daemon，即发即走）。
     /// daemon 找到该请求的弹窗连接转发 `FocusPopup`；无弹窗（如弹窗拉起失败）则静默忽略。
     FocusRequest { request_id: String },
@@ -740,6 +743,14 @@ mod tests {
     fn tray_subscribe_unit_variant() {
         let msg: ClientMsg = serde_json::from_str(r#"{"type":"traySubscribe"}"#).unwrap();
         assert!(matches!(msg, ClientMsg::TraySubscribe));
+    }
+
+    #[test]
+    fn refresh_update_state_roundtrip() {
+        let json = serde_json::to_string(&ClientMsg::RefreshUpdateState).unwrap();
+        assert_eq!(json, r#"{"type":"refreshUpdateState"}"#);
+        let back: ClientMsg = serde_json::from_str(&json).unwrap();
+        assert!(matches!(back, ClientMsg::RefreshUpdateState));
     }
 
     /// TrayState 序列化往返（变体名 camelCase、字段 snake_case）。

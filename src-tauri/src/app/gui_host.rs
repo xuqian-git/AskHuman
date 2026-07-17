@@ -107,6 +107,7 @@ enum UpdateActionState {
     Idle,
     Checking,
     Current,
+    Found(String),
     CheckFailed(String),
     Applying,
     ApplyFailed(String),
@@ -135,14 +136,20 @@ fn merge_update_status(
     persisted: &crate::update::state::UpdateState,
     current: &str,
 ) -> (bool, String, bool) {
-    let mut available = daemon_available;
-    let mut latest = daemon_latest;
-    if cached_update_available(persisted, current)
-        && (!available || crate::update::compare_versions(&persisted.latest_version, &latest) > 0)
-    {
-        available = true;
-        latest = persisted.latest_version.clone();
-    }
+    let persisted_wins = !persisted.latest_version.is_empty()
+        && (daemon_latest.is_empty()
+            || crate::update::compare_versions(&persisted.latest_version, &daemon_latest) >= 0);
+    let (mut available, latest) = if persisted_wins {
+        (
+            cached_update_available(persisted, current),
+            persisted.latest_version.clone(),
+        )
+    } else {
+        (
+            daemon_available && crate::update::compare_versions(&daemon_latest, current) > 0,
+            daemon_latest,
+        )
+    };
     let pending = daemon_pending || persisted.pending;
     if pending {
         available = false;
@@ -153,11 +160,54 @@ fn merge_update_status(
 /// Seed the daemon-independent part of the tray from the persisted update check.
 fn initial_tray_data() -> TrayData {
     let update = crate::update::state::load();
+    let (update_available, update_latest, pending) = merge_update_status(
+        false,
+        String::new(),
+        false,
+        &update,
+        &crate::update::current_version(),
+    );
     TrayData {
-        update_available: cached_update_available(&update, &crate::update::current_version()),
-        update_latest: update.latest_version,
+        update_available,
+        update_latest,
+        pending,
         ..TrayData::default()
     }
+}
+
+fn apply_checked_update(data: &mut TrayData, info: &crate::update::UpdateInfo) {
+    data.update_latest = info.latest_version.clone();
+    data.update_available = info.available && !data.pending;
+}
+
+/// Immediately synchronize a Settings or tray check into the long-lived GUI Host. Disk state is
+/// still authoritative; this closes the gap while the daemon is stopped or before its next frame.
+pub(crate) fn sync_checked_update(
+    app: &AppHandle,
+    info: &crate::update::UpdateInfo,
+    show_feedback: bool,
+) {
+    let Some(state) = app.try_state::<HostState>() else {
+        return;
+    };
+    apply_checked_update(&mut state.data.lock().unwrap(), info);
+    if show_feedback {
+        *state.update_action.lock().unwrap() = if info.available {
+            UpdateActionState::Found(info.latest_version.clone())
+        } else {
+            UpdateActionState::Current
+        };
+    }
+    refresh_on_main(app);
+}
+
+pub(crate) fn sync_update_check_error(app: &AppHandle, error: &str) {
+    let Some(state) = app.try_state::<HostState>() else {
+        return;
+    };
+    *state.update_action.lock().unwrap() =
+        UpdateActionState::CheckFailed(compact_update_error(error));
+    refresh_on_main(app);
 }
 
 pub struct HostState {
@@ -887,6 +937,9 @@ fn update_action_text(action: &UpdateActionState, lang: Lang) -> Option<String> 
         UpdateActionState::Idle => return None,
         UpdateActionState::Checking => i18n::tr(lang, "tray.checkingUpdate").to_string(),
         UpdateActionState::Current => i18n::tr(lang, "tray.updateCurrent").to_string(),
+        UpdateActionState::Found(version) => {
+            i18n::tr(lang, "tray.updateFound").replace("{v}", version)
+        }
         UpdateActionState::CheckFailed(error) => {
             i18n::tr(lang, "tray.checkUpdateFailed").replace("{e}", error)
         }
@@ -1059,33 +1112,16 @@ pub fn on_menu_event(app: &AppHandle, id: &str) {
             refresh_on_main(app);
             let app = app.clone();
             tauri::async_runtime::spawn(async move {
-                crate::update::state::clear_dismissed();
-                match crate::update::check().await {
+                match crate::update::check_fresh().await {
                     Ok(info) => {
-                        crate::update::state::record_check(
-                            &info.latest_version,
-                            &info.release_notes,
-                        );
-                        if let Some(state) = app.try_state::<HostState>() {
-                            let mut data = state.data.lock().unwrap();
-                            data.update_available = info.available;
-                            data.update_latest = info.latest_version;
-                            *state.update_action.lock().unwrap() = if info.available {
-                                UpdateActionState::Idle
-                            } else {
-                                UpdateActionState::Current
-                            };
-                        }
+                        let info = crate::update::persist_check_result(info, true);
+                        sync_checked_update(&app, &info, true);
+                        crate::client::notify_update_state_changed().await;
                     }
                     Err(error) => {
-                        if let Some(state) = app.try_state::<HostState>() {
-                            *state.update_action.lock().unwrap() = UpdateActionState::CheckFailed(
-                                compact_update_error(&error.to_string()),
-                            );
-                        }
+                        sync_update_check_error(&app, &error.to_string());
                     }
                 }
-                refresh_on_main(&app);
             });
         }
         "apply_update" => {
@@ -1792,12 +1828,39 @@ mod tests {
 
         let pending = crate::update::state::UpdateState {
             pending: true,
-            ..persisted
+            ..persisted.clone()
         };
         assert_eq!(
             merge_update_status(true, "1.2.0".to_string(), false, &pending, "1.1.0"),
             (false, "1.2.0".to_string(), true)
         );
+
+        let dismissed = crate::update::state::UpdateState {
+            dismissed_versions: vec!["1.2.0".to_string()],
+            ..persisted
+        };
+        assert_eq!(
+            merge_update_status(true, "1.1.5".to_string(), false, &dismissed, "1.1.0"),
+            (false, "1.2.0".to_string(), false)
+        );
+    }
+
+    #[test]
+    fn checked_result_updates_tray_data_without_daemon_frame() {
+        let mut data = TrayData::default();
+        apply_checked_update(
+            &mut data,
+            &crate::update::UpdateInfo {
+                available: true,
+                current_version: "1.1.0".to_string(),
+                latest_version: "1.2.0".to_string(),
+                release_notes: String::new(),
+                source_url: String::new(),
+                is_npm: false,
+            },
+        );
+        assert!(data.update_available);
+        assert_eq!(data.update_latest, "1.2.0");
     }
 
     #[test]
@@ -1816,6 +1879,29 @@ mod tests {
             ("AskHuman is up to date", false)
         );
         assert_eq!(item(&nodes, "check_update"), ("Check for Updates", true));
+    }
+
+    #[test]
+    fn found_result_remains_visible_after_menu_closes() {
+        let nodes = build_specs(
+            false,
+            Lang::En,
+            &TrayData {
+                update_available: true,
+                update_latest: "1.2.0".to_string(),
+                ..Default::default()
+            },
+            &[],
+            false,
+            false,
+            &UpdateActionState::Found("1.2.0".to_string()),
+        );
+        assert_eq!(
+            item(&nodes, "st.update_action"),
+            ("Update found: v1.2.0", false)
+        );
+        assert_eq!(item(&nodes, "check_update"), ("Check for Updates", true));
+        assert!(item(&nodes, "apply_update").1);
     }
 
     #[test]

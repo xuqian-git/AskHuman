@@ -527,20 +527,26 @@ struct UpdateSnapshot {
 /// 若残留 pending（上次换新前由旧 daemon 落盘）会让弹窗错误地常驻「待生效」横条。
 fn init_update_snapshot() -> UpdateSnapshot {
     let st = crate::update::state::load();
+    if st.pending {
+        crate::update::state::set_pending(false);
+    }
+    let mut snapshot = update_snapshot_from_state(&st);
+    snapshot.pending = false;
+    snapshot
+}
+
+fn update_snapshot_from_state(st: &crate::update::state::UpdateState) -> UpdateSnapshot {
     let available = !st.latest_version.is_empty()
         && crate::update::compare_versions(&st.latest_version, &crate::update::current_version())
             > 0
         && !st
             .dismissed_versions
             .iter()
-            .any(|v| v == &st.latest_version);
-    if st.pending {
-        crate::update::state::set_pending(false);
-    }
+            .any(|version| version == &st.latest_version);
     UpdateSnapshot {
         available,
-        latest_version: st.latest_version,
-        pending: false,
+        latest_version: st.latest_version.clone(),
+        pending: st.pending,
     }
 }
 
@@ -558,7 +564,7 @@ fn update_state_msg(state: &ServerState) -> ServerMsg {
 async fn check_for_update(state: &Arc<ServerState>) {
     match crate::update::check().await {
         Ok(info) => {
-            crate::update::state::record_check(&info.latest_version, &info.release_notes);
+            let info = crate::update::persist_check_result(info, false);
             let dismissed = crate::update::state::is_dismissed(&info.latest_version);
             let available = info.available && !dismissed;
             let changed = {
@@ -574,6 +580,24 @@ async fn check_for_update(state: &Arc<ServerState>) {
             }
         }
         Err(e) => log(&format!("update check failed: {}", e)),
+    }
+}
+
+/// Reload a successful manual check written by Settings or the GUI Host, then immediately update
+/// all tray subscribers and open popup helpers.
+fn refresh_update_snapshot(state: &Arc<ServerState>) {
+    let next = update_snapshot_from_state(&crate::update::state::load());
+    let changed = {
+        let mut current = state.update.lock().unwrap();
+        let changed = current.available != next.available
+            || current.latest_version != next.latest_version
+            || current.pending != next.pending;
+        *current = next;
+        changed
+    };
+    if changed {
+        state.registry.broadcast_to_guis(update_state_msg(state));
+        broadcast_tray_state(state);
     }
 }
 
@@ -1213,6 +1237,7 @@ async fn control_loop(
             ClientMsg::AgentsSubscribe => return Control::AgentsSub,
             // 菜单栏宿主订阅：接管连接持续推送 TrayState（非保活）。
             ClientMsg::TraySubscribe => return Control::TraySub,
+            ClientMsg::RefreshUpdateState => refresh_update_snapshot(state),
             // 托盘「待答」子菜单点击：聚焦/闪烁对应请求的弹窗（即发即走，无回包）。
             ClientMsg::FocusRequest { request_id } => {
                 state.registry.focus_popup(&request_id);

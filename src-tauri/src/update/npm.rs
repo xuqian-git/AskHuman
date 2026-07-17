@@ -29,8 +29,8 @@ impl NpmUpdater {
 
 #[async_trait::async_trait]
 impl Updater for NpmUpdater {
-    async fn check_latest(&self) -> Result<RemoteLatest> {
-        let version = npm_latest_version().await?;
+    async fn check_latest(&self, fresh: bool) -> Result<RemoteLatest> {
+        let version = npm_latest_version(fresh).await?;
         // 日志按 tag 从 GitHub 取（best-effort，取不到则空，前端显示占位）。
         let notes = super::notes::notes_for_tag(&version)
             .await
@@ -48,14 +48,15 @@ impl Updater for NpmUpdater {
 }
 
 /// 从 npm registry 取主包最新版本（`https://registry.npmjs.org/<pkg>/latest`）。
-async fn npm_latest_version() -> Result<String> {
+async fn npm_latest_version(fresh: bool) -> Result<String> {
     let url = format!("https://registry.npmjs.org/{}/latest", NPM_PACKAGE);
-    let resp = http_client()
-        .get(url)
-        .header("Accept", "application/json")
-        .send()
-        .await
-        .context("npm registry 请求失败")?;
+    let mut request = http_client().get(url).header("Accept", "application/json");
+    if fresh {
+        request = request
+            .header(reqwest::header::CACHE_CONTROL, "no-cache")
+            .header(reqwest::header::PRAGMA, "no-cache");
+    }
+    let resp = request.send().await.context("npm registry 请求失败")?;
     if !resp.status().is_success() {
         return Err(anyhow!("npm registry 返回 {}", resp.status()));
     }
