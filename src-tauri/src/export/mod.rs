@@ -1,8 +1,8 @@
-//! Render export artifacts for IM commands (diff / transcript → HTML or docx).
+//! Render channel-specific export artifacts for IM `/diff` and `/transcript`.
 
 pub mod diff_docx;
+pub mod diff_file;
 pub mod diff_html;
-pub mod diff_md;
 pub mod transcript_docx;
 pub mod transcript_html;
 pub mod transcript_md;
@@ -43,8 +43,8 @@ pub fn render_diff_html(model: &DiffModel, meta_title: &str) -> String {
     diff_html::render(model, meta_title)
 }
 
-pub fn render_diff_md(model: &DiffModel, meta_title: &str) -> String {
-    diff_md::render(model, meta_title)
+pub fn render_diff_file(model: &DiffModel) -> String {
+    diff_file::render(model)
 }
 
 pub fn render_diff_docx(model: &DiffModel, meta_title: &str) -> Result<Vec<u8>, String> {

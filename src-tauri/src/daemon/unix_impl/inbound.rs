@@ -1701,10 +1701,10 @@ pub(super) async fn run_diff(
     // 用户定案：直接发附件，不附摘要消息头。
     let (bytes, name) = match channel_id {
         "feishu" => {
-            let md = crate::export::render_diff_md(&model, &meta);
+            let diff = crate::export::render_diff_file(&model);
             (
-                md.into_bytes(),
-                crate::export::diff_filename(seq, &project, "md"),
+                diff.into_bytes(),
+                crate::export::diff_filename(seq, &project, "diff"),
             )
         }
         "dingding" | "slack" => match crate::export::render_diff_docx(&model, &meta) {

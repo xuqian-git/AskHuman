@@ -1,7 +1,7 @@
 # IM `/diff` · `/stage` · `/transcript` 命令
 
 > 在 IM 渠道为已追踪 agent 增加三个命令：查看未暂存 diff、确认后 stage 改动、导出完整会话 transcript。
-> 无参时复用通用单选卡选 agent；有编号时直达。`/diff` 与 `/transcript` 产出渲染附件（飞书 `.md` / Telegram `.html` / Slack·钉钉 `.docx`）；`/stage` 经轻量确认卡二次确认后执行 `git add -A`（四渠道，钉钉专用双按钮模板）。
+> 无参时复用通用单选卡选 agent；有编号时直达。`/diff` 与 `/transcript` 产出附件（飞书 diff 为 `.diff`、transcript 为 `.md` / Telegram `.html` / Slack·钉钉 `.docx`）；`/stage` 经轻量确认卡二次确认后执行 `git add -A`（四渠道，钉钉专用双按钮模板）。
 >
 > 关联计划：`docs/plans/im-diff-stage-transcript.md`  
 > 依赖：agent 生命周期追踪（`docs/specs/agent-lifecycle-tracking.md`）、通用单选卡（`docs/specs/im-select-card.md`）、四渠道文件发送能力。
@@ -32,9 +32,9 @@
 | D10 | `/stage` 范围 | `git add -A`（修改/删除 + untracked，与 `/diff` 展示范围对齐）；**不 commit** |
 | D11 | `/stage` 确认 | **一律**先发确认卡（有编号也要）：列将 stage 的路径（最多前 30 +「另有 N 个」）+ **[确认暂存] [取消]**；确认后执行；取消定格 |
 | D12 | Confirm 卡 | **新建**轻量 Confirm 抽象（**不**复用提问卡 / 单选卡）；不持久化；daemon 重启后旧卡静默无效；TTL ~30min（同 select） |
-| D13 | 附件格式 | **Telegram：`.html`**（深色 + 显式前景/背景）；**飞书：`.md`**；**钉钉/Slack：`.docx`**（Slack 对 html/md 附件当源码，docx 可原生预览） |
-| D14 | 摘要行 | 发附件前先发一行短文本摘要（agent 编号/类型/项目 + 操作说明 + 规模） |
-| D15 | 文件名 | `diff-{seq}-{project}.html|.docx`、`transcript-{seq}-{title-slug}.html|.docx` |
+| D13 | 附件格式 | **Telegram：`.html`**（深色 + 显式前景/背景）；**飞书：diff 用 `.diff` unified-style 纯文本、transcript 用 `.md`**；**钉钉/Slack：`.docx`**（Slack 对 html/md 附件当源码，docx 可原生预览） |
+| D14 | 发送形态 | 直接发送附件，不另发摘要文本消息 |
+| D15 | 文件名 | `diff-{seq}-{project}.diff|.html|.docx`、`transcript-{seq}-{title-slug}.md|.html|.docx` |
 | D16 | HTML 高亮 | 自包含轻量高亮（内嵌压缩脚本或按扩展名正则上色）+ **红绿行背景**；无外网依赖 |
 | D17 | `/transcript` 形态 | **聊天式可滚动文档**（非截图）；尽量完整会话；超限从**最早**截断并页头说明 |
 | D18 | 思考块 | 能识别则 **默认折叠**（HTML `<details>`；docx 用「思考」小节/缩写） |
@@ -78,8 +78,8 @@ resolve agent → cwd → git root
   → 无 git 根：文本「非 git 仓库」
   → git status / diff 收集 unstaged + untracked
   → 空：文本「无未暂存改动」
-  → 构建结构化 DiffModel → 渲染 HTML 或 docx
-  → 截断门控 → 写临时文件 → 摘要文本 + 上传发送 → 清临时文件
+  → 构建结构化 DiffModel → 按渠道渲染 diff / HTML / docx
+  → 截断门控 → 写临时文件 → 上传发送 → 清临时文件
 ```
 
 **Diff 语义细节**：
@@ -177,10 +177,10 @@ ConfirmView {
 
 | 渠道 | diff / transcript | stage 确认 |
 |---|---|---|
-| 飞书 | 摘要文本 + `upload_file`/`send_file`（.html） | Confirm 卡（P1） |
-| Telegram | 摘要 + `send_document`（.html） | Confirm 卡（P1） |
-| Slack | 摘要 + `upload_file`（.html） | Confirm 卡（P1） |
-| 钉钉 | 摘要 + docx 上传发送 | Confirm 模板 **P2**；P1 文本降级 |
+| 飞书 | 直接 `upload_file`/`send_file`；diff 为 `.diff`，transcript 为 `.md` | Confirm 卡（P1） |
+| Telegram | 直接 `send_document`（.html） | Confirm 卡（P1） |
+| Slack | 直接 `upload_file`（.docx） | Confirm 卡（P1） |
+| 钉钉 | 直接上传发送 docx | Confirm 模板 **P2**；P1 文本降级 |
 
 临时文件：写在 `paths::temp` 下，发送后删除（失败 best-effort 清理）。
 
@@ -206,7 +206,7 @@ ConfirmView {
 
 ## 9. 验收要点
 
-1. `/diff 3` 在有 unstaged 时收到摘要 + 可打开的 html（钉钉 docx），红绿可见；staged-only 改动不出现。
+1. `/diff 3` 在有 unstaged 时收到附件：飞书为易读的 unified-style `.diff`，Telegram 为 html，钉钉/Slack 为 docx；staged-only 改动不出现。
 2. untracked 文件出现在 diff 中。
 3. `/stage 3` 先出确认卡；确认后 `git status` 显示已 stage；取消不改动 index。
 4. `/transcript 3` 含用户/助手/折叠思考/工具概览；AskHuman 调用呈独立块（有样本会话时）。
@@ -223,3 +223,4 @@ ConfirmView {
 - **2026-07-10（着色）**：飞书 ` ```diff ` 着色不稳定（简单行整行红绿，含反引号/`##` 等易变 token 高亮）。曾尝试转义净化，用户定案：**不改写代码内容**（准确优先），接受飞书着色差异。
 - **2026-07-10（Slack/TG）**：Slack 打开 HTML/MD 均当源码 → 改 **docx**（与钉钉同）。Telegram HTML 可渲染；深色模式白底浅字 → HTML **深色优先** + 显式 color/background。
 - **2026-07-10（transcript 聚焦）**：导出聚焦 agent 行为——保留用户真实输入、助手输出；工具调用 **watch 同款一行**（读取/写入/运行 + 对象），**不展示 result**、**不单独解析 AskHuman**；跳过 system 注入；md 工具行不用列表（避免双圆点）。
+- **2026-07-17（飞书 diff）**：飞书 `/diff` 改为直接发送 **`.diff`** 文件；内容接近 `git diff`，以易读为目标，不要求可被 `git apply` 应用。保留现有 untracked 展示和安全截断说明；飞书 transcript 继续使用 `.md`。
