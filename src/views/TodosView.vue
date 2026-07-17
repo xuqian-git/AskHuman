@@ -108,7 +108,7 @@ function toggleNewAuto(): void {
   newAutoHintTimer = window.setTimeout(() => {
     newAutoHintPinned.value = false;
     newAutoHintTimer = undefined;
-  }, 2400);
+  }, 500);
 }
 
 async function addEntry(): Promise<void> {
@@ -478,11 +478,7 @@ onBeforeUnmount(() => {
             role="tooltip"
             aria-live="polite"
           >
-            {{
-              newAuto
-                ? t("todosWin.autoNewEnabledHint")
-                : t("todosWin.autoNewDisabledHint")
-            }}
+            {{ t("todosWin.autoNewHint") }}
           </div>
         </div>
         <button

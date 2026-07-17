@@ -574,8 +574,7 @@ export default {
     restore: "恢复为待办",
     autoOn: "设为自动执行（whats-next 时不提问直接派发）",
     autoOff: "取消自动执行",
-    autoNewEnabledHint: "自动执行已开启：新待办会在 whats-next 时不提问直接派发。",
-    autoNewDisabledHint: "自动执行未开启：新待办会在 whats-next 时作为选项等待选择。",
+    autoNewHint: "开启后，Agent 在完成前序任务后，将自动执行该待办。",
   },
   interject: {
     title: "给 Agent 发消息",
