@@ -74,15 +74,13 @@ pub enum Command {
     Stage(Option<u64>),
     /// `/transcript [编号]`：导出 agent 完整会话渲染（无参 → 单选卡）。
     Transcript(Option<u64>),
-    /// `/todo`、`/待办`（spec todo-whats-next D8）：无参 → 选 agent 单选卡（定位其项目）；
-    /// `Some(n)` 无文本 → 该 agent 项目的待办管理卡；`Some(n)` 带文本 → 直接追加一条待办。
-    /// 无编号带文本（无法定位项目）→ 由调用方回用法提示。文本保留原始换行。
+    /// `/todo`、`/待办`：无编号 → 选项目（带文本则选中后新增）；`Some(n)` 是兼容入口，
+    /// 无文本打开 Agent n 所在项目的管理卡，带文本直接追加。文本保留原始换行。
     Todo(Option<u64>, Option<String>),
-    /// `/todo-rm`、`/删待办`：无参 → 选 agent 单选卡；`Some(n)` → 该项目的逐条删除选择卡。
+    /// `/todo-rm`、`/删待办`：无参 → 选项目；`Some(n)` 兼容 Agent 编号直达。
     TodoRm(Option<u64>),
-    /// `/todo-auto`、`/自动待办`（第 17 轮定案）：语法镜像 `/todo`——无参 → 选 agent 卡；
-    /// `Some(n)` 无文本 → 该项目的「切换自动执行」卡（每条一按钮，点击切换开/关并就地刷新）；
-    /// `Some(n)` 带文本 → 直接新增一条**自动执行**待办。
+    /// `/todo-auto`、`/自动待办`：无编号 → 选项目（带文本则新增自动待办）；`Some(n)` 是
+    /// 兼容入口，无文本打开切换卡，带文本直接新增一条自动执行待办。
     TodoAuto(Option<u64>, Option<String>),
     /// `/help`、`/帮助`、`/?`：返回动态引导文案（可发什么、可用命令）。
     Help,
@@ -195,7 +193,7 @@ pub fn classify(text: &str) -> Parsed {
         }
         "todo" | "待办" => {
             // 与 `/msg` 同构：首 token 为纯数字 → 编号 + 其后原文（含换行）为待办文本；
-            // 首 token 非数字 → 无编号 + 整段 rest 作文本（调用方回用法提示）；空 → 管理入口。
+            // 首 token 非数字 → 无编号 + 整段 rest 作文本（先选项目再新增）；空 → 项目管理入口。
             let (first, content) = match rest.find(char::is_whitespace) {
                 Some(i) => (&rest[..i], rest[i..].trim_start()),
                 None => (rest, ""),
@@ -216,7 +214,7 @@ pub fn classify(text: &str) -> Parsed {
             Parsed::Command(Command::TodoRm(sel))
         }
         "todo-auto" | "自动待办" => {
-            // 语法同 /todo：`<n> <text>` → 新增自动待办；`<n>` / 无参 → 切换卡。
+            // 语法同 /todo：`<n> [text]` 保留 Agent 编号兼容；无编号时先选项目。
             let (first, content) = match rest.find(char::is_whitespace) {
                 Some(i) => (&rest[..i], rest[i..].trim_start()),
                 None => (rest, ""),
@@ -1021,7 +1019,7 @@ mod tests {
 
     #[test]
     fn classify_todo_and_todo_rm() {
-        // `/todo`（无参）→ 管理入口；`/todo <n>` → 直达；`/todo <n> <text>` → 追加（保留换行）。
+        // `/todo`（无参）→ 选项目管理；非数字文本 → 选项目新增；数字入口保持向后兼容。
         assert_eq!(classify("/todo"), Parsed::Command(Command::Todo(None, None)));
         assert_eq!(
             classify("/todo 3"),
@@ -1061,7 +1059,7 @@ mod tests {
 
     #[test]
     fn classify_todo_auto() {
-        // 语法镜像 /todo：无参 → 选 agent；<n> → 切换卡；<n> <text> → 直接新增自动待办。
+        // 语法镜像 /todo：无编号 → 选项目；数字入口保持向后兼容。
         assert_eq!(
             classify("/todo-auto"),
             Parsed::Command(Command::TodoAuto(None, None))

@@ -960,7 +960,7 @@ mod tests {
     fn todo_manage_card_has_list_body_and_add_form() {
         let card = build_todo_manage_card(
             "「proj」的待办",
-            "1. 修复登录\n2. 写文档\n\n<font color='grey'>删除：发送 /todo-rm 3。</font>",
+            "1. 修复登录\n2. 写文档\n\n<font color='grey'>删除：发送 /todo-rm 后选择本项目。</font>",
             "输入新待办，提交即新增",
             "新增待办",
         );

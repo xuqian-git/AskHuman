@@ -31,9 +31,11 @@
 - `/diff [编号]`：导出目标 workspace 的 unstaged 与 untracked 变更摘要和附件。
 - `/stage [编号]`：显示变更确认卡，确认后执行 `git add -A`；不会绕过 Confirm 直接暂存。
 - `/transcript [编号]`：按渠道适配的附件格式导出完整会话。
-- `/todo [编号] [内容]`：项目待办管理。无参先用单选卡选 Agent 定位项目；`/todo <编号>` 直达该项目的待办管理卡（飞书代码卡自带输入表单，钉钉复用提问卡模板的输入框，TG/Slack 为文本列表 + 命令提示）；`/todo <编号> <内容>` 直接追加一条。
-- `/todo-rm [编号]`：逐条删除项目待办；复用单选卡选 Agent，再就地刷新的选择卡逐条删除。
-- `/todo-auto [编号] [内容]`：切换待办的自动执行标记（⚡，whats-next 时直接派发不发卡）；语法镜像 `/todo`——`<编号>` 打开切换卡（每条一个按钮，点击翻转并就地刷新），`<编号> <内容>` 直接新增一条自动执行待办。
+- `/todo [内容]`：项目待办管理。无参先用单选卡选项目，再打开待办管理卡（飞书代码卡自带输入表单，钉钉复用提问卡模板的输入框，TG/Slack 为文本列表 + 命令提示）；带内容时先选项目再直接追加。旧 `/todo <Agent 编号> [内容]` 继续兼容，但不再主推。
+- `/todo-rm`：先选项目，再用就地刷新的选择卡逐条删除；旧 `/todo-rm <Agent 编号>` 继续兼容。
+- `/todo-auto [内容]`：先选项目，再切换待办的自动执行标记（⚡，whats-next 时直接派发不发卡）；带内容时选中项目后直接新增自动待办。旧 `/todo-auto <Agent 编号> [内容]` 继续兼容。
+
+三个 todo 命令共用项目候选：工作中 Agent 项目 ∪ 空闲在线 Agent 项目 ∪ 未隐藏的最近 workspace ∪ 已有待办的项目。排序依次为工作中、空闲在线、置顶 workspace、其他最近 workspace、仅存在于待办存储的项目；组内保留置顶/最近顺序。选择卡与 `/new` 一样首屏列 5 个，超出时提供“显示更多”。
 - `/detect`：渠道配置识别流程使用的临时命令；成功后只回执已填字段，不回显完整 ID。
 
 命令支持中文别名的部分由 `autochannel` 统一分类；平台特有前缀、附件格式和卡片能力在传输层适配。
@@ -52,7 +54,7 @@ Watch 规格见 `docs/specs/im-watch.md`。订阅持久化在 `~/.askhuman/state
 
 `/msg` 的目标选择复用同一单选卡模型，实际队列由 `agents/interject.rs` 管理；插话能力见 `docs/specs/agent-interject.md`。
 
-`/todo`、`/todo-rm`、`/todo-auto` 的 Agent 选择、逐条删除与自动执行切换同样复用单选卡台账（`PickerKind::Todo/TodoRm/TodoRmEntry/TodoAuto/TodoAutoEntry/TodoManage`）；待办存储直读 `todos.json`，命令层实现在 `daemon/unix_impl/todo.rs`，能力边界见 `docs/specs/todo-whats-next.md`。
+`/todo`、`/todo-rm`、`/todo-auto` 的项目选择、逐条删除与自动执行切换同样复用单选卡台账（`PickerKind::Todo/TodoRm/TodoRmEntry/TodoAuto/TodoAutoEntry/TodoManage`）；项目路径直接作为稳定选项 ID，待新增文本暂存在 picker payload。待办存储直读 `todos.json`，命令层实现在 `daemon/unix_impl/todo.rs`，能力边界见 `docs/specs/todo-whats-next.md`。
 
 `/new` 的 workspace / Agent / 权限步骤也复用单选卡；最终任务输入复用结构化 Confirm 的渠道原生
 输入能力，但只投放到命令来源渠道。启动参数不经过 shell：IM 数据进入一次性 `0600` LaunchRecord，

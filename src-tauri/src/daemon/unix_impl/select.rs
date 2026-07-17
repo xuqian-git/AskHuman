@@ -549,6 +549,25 @@ pub(super) async fn handle_select_card_action(
     };
     let lang = Lang::current();
     let config = state.config_snapshot();
+    if session_id == crate::select::MORE_OPTION_ID
+        && matches!(
+            picker.kind,
+            PickerKind::Todo | PickerKind::TodoRm | PickerKind::TodoAuto
+        )
+    {
+        select_pick_todo_more(
+            state,
+            channel_id,
+            &mid,
+            &picker,
+            &config,
+            lang,
+            Some(ack),
+        )
+        .await;
+        activate_channel_on_action(state, channel_id, &config, lang).await;
+        return;
+    }
     match picker.kind {
         PickerKind::TaskWorkspace | PickerKind::TaskAgent | PickerKind::TaskPermission => {
             select_pick_task_flow(
@@ -603,7 +622,15 @@ pub(super) async fn handle_select_card_action(
         }
         // /todo · /todo-rm（spec todo-whats-next D8）。
         PickerKind::Todo => {
-            fs_select_pick_todo(state, &mid, &session_id, lang, ack).await;
+            fs_select_pick_todo(
+                state,
+                &mid,
+                &session_id,
+                picker.payload.as_deref(),
+                lang,
+                ack,
+            )
+            .await;
             activate_channel_on_action(state, channel_id, &config, lang).await;
         }
         PickerKind::TodoRm => {
@@ -614,7 +641,15 @@ pub(super) async fn handle_select_card_action(
             fs_select_pick_todo_rm_entry(state, &mid, &session_id, &picker, lang, ack).await;
         }
         PickerKind::TodoAuto => {
-            fs_select_pick_todo_auto(state, &mid, &session_id, lang, ack).await;
+            fs_select_pick_todo_auto(
+                state,
+                &mid,
+                &session_id,
+                picker.payload.as_deref(),
+                lang,
+                ack,
+            )
+            .await;
             activate_channel_on_action(state, channel_id, &config, lang).await;
         }
         PickerKind::TodoAutoEntry => {
@@ -888,6 +923,25 @@ pub(super) async fn handle_select_dd_action(state: &Arc<ServerState>, data: &ser
     }
     let lang = Lang::current();
     let config = state.config_snapshot();
+    if session_id == crate::select::MORE_OPTION_ID
+        && matches!(
+            picker.kind,
+            PickerKind::Todo | PickerKind::TodoRm | PickerKind::TodoAuto
+        )
+    {
+        select_pick_todo_more(
+            state,
+            "dingding",
+            &otid,
+            &picker,
+            &config,
+            lang,
+            None,
+        )
+        .await;
+        activate_channel_on_action(state, "dingding", &config, lang).await;
+        return;
+    }
     match picker.kind {
         PickerKind::TaskWorkspace | PickerKind::TaskAgent | PickerKind::TaskPermission => {
             select_pick_task_flow(
@@ -940,7 +994,15 @@ pub(super) async fn handle_select_dd_action(state: &Arc<ServerState>, data: &ser
         }
         // /todo · /todo-rm（spec todo-whats-next D8）。
         PickerKind::Todo => {
-            dd_select_pick_todo(state, &otid, &session_id, &config, lang).await;
+            dd_select_pick_todo(
+                state,
+                &otid,
+                &session_id,
+                picker.payload.as_deref(),
+                &config,
+                lang,
+            )
+            .await;
             activate_channel_on_action(state, "dingding", &config, lang).await;
         }
         PickerKind::TodoRm => {
@@ -951,7 +1013,15 @@ pub(super) async fn handle_select_dd_action(state: &Arc<ServerState>, data: &ser
             dd_select_pick_todo_rm_entry(state, &otid, &session_id, &picker, &config, lang).await;
         }
         PickerKind::TodoAuto => {
-            dd_select_pick_todo_auto(state, &otid, &session_id, &config, lang).await;
+            dd_select_pick_todo_auto(
+                state,
+                &otid,
+                &session_id,
+                picker.payload.as_deref(),
+                &config,
+                lang,
+            )
+            .await;
             activate_channel_on_action(state, "dingding", &config, lang).await;
         }
         PickerKind::TodoAutoEntry => {
@@ -1246,6 +1316,25 @@ pub(super) async fn dispatch_select_pick(
         return;
     };
     let lang = Lang::current();
+    if session_id == crate::select::MORE_OPTION_ID
+        && matches!(
+            picker.kind,
+            PickerKind::Todo | PickerKind::TodoRm | PickerKind::TodoAuto
+        )
+    {
+        select_pick_todo_more(
+            state,
+            channel_id,
+            mid,
+            &picker,
+            config,
+            lang,
+            None,
+        )
+        .await;
+        activate_channel_on_action(state, channel_id, config, lang).await;
+        return;
+    }
     match picker.kind {
         PickerKind::TaskWorkspace | PickerKind::TaskAgent | PickerKind::TaskPermission => {
             select_pick_task_flow(
@@ -1298,7 +1387,16 @@ pub(super) async fn dispatch_select_pick(
         }
         // /todo · /todo-rm（spec todo-whats-next D8）。
         PickerKind::Todo => {
-            select_pick_todo_text(state, channel_id, mid, &session_id, config, lang).await;
+            select_pick_todo_text(
+                state,
+                channel_id,
+                mid,
+                &session_id,
+                picker.payload.as_deref(),
+                config,
+                lang,
+            )
+            .await;
             activate_channel_on_action(state, channel_id, config, lang).await;
         }
         PickerKind::TodoRm => {
@@ -1318,7 +1416,16 @@ pub(super) async fn dispatch_select_pick(
             .await;
         }
         PickerKind::TodoAuto => {
-            select_pick_todo_auto_inplace(state, channel_id, mid, &session_id, config, lang).await;
+            select_pick_todo_auto_inplace(
+                state,
+                channel_id,
+                mid,
+                &session_id,
+                picker.payload.as_deref(),
+                config,
+                lang,
+            )
+            .await;
             activate_channel_on_action(state, channel_id, config, lang).await;
         }
         PickerKind::TodoAutoEntry => {

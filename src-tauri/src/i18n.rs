@@ -514,18 +514,18 @@ pub fn tr(lang: Lang, key: &'static str) -> &'static str {
         ),
         "autoChannel.helpCmdTodo" => pick(
             lang,
-            "• {p}todo [n] [text] — project todos for agent n (with text: add one)",
-            "• {p}todo [编号] [内容] — 该 agent 项目的待办（带内容＝直接新增）",
+            "• {p}todo [text] — choose a project to view todos or add one",
+            "• {p}todo [内容] — 选择项目查看待办或新增一条",
         ),
         "autoChannel.helpCmdTodoRm" => pick(
             lang,
-            "• {p}todo-rm [n] — delete todos of agent n's project",
-            "• {p}todo-rm [编号] — 删除该 agent 项目的待办",
+            "• {p}todo-rm — choose a project and delete todos",
+            "• {p}todo-rm — 选择项目并删除待办",
         ),
         "autoChannel.helpCmdTodoAuto" => pick(
             lang,
-            "• {p}todo-auto [n] [text] — toggle auto-run todos (with text: add an auto-run one)",
-            "• {p}todo-auto [编号] [内容] — 切换待办自动执行（带内容＝新增自动待办）",
+            "• {p}todo-auto [text] — choose a project to toggle or add auto-run todos",
+            "• {p}todo-auto [内容] — 选择项目切换或新增自动待办",
         ),
         "autoChannel.helpCmdHelp" => pick(lang, "• {p}help — show this help", "• {p}help — 显示此帮助"),
         "autoChannel.helpCmdHere" => pick(lang, "• {p}here — route questions to this channel", "• {p}here — 把提问切到此渠道接收"),
@@ -713,13 +713,13 @@ pub fn tr(lang: Lang, key: &'static str) -> &'static str {
         // —— /todo · /todo-rm（spec todo-whats-next D8）——
         "select.titleTodo" => pick(
             lang,
-            "Pick an agent to open its project todos:",
-            "选择 Agent 查看其项目的待办：",
+            "Pick a project to open its todos:",
+            "选择要查看待办的项目：",
         ),
         "select.titleTodoRm" => pick(
             lang,
-            "Pick an agent to delete its project todos:",
-            "选择 Agent 删除其项目的待办：",
+            "Pick a project to delete its todos:",
+            "选择要删除待办的项目：",
         ),
         "select.titleTodoRmEntries" => pick(
             lang,
@@ -736,8 +736,8 @@ pub fn tr(lang: Lang, key: &'static str) -> &'static str {
         "select.btnTodoAutoEntry" => pick(lang, "Toggle", "切换"),
         "select.titleTodoAuto" => pick(
             lang,
-            "Pick an agent to toggle auto-run todos of its project:",
-            "选择 Agent 切换其项目待办的自动执行：",
+            "Pick a project to toggle its auto-run todos:",
+            "选择要切换待办自动执行的项目：",
         ),
         "select.titleTodoAutoEntries" => pick(
             lang,
@@ -759,14 +759,14 @@ pub fn tr(lang: Lang, key: &'static str) -> &'static str {
         "todoIm.empty" => pick(lang, "(no pending todos)", "（暂无待办）"),
         "todoIm.addHint" => pick(
             lang,
-            "Add: send {p}todo {n} <text>; delete: {p}todo-rm {n}.",
-            "新增：发送 {p}todo {n} <内容>；删除：{p}todo-rm {n}。",
+            "Add: send {p}todo <text> and choose this project; delete: {p}todo-rm.",
+            "新增：发送 {p}todo <内容> 后选择本项目；删除：发送 {p}todo-rm。",
         ),
         // 卡片自带输入框（飞书/钉钉）时正文只提示删除入口。
         "todoIm.rmHint" => pick(
             lang,
-            "Delete: send {p}todo-rm {n}.",
-            "删除：发送 {p}todo-rm {n}。",
+            "Delete: send {p}todo-rm and choose this project.",
+            "删除：发送 {p}todo-rm 后选择本项目。",
         ),
         "todoIm.cardInputPlaceholder" => pick(
             lang,
@@ -779,6 +779,23 @@ pub fn tr(lang: Lang, key: &'static str) -> &'static str {
             "No live agent sessions; cannot locate a project. Todos can still be managed via the popup, tray window, or `AskHuman todo`.",
             "当前没有存活的 Agent 会话，无法定位项目。仍可在弹窗、托盘待办窗口或 `AskHuman todo` 命令中管理待办。",
         ),
+        "todoIm.noProjects" => pick(
+            lang,
+            "No projects are available from live Agents, recent workspaces, or saved todos.",
+            "没有可选项目（活跃 Agent、最近工作目录和已有待办中均未找到）。",
+        ),
+        "todoIm.projectPickerFailed" => pick(
+            lang,
+            "Failed to send the project picker. Please try again.",
+            "项目选择卡发送失败，请重试。",
+        ),
+        "todoIm.projectTodoBadge" => pick(lang, "· {n} todo(s)", "· {n} 条待办"),
+        "todoIm.projectPicked" => pick(
+            lang,
+            "Selected project: {project}",
+            "已选择项目：{project}",
+        ),
+        "todoIm.addFailed" => pick(lang, "Failed to add the todo.", "新增待办失败。"),
         "todoIm.notFound" => pick(
             lang,
             "No agent with number {n}. Send {p}status to list.",
@@ -796,8 +813,8 @@ pub fn tr(lang: Lang, key: &'static str) -> &'static str {
         ),
         "todoIm.usage" => pick(
             lang,
-            "Usage: {p}todo [n] [text] — no n: pick an agent first; n only: open that project's todo card; with text: add it directly.",
-            "用法：{p}todo [编号] [内容]——不带编号＝先选 Agent；仅编号＝打开该项目待办卡；带内容＝直接新增。",
+            "Usage: {p}todo [text] — choose a project to open its todo card, or add the supplied text after choosing.",
+            "用法：{p}todo [内容]——选择项目打开待办卡；带内容时选择后直接新增。",
         ),
         "todoIm.addedAuto" => pick(
             lang,
@@ -806,8 +823,8 @@ pub fn tr(lang: Lang, key: &'static str) -> &'static str {
         ),
         "todoIm.usageAuto" => pick(
             lang,
-            "Usage: {p}todo-auto [n] [text] — no n: pick an agent first; n only: open the auto-run toggle card; with text: add an auto-run todo directly.",
-            "用法：{p}todo-auto [编号] [内容]——不带编号＝先选 Agent；仅编号＝打开自动执行切换卡；带内容＝直接新增自动执行待办。",
+            "Usage: {p}todo-auto [text] — choose a project to toggle auto-run, or add the supplied text as an auto-run todo after choosing.",
+            "用法：{p}todo-auto [内容]——选择项目切换自动执行；带内容时选择后新增自动待办。",
         ),
         "select.diffDoneCard" => pick(lang, "Diff sent for [{id}]", "已发送 [{id}] 的 diff"),
         "select.stageOpenedCard" => pick(

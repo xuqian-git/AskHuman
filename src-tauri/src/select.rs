@@ -55,13 +55,13 @@ pub enum SelectAction {
     Stage,
     /// 导出会话 transcript。
     Transcript,
-    /// `/todo` 无参的选 agent 卡（点它打开该 agent 项目的待办管理卡，spec todo-whats-next D8）。
+    /// `/todo` 的选项目卡（点它打开项目待办管理卡，或把预存文本加入项目）。
     Todo,
-    /// `/todo-rm` 无参的选 agent 卡（点它进入该项目的逐条删除选择卡）。
+    /// `/todo-rm` 的选项目卡（点它进入该项目的逐条删除选择卡）。
     TodoRm,
     /// 待办逐条删除卡（选项＝待办条目，按钮「删除」红色）。
     TodoRmEntry,
-    /// `/todo-auto` 无参的选 agent 卡（点它进入该项目的切换自动执行卡，第 17 轮定案）。
+    /// `/todo-auto` 的选项目卡（点它进入切换卡，或把预存文本加入项目并标为自动执行）。
     TodoAuto,
     /// 待办自动执行切换卡（选项＝待办条目，已自动的带 ⚡ 徽标；按钮「切换」，点击即开/关）。
     TodoAutoEntry,

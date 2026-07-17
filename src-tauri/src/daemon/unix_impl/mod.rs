@@ -376,13 +376,13 @@ enum PickerKind {
     Diff,
     Stage,
     Transcript,
-    /// `/todo` 无参的选 agent 卡：点选后另发该 agent 项目的待办管理卡（spec todo-whats-next D8）。
+    /// `/todo` 的选项目卡：点选后发项目待办管理卡，或把 `payload` 文本加入项目。
     Todo,
-    /// `/todo-rm` 无参的选 agent 卡：点选后本卡就地变身为该项目的逐条删除卡。
+    /// `/todo-rm` 的选项目卡：点选后本卡就地变身为该项目的逐条删除卡。
     TodoRm,
     /// 待办逐条删除卡：`options`＝待办条目 id，`payload`＝项目 key；点「删除」即移除并就地刷新。
     TodoRmEntry,
-    /// `/todo-auto` 无参的选 agent 卡：点选后本卡就地变身为该项目的切换自动执行卡（第 17 轮）。
+    /// `/todo-auto` 的选项目卡：点选后变身为切换卡，或把 `payload` 文本加入项目并标为自动执行。
     TodoAuto,
     /// 待办自动执行切换卡：`options`＝待办条目 id，`payload`＝项目 key；点「切换」即开/关并就地刷新。
     TodoAutoEntry,
@@ -403,8 +403,7 @@ struct ConfirmEntry {
     created_at: u64,
 }
 
-/// 一条活动的单选卡台账。选项快照仅存各选项的 session_id（下标即按钮 idx），点击时按下标取 id、
-/// 再由当前快照/订阅重新定位（避免 seq 漂移）。
+/// 一条活动的单选卡台账。选项快照仅存各选项的稳定 id（下标即按钮 idx），点击时按下标取 id。
 #[derive(Clone)]
 struct PickerEntry {
     channel: String,
@@ -412,11 +411,11 @@ struct PickerEntry {
     kind: PickerKind,
     /// 卡片当前标题快照（变身时随卡更新）：关停定格「已失效」终态卡时复用（第 15 轮定案）。
     title: String,
-    /// 各选项的稳定 id（下标 = 按钮 `select:<idx>`）：agent 卡＝session_id；
-    /// `TodoRmEntry` 卡＝待办条目 id。
+    /// 各选项的稳定 id（下标 = 按钮 `select:<idx>`）：agent 卡＝session_id；项目卡＝项目 key；
+    /// `TodoRmEntry` / `TodoAutoEntry` 卡＝待办条目 id。
     options: Vec<String>,
-    /// `Msg` 卡＝待发送内容（点「发送」时投递）；`TodoRmEntry`/`TodoManage` 卡＝项目 key；
-    /// 其它 kind 恒 `None`。
+    /// `Msg` / `Todo` / `TodoAuto` 卡＝待发送内容；`TodoRmEntry` / `TodoAutoEntry` 卡＝项目 key；
+    /// `TodoManage` 卡＝含项目 key 的 JSON；其它 kind 恒 `None`。
     payload: Option<String>,
     created_at: u64,
     /// 发卡时刻的渠道扰动水位（Unix 毫秒，同 `WatchState::disturb` 量纲）：与当前渠道水位比较判定
