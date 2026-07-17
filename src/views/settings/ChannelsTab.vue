@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// 「通信渠道」tab：弹窗渠道尺寸 + Telegram / 钉钉 / 飞书 / Slack 四家 IM 渠道配置卡
+// 「通信渠道」tab：弹窗渠道尺寸 + 飞书 / Telegram / 钉钉 / Slack 四家 IM 渠道配置卡
 // （含 R7 故障横幅、配置指南外链、连接测试与自动识别）。
 import { computed } from "vue";
 import { useI18n } from "vue-i18n";
@@ -137,7 +137,7 @@ const config = computed(() => ctx.config.value!);
     </p>
   </div>
 
-  <div class="card">
+  <div class="card channel-card channel-card-telegram">
     <div class="row">
       <p class="card-title">{{ t("settings.channels.telegramTitle") }}</p>
       <a class="link guide-link" href="#" @click.prevent="openChannelGuide('telegram')">
@@ -224,7 +224,7 @@ const config = computed(() => ctx.config.value!);
     </template>
   </div>
 
-  <div class="card">
+  <div class="card channel-card channel-card-dingtalk">
     <div class="row">
       <p class="card-title">{{ t("settings.channels.dingtalkTitle") }}</p>
       <a class="link guide-link" href="#" @click.prevent="openChannelGuide('dingding')">
@@ -391,9 +391,12 @@ const config = computed(() => ctx.config.value!);
     </template>
   </div>
 
-  <div class="card">
+  <div class="card channel-card channel-card-feishu">
     <div class="row">
       <p class="card-title">{{ t("settings.channels.feishuTitle") }}</p>
+      <span class="channel-recommended-badge">
+        {{ t("settings.channels.recommendedBadge") }}
+      </span>
       <a class="link guide-link" href="#" @click.prevent="openChannelGuide('feishu')">
         {{ t("settings.channels.setupGuide") }} ↗
       </a>
@@ -517,7 +520,7 @@ const config = computed(() => ctx.config.value!);
     </template>
   </div>
 
-  <div class="card">
+  <div class="card channel-card channel-card-slack">
     <div class="row">
       <p class="card-title">{{ t("settings.channels.slackTitle") }}</p>
       <a class="link guide-link" href="#" @click.prevent="openChannelGuide('slack')">
@@ -649,7 +652,7 @@ const config = computed(() => ctx.config.value!);
     </template>
   </div>
 
-  <div class="card">
+  <div class="card channel-card channel-card-more">
     <p class="card-desc" style="margin: 0">
       {{ t("settings.channels.moreSoon") }}
     </p>

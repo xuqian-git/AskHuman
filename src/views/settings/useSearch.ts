@@ -134,6 +134,10 @@ export function useSettingsSearch(deps: {
         "settings.channels.defaultWidth",
         "settings.channels.defaultHeight",
       ]),
+      e("channel", "settings.channels.feishuTitle", [
+        "settings.channels.appId",
+        "settings.channels.appSecret",
+      ]),
       e("channel", "settings.channels.telegramTitle", [
         "settings.channels.botToken",
         "settings.channels.chatId",
@@ -142,10 +146,6 @@ export function useSettingsSearch(deps: {
         "settings.channels.clientId",
         "settings.channels.clientSecret",
         "settings.channels.userId",
-      ]),
-      e("channel", "settings.channels.feishuTitle", [
-        "settings.channels.appId",
-        "settings.channels.appSecret",
       ]),
       e("channel", "settings.channels.slackTitle", [
         "settings.channels.slackBotToken",

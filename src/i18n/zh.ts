@@ -391,6 +391,7 @@ export default {
       convertTextToDocxHint:
         "未内联的文本文件（长文件等）转成 docx 发送，确保钉钉可预览；关闭则发送源文件。",
       feishuTitle: "飞书",
+      recommendedBadge: "推荐",
       appId: "App ID",
       appSecret: "App Secret",
       openId: "Open ID",

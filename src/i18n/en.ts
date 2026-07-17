@@ -404,6 +404,7 @@ export default {
       convertTextToDocxHint:
         "Text files that aren't inlined (e.g. long ones) are converted to docx so DingTalk can preview them; turn off to send the original file.",
       feishuTitle: "Feishu",
+      recommendedBadge: "Recommended",
       appId: "App ID",
       appSecret: "App Secret",
       openId: "Open ID",
