@@ -1148,6 +1148,21 @@ pub fn tr(lang: Lang, key: &'static str) -> &'static str {
         "tray.imConnections" => pick(lang, "Channels: {list}", "渠道：{list}"),
         // 渠道故障警示行（R7）：可点击，打开设置渠道 tab 查看错误详情。
         "tray.channelIssue" => pick(lang, "⚠ {ch} issue ({t})", "⚠ {ch}异常（{t}）"),
+        "tray.integrationUpdateOne" => pick(
+            lang,
+            "💡 {agent} integration needs an update",
+            "💡 {agent} 集成需更新",
+        ),
+        "tray.integrationUpdateMany" => pick(
+            lang,
+            "💡 {count} Agent integrations need updates",
+            "💡 {count} 个 Agent 集成需更新",
+        ),
+        "tray.integrationUpdatesTooltip" => pick(
+            lang,
+            "Agent integrations need updates",
+            "Agent 集成需更新",
+        ),
         "tray.justNow" => pick(lang, "just now", "刚刚"),
         "tray.minutesAgo" => pick(lang, "{n} min ago", "{n} 分钟前"),
         "tray.hoursAgo" => pick(lang, "{n} h ago", "{n} 小时前"),

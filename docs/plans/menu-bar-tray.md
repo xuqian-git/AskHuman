@@ -96,7 +96,8 @@ daemon（既有 + 增量）
     - `open_settings` / `open_history` / `open_agents` → `create_*_window`（同进程，聚焦或新建）
     - `check_update`（始终）/ `apply_update`（available 时「更新到 vX.Y（答完后生效）」→ 见 §5.5）
     - daemon 运行：`restart_daemon` / `stop_daemon`；daemon 停止（always）：`start_daemon`
-- 图标三态（spec D6 / 资产 §8）：`set_icon`：daemon 停止→停止变体；daemon 运行 + `active_requests>0`→待答变体；否则→空闲变体。macOS 用 `icon_as_template(true)`。`set_tooltip` 概要。
+    - Agent 集成需更新时增加可点击灯泡提示：单项列 Agent 名，多项只显示数量；点击定位设置 Agents tab。
+- 图标三态（spec D6 / 资产 §8）：`set_icon`：daemon 停止→停止变体；daemon 运行 + `active_requests>0`→待答变体；否则→空闲变体。macOS 图标均用 `icon_as_template(true)`；Agent 集成需更新且没有待答时，选右上小实心圆变体，待答问号优先。`set_tooltip` 概要。
 
 ### 5.2 daemon 客户端任务（状态 + 续命）
 
@@ -147,7 +148,7 @@ daemon（既有 + 增量）
 
 ## 8. 图标资产 `src-tauri/icons/tray/`
 
-- macOS 模板（单色 + alpha，系统自动着色）：`idle`（空闲）、`active`（待答，带圆点）、`stopped`（停止，暗淡/空心），各含 `@2x`。建议 18×18 / 36×36。
+- macOS 模板（单色 + alpha，系统自动着色）：`idle`（空闲）、`active`（待答，带问号）、`stopped`（停止，带月亮），各含 `@2x`。Agent 集成提醒另有空闲 / 停止两张右上小实心圆变体；圆点周围留透明挖空，继续由系统随菜单栏自动着色。建议 18×18 / 36×36。
 - Linux 彩色：`idle` / `active` / `stopped`，小尺寸（22~24px）。
 - `include_bytes!` 内嵌（同 `icons/icon.png`），运行时按平台 + 状态选择。资产实现阶段产出（基于品牌图形派生）。
 

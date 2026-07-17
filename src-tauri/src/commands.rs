@@ -1512,9 +1512,16 @@ pub fn agent_mode_status(agent: String) -> Result<AgentModeStatus, String> {
 }
 
 #[tauri::command]
-pub fn agent_permission_set(agent: String, enabled: bool) -> Result<(), String> {
+pub fn agent_permission_set(
+    app: tauri::AppHandle,
+    agent: String,
+    enabled: bool,
+) -> Result<(), String> {
     let a = parse_agent(&agent)?;
-    agent_permission::set_enabled(a, enabled).map_err(|e| e.to_string())
+    agent_permission::set_enabled(a, enabled).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    crate::app::gui_host::refresh_integration_updates(&app);
+    Ok(())
 }
 
 #[tauri::command]
@@ -1527,29 +1534,42 @@ pub fn agent_stop_set(agent: String, enabled: bool) -> Result<(), String> {
 
 /// 一键切换到目标模式（"none"|"cli"|"mcp"）：自动卸旧装新。
 #[tauri::command]
-pub fn agent_mode_set(agent: String, mode: String) -> Result<(), String> {
+pub fn agent_mode_set(app: tauri::AppHandle, agent: String, mode: String) -> Result<(), String> {
     let a = parse_agent(&agent)?;
     let m = agent_mode::Mode::parse(&mode).ok_or_else(|| {
         crate::i18n::tr(crate::i18n::Lang::current(), "cmd.unknownMode").to_string()
     })?;
-    agent_mode::set(a, m).map_err(|e| e.to_string())
+    agent_mode::set(a, m).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    crate::app::gui_host::refresh_integration_updates(&app);
+    Ok(())
 }
 
 /// 把当前模式的全部产物刷新到最新（不切换模式）。
 #[tauri::command]
-pub fn agent_mode_update(agent: String) -> Result<(), String> {
+pub fn agent_mode_update(app: tauri::AppHandle, agent: String) -> Result<(), String> {
     let a = parse_agent(&agent)?;
-    agent_mode::update(a).map_err(|e| e.to_string())
+    agent_mode::update(a).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    crate::app::gui_host::refresh_integration_updates(&app);
+    Ok(())
 }
 
 /// 把当前模式下的单个产物（"rule" | "hook" | "mcp"）刷新到最新（不切换模式、不动其它产物）。
 #[tauri::command]
-pub fn agent_mode_update_artifact(agent: String, artifact: String) -> Result<(), String> {
+pub fn agent_mode_update_artifact(
+    app: tauri::AppHandle,
+    agent: String,
+    artifact: String,
+) -> Result<(), String> {
     let a = parse_agent(&agent)?;
     let art = agent_mode::Artifact::parse(&artifact).ok_or_else(|| {
         crate::i18n::tr(crate::i18n::Lang::current(), "cmd.unknownArtifact").to_string()
     })?;
-    agent_mode::update_artifact(a, art).map_err(|e| e.to_string())
+    agent_mode::update_artifact(a, art).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    crate::app::gui_host::refresh_integration_updates(&app);
+    Ok(())
 }
 
 #[tauri::command]

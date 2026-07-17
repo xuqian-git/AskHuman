@@ -26,6 +26,13 @@
 > 「正在检查 / 已是最新版 / 检查或安装失败原因」，执行中禁用重复操作。daemon 恢复后的旧快照与本地
 > 检查结果合并，不得把刚查到的更新入口覆盖掉。Host 换新使用更新前缓存的稳定可执行路径，避免 Linux
 > 替换运行中 inode 后 `current_exe()` 指向 `(... deleted)`；新 Host 拉起失败时旧 Host 保持运行并显示错误。
+>
+> **Agent 集成更新提醒（2026-07）**：GUI Host 启动时检查当前四家 Agent 集成，覆盖版本换新后的
+> 首次检查；daemon 每次从停止变为运行时复查。判定与设置 Agents tab 的 `agent_mode::needs_update`
+> 完全同源。存在待更新项时，托盘状态区显示一条可点击灯泡提示：单项列 Agent 名，多项只显示数量，
+> 点击直达 Agents tab；
+> 没有待答时，template 图标右上显示带透明挖空的小实心圆；有待答则仍优先显示问号。设置页成功
+> 更新集成后立即复查并清除提醒，无需新增 daemon IPC。
 
 ## 1. 背景与动机
 
@@ -59,6 +66,7 @@ daemon 是**刻意「无 GUI」**的：不初始化 AppKit/GTK、不占主线程
 | D12 | 开机自启（仅 always，Q2=含自启） | 切到 **always** 安装登录项、切走移除：macOS `~/Library/LaunchAgents/<id>.plist`（`RunAtLoad`+`KeepAlive`）；Linux `~/.config/autostart/<id>.desktop`。使「重启系统后/daemon 没起时」图标也一直在。 |
 | D13 | 单实例 + 宿主自有 IPC | 宿主 flock `gui-host.lock` 单实例。宿主自带 IPC（`gui-host.sock`，复用 NDJSON 编解码）接收「打开窗口/关闭/刷新」请求——**与 daemon 解耦**，使 daemon 未运行时也能打开设置/历史。宿主另作为 daemon 客户端：一条**非保活**状态订阅 + 「有窗口时」一条**计活**保活连接（实现 D5）。 |
 | D14 | daemon 集成 | `menuBarIcon != off` 时，daemon 启动 / 配置变更尝试拉起宿主（单实例去重，作兜底；always 主要靠登录项）。新增 `ClientMsg::TraySubscribe` / `ServerMsg::TrayState`（非保活）。`PROTOCOL_VERSION` 保持 1（增量、旧端忽略未知变体）。 |
+| D15 | Agent 集成更新提醒 | GUI Host 启动与 daemon 停→运行时按 Agents 设置页同一口径复查；待更新时显示可点击单行灯泡提示，单项列 Agent 名、多项只显示数量。无待答时 template 图标右上显示带挖空的小实心圆，有待答时问号优先。点击打开 Agents tab；设置内更新成功后即时清除。状态由 Host 本地缓存，不扩展 `TrayState`。 |
 
 ## 4. 约束与既有规则（不可破坏）
 
@@ -84,6 +92,7 @@ daemon 是**刻意「无 GUI」**的：不初始化 AppKit/GTK、不占主线程
 9. **Linux 桌面**：支持托盘的桌面环境功能同 macOS；headless 开启 → 无图标、无报错、daemon 正常。
 10. **Windows**：设置不出现该项；无宿主/托盘逻辑、无崩溃（窗口仍走现有单进程方式）。
 11. **回归**：提问/抢答/drain/自更新/IM 自动激活/历史/Agent 订阅等既有功能不受影响；daemon 空闲退出/指纹换新/排空语义不变。
+12. **Agent 集成提醒（D15）**：制造任一当前模式产物过期后，换新 GUI Host 或启动 daemon，菜单出现灯泡提示（单项列名、多项计数）；无待答时图标显示右上实心圆，有待答时仍显示问号；点击定位 Agents tab；在设置中更新后提示与圆点立即消失。
 
 ## 6. 访谈反馈记录（按时间，供追溯）
 

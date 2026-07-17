@@ -318,6 +318,7 @@ Popup 的窗口、附件、来源标题与交互实现地图见 `docs/overview-p
 - `general.menuBarIcon` 支持 `off|active|always`；Windows 不支持，Linux 桌面 best-effort。
 - 托盘状态订阅不保活；只有打开窗口的独立连接给 Daemon 续命。`general.daemonLifecycle=keepalive` 是正交的常驻策略。
 - `TrayState` 汇总待答、IM、Agent、更新与 drain；菜单可聚焦待答 Popup、打开 Agent/插话、控制 Daemon 和应用更新。
+- GUI Host 启动与 daemon 停→运行时复用 Agents 设置页口径检查集成更新；待更新时菜单显示可点击警告，无待答时 template 图标显示右上实心圆，设置内更新成功后即时清除。
 - GUI Host 只在无窗口时换到新二进制；GUI Host always 与 Daemon keepalive 的登录项分别管理。
 
 ## CLI 配置与 Agent 集成（headless / 无 GUI）

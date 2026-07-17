@@ -45,6 +45,9 @@ mod icon_bytes {
     pub const IDLE: &[u8] = include_bytes!("../../icons/tray/tray-idle.png");
     pub const ACTIVE: &[u8] = include_bytes!("../../icons/tray/tray-active.png");
     pub const STOPPED: &[u8] = include_bytes!("../../icons/tray/tray-stopped.png");
+    pub const IDLE_ATTENTION: &[u8] = include_bytes!("../../icons/tray/tray-idle-attention.png");
+    pub const STOPPED_ATTENTION: &[u8] =
+        include_bytes!("../../icons/tray/tray-stopped-attention.png");
     /// 仅 macOS 把单色图当作模板图染色；其它平台原样显示。
     pub const TEMPLATE: bool = cfg!(target_os = "macos");
 }
@@ -164,6 +167,8 @@ pub struct HostState {
     pub daemon_lifecycle: Mutex<DaemonLifecycleMode>,
     pub lang: Mutex<Lang>,
     pub data: Mutex<TrayData>,
+    /// Current-mode integration bundles that need reconciliation, in settings display order.
+    pub integration_updates: Mutex<Vec<String>>,
     /// GUI Host owns menu-triggered update feedback even while daemon is down.
     update_action: Mutex<UpdateActionState>,
     pub daemon_up: AtomicBool,
@@ -232,6 +237,7 @@ pub fn setup(app: &mut tauri::App, config: &AppConfig) -> tauri::Result<()> {
         daemon_lifecycle: Mutex::new(config.general.daemon_lifecycle),
         lang: Mutex::new(lang),
         data: Mutex::new(initial_tray_data()),
+        integration_updates: Mutex::new(detect_integration_updates()),
         update_action: Mutex::new(UpdateActionState::Idle),
         daemon_up: AtomicBool::new(false),
         windows_open: AtomicUsize::new(0),
@@ -320,15 +326,31 @@ fn decode_icon(bytes: &'static [u8]) -> Option<Image<'static>> {
     Image::from_bytes(bytes).ok()
 }
 
-fn icon_for(daemon_up: bool, active_requests: usize) -> Option<Image<'static>> {
-    let bytes = if !daemon_up {
-        icon_bytes::STOPPED
-    } else if active_requests > 0 {
-        icon_bytes::ACTIVE
-    } else {
-        icon_bytes::IDLE
-    };
-    decode_icon(bytes)
+fn icon_source(
+    daemon_up: bool,
+    active_requests: usize,
+    integration_attention: bool,
+) -> &'static [u8] {
+    match (daemon_up, active_requests > 0, integration_attention) {
+        (false, _, true) => icon_bytes::STOPPED_ATTENTION,
+        (false, _, false) => icon_bytes::STOPPED,
+        // Pending replies take priority over the lower-severity integration reminder.
+        (true, true, _) => icon_bytes::ACTIVE,
+        (true, false, true) => icon_bytes::IDLE_ATTENTION,
+        (true, false, false) => icon_bytes::IDLE,
+    }
+}
+
+fn icon_for(
+    daemon_up: bool,
+    active_requests: usize,
+    integration_attention: bool,
+) -> Option<Image<'static>> {
+    decode_icon(icon_source(
+        daemon_up,
+        active_requests,
+        integration_attention,
+    ))
 }
 
 /// 建立（present=true）或移除（present=false）托盘图标。须在主线程调用。
@@ -379,6 +401,7 @@ pub fn refresh_tray(app: &AppHandle) {
     };
     let up = state.daemon_up.load(Ordering::SeqCst);
     let data = state.data.lock().unwrap().clone();
+    let integration_updates = state.integration_updates.lock().unwrap().clone();
     let update_action = state.update_action.lock().unwrap().clone();
     let lang = state.lang();
     // 是否有任一家开启了生命周期追踪：未开启时隐藏 Agent 状态相关菜单项（入口 + 忙闲行）。
@@ -387,13 +410,21 @@ pub fn refresh_tray(app: &AppHandle) {
     let stale = state.binary_stale.load(Ordering::SeqCst);
 
     // 内容签名：与上次相同 → 整次跳过，不触碰托盘（连 diff 都省，确保展开的菜单纹丝不动）。
-    let sig = menu_signature(up, lang, &data, lifecycle_on, stale, &update_action);
+    let sig = menu_signature(
+        up,
+        lang,
+        &data,
+        &integration_updates,
+        lifecycle_on,
+        stale,
+        &update_action,
+    );
     if state.menu_sig.lock().unwrap().as_deref() == Some(sig.as_str()) {
         return;
     }
 
     // 图标（set_icon / set_tooltip 不会关闭已展开菜单）。
-    if let Some(img) = icon_for(up, data.active_requests) {
+    if let Some(img) = icon_for(up, data.active_requests, !integration_updates.is_empty()) {
         let _ = tray.set_icon(Some(img));
         let _ = tray.set_icon_as_template(icon_bytes::TEMPLATE);
     }
@@ -404,16 +435,21 @@ pub fn refresh_tray(app: &AppHandle) {
             up,
             lang,
             &data,
+            &integration_updates,
             lifecycle_on,
             stale,
             &update_action,
         ));
     }
-    let tip = if up {
+    let mut tip = if up {
         i18n::tr(lang, "tray.tooltipRunning").to_string()
     } else {
         i18n::tr(lang, "tray.tooltipStopped").to_string()
     };
+    if !integration_updates.is_empty() {
+        tip.push_str(" · ");
+        tip.push_str(i18n::tr(lang, "tray.integrationUpdatesTooltip"));
+    }
     let _ = tray.set_tooltip(Some(&tip));
 
     *state.menu_sig.lock().unwrap() = Some(sig);
@@ -426,6 +462,7 @@ fn menu_signature(
     up: bool,
     lang: Lang,
     data: &TrayData,
+    integration_updates: &[String],
     lifecycle_on: bool,
     stale: bool,
     update_action: &UpdateActionState,
@@ -464,7 +501,7 @@ fn menu_signature(
         .collect::<Vec<_>>()
         .join(";");
     format!(
-        "{:?}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{:?}",
+        "{:?}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{:?}",
         lang,
         up as u8,
         data.version,
@@ -487,8 +524,65 @@ fn menu_signature(
         pending,
         agents,
         issues,
+        integration_updates.join(","),
         update_action,
     )
+}
+
+fn detect_integration_updates() -> Vec<String> {
+    use crate::integrations::agent_rules::AgentTarget;
+
+    [
+        ("cursor", AgentTarget::Cursor),
+        ("claude", AgentTarget::ClaudeCode),
+        ("codex", AgentTarget::Codex),
+        ("grok", AgentTarget::Grok),
+    ]
+    .into_iter()
+    .filter_map(|(id, target)| {
+        crate::integrations::agent_mode::needs_update(target).then(|| id.to_string())
+    })
+    .collect()
+}
+
+/// Recheck host-local Agent integration artifacts and redraw the tray only when the result changes.
+/// Called on Host startup, each daemon down-to-up transition, and successful Settings mutations.
+pub(crate) fn refresh_integration_updates(app: &AppHandle) {
+    let updates = detect_integration_updates();
+    let Some(state) = app.try_state::<HostState>() else {
+        return;
+    };
+    let changed = {
+        let mut current = state.integration_updates.lock().unwrap();
+        if *current == updates {
+            false
+        } else {
+            *current = updates;
+            true
+        }
+    };
+    if changed {
+        refresh_on_main(app);
+    }
+}
+
+fn integration_agent_label(id: &str) -> &str {
+    match id {
+        "cursor" => "Cursor",
+        "claude" => "Claude Code",
+        "codex" => "Codex",
+        "grok" => "Grok",
+        other => other,
+    }
+}
+
+fn integration_updates_text(updates: &[String], lang: Lang) -> String {
+    if updates.len() == 1 {
+        return i18n::tr(lang, "tray.integrationUpdateOne")
+            .replace("{agent}", integration_agent_label(&updates[0]));
+    }
+    i18n::tr(lang, "tray.integrationUpdateMany")
+        .replace("{count}", &updates.len().to_string())
 }
 
 /// 分钟级「多久之前」文案（托盘渠道故障行用；分钟级粒度避免秒级微变触发菜单刷新）。
@@ -524,6 +618,7 @@ fn build_specs(
     up: bool,
     lang: Lang,
     data: &TrayData,
+    integration_updates: &[String],
     lifecycle_on: bool,
     stale: bool,
     update_action: &UpdateActionState,
@@ -590,6 +685,13 @@ fn build_specs(
             "st.update_pending",
             i18n::tr(lang, "tray.updatePending").to_string(),
             false,
+        ));
+    }
+    if !integration_updates.is_empty() {
+        nodes.push(Node::item(
+            "integration_updates",
+            integration_updates_text(integration_updates, lang),
+            true,
         ));
     }
 
@@ -894,6 +996,10 @@ pub fn on_menu_event(app: &AppHandle, id: &str) {
     // 渠道故障警示行（R7）：打开设置并定位到渠道 tab（错误详情显示在渠道卡片上）。
     if id.starts_with("chissue:") {
         open_window_settings_tab(app, "channel");
+        return;
+    }
+    if id == "integration_updates" {
+        open_window_settings_tab(app, "integration");
         return;
     }
     // Agent 子菜单「添加待办」：打开（或聚焦）待办窗口并预选该 agent 的项目（cwd → git 根）。
@@ -1429,8 +1535,12 @@ fn mode_of(app: &AppHandle) -> MenuBarIconMode {
 }
 
 fn set_daemon_up(app: &AppHandle, up: bool) {
+    let mut became_up = false;
     if let Some(state) = app.try_state::<HostState>() {
-        state.daemon_up.store(up, Ordering::SeqCst);
+        became_up = up && !state.daemon_up.swap(up, Ordering::SeqCst);
+    }
+    if became_up {
+        refresh_integration_updates(app);
     }
     update_keepalive(app);
 }
@@ -1696,6 +1806,7 @@ mod tests {
             false,
             Lang::En,
             &TrayData::default(),
+            &[],
             false,
             false,
             &UpdateActionState::Current,
@@ -1718,6 +1829,7 @@ mod tests {
             false,
             Lang::En,
             &data,
+            &[],
             false,
             false,
             &UpdateActionState::Applying,
@@ -1742,5 +1854,39 @@ mod tests {
         let action = UpdateActionState::ApplyFailed(compact.clone());
         let text = update_action_text(&action, Lang::En).unwrap();
         assert_eq!(text, format!("⚠ Update failed: {compact}"));
+    }
+
+    #[test]
+    fn multiple_integration_updates_are_clickable_and_compact() {
+        let updates = vec!["cursor".to_string(), "codex".to_string()];
+        let nodes = build_specs(
+            false,
+            Lang::En,
+            &TrayData::default(),
+            &updates,
+            false,
+            false,
+            &UpdateActionState::Idle,
+        );
+        assert_eq!(
+            item(&nodes, "integration_updates"),
+            ("💡 2 Agent integrations need updates", true)
+        );
+    }
+
+    #[test]
+    fn single_integration_update_names_the_agent() {
+        assert_eq!(
+            integration_updates_text(&["codex".to_string()], Lang::Zh),
+            "💡 Codex 集成需更新"
+        );
+    }
+
+    #[test]
+    fn pending_reply_icon_takes_priority_over_integration_attention() {
+        assert_eq!(icon_source(false, 0, true), icon_bytes::STOPPED_ATTENTION);
+        assert_eq!(icon_source(true, 0, true), icon_bytes::IDLE_ATTENTION);
+        assert_eq!(icon_source(true, 1, true), icon_bytes::ACTIVE);
+        assert_eq!(icon_source(true, 0, false), icon_bytes::IDLE);
     }
 }
