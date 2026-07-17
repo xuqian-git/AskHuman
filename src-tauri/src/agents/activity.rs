@@ -369,7 +369,8 @@ fn push_events_msg(v: &Value, out: &mut Vec<Ev>) {
 }
 
 /// Codex rollout：`response_item.payload` 的 `message`(assistant output_text) / `function_call` /
-/// `function_call_output`；`event_msg.payload` 的 `agent_message`。reasoning / token_count 忽略。
+/// `function_call_output`，以及 Code Mode 的 `custom_tool_call` / `custom_tool_call_output`；
+/// `event_msg.payload` 的 `agent_message` 与 `patch_apply_end`。reasoning / token_count 忽略。
 fn push_events_codex(v: &Value, out: &mut Vec<Ev>) {
     let ttype = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
     let Some(payload) = v.get("payload") else {
@@ -401,6 +402,30 @@ fn push_events_codex(v: &Value, out: &mut Vec<Ev>) {
         }
         // Codex 的 output 是纯字符串（无结构化成败标志）→ 一律视为成功。
         ("response_item", "function_call_output") => out.push(Ev::ToolResult(false)),
+        // Code Mode 把实际工具包在 custom `exec` 的 JavaScript 中。对 exec_command 提取其 JSON
+        // 参数：常见只读命令归一为 Read，其余保底显示为 Run；其它内层工具保留工具名。
+        // apply_patch 由下方结构化 patch_apply_end 展示，避免同一次编辑重复出现。
+        ("response_item", "custom_tool_call") => {
+            if let Some(tool) = codex_custom_tool(payload) {
+                out.push(Ev::Tool(tool));
+            }
+        }
+        ("response_item", "custom_tool_call_output") => {
+            out.push(Ev::ToolResult(custom_tool_output_failed(payload)))
+        }
+        // Code Mode 的 apply_patch 被包在 custom `exec` 调用内，不再以 function_call 暴露；
+        // 完成时会落一条结构化 patch_apply_end，直接用 changes 文件表生成稳定、无正文泄露的足迹。
+        ("event_msg", "patch_apply_end") => {
+            out.push(Ev::Tool(ToolDisplay {
+                label: ToolLabel::Write,
+                object: patch_changes_object(payload.get("changes")),
+            }));
+            let failed = !payload
+                .get("success")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false);
+            out.push(Ev::ToolResult(failed));
+        }
         ("event_msg", "agent_message") => {
             if let Some(t) = payload.get("message").and_then(|m| m.as_str()) {
                 let t = t.trim();
@@ -411,6 +436,108 @@ fn push_events_codex(v: &Value, out: &mut Vec<Ev>) {
         }
         _ => {}
     }
+}
+
+/// Parse a Codex Code Mode custom tool wrapper into a visible activity step.
+///
+/// The wrapper currently uses canonical JavaScript such as
+/// `await tools.exec_command({"cmd":"..."})`. The argument itself is JSON, so this parser only
+/// depends on that stable fragment and falls back to the outer tool when a future wrapper changes.
+fn codex_custom_tool(payload: &Value) -> Option<ToolDisplay> {
+    let outer_name = payload.get("name").and_then(Value::as_str).unwrap_or("");
+    let input = payload.get("input").and_then(Value::as_str).unwrap_or("");
+    if outer_name != "exec" {
+        let args = (!input.is_empty()).then(|| Value::String(input.to_string()));
+        return Some(classify_tool(outer_name, args.as_ref()));
+    }
+
+    let Some((inner_name, args)) = codex_inner_tool(input) else {
+        return Some(ToolDisplay {
+            label: ToolLabel::Run,
+            object: (!input.trim().is_empty()).then(|| truncate(input, MAX_TOOL_OBJECT_CHARS)),
+        });
+    };
+    if inner_name == "apply_patch" {
+        return None;
+    }
+    if inner_name == "exec_command" {
+        let cmd = args
+            .as_ref()
+            .and_then(|value| value.get("cmd"))
+            .and_then(Value::as_str);
+        return Some(ToolDisplay {
+            label: if cmd.is_some_and(is_common_read_command) {
+                ToolLabel::Read
+            } else {
+                ToolLabel::Run
+            },
+            object: arg_command(args.as_ref()),
+        });
+    }
+    Some(classify_tool(&inner_name, args.as_ref()))
+}
+
+/// Extract the first `tools.<name>(<JSON value>)` invocation from a Code Mode wrapper.
+fn codex_inner_tool(input: &str) -> Option<(String, Option<Value>)> {
+    let marker = "tools.";
+    let start = input.find(marker)? + marker.len();
+    let rest = &input[start..];
+    let open = rest.find('(')?;
+    let name = rest[..open].trim();
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+    {
+        return None;
+    }
+    let json = rest[open + 1..].trim_start();
+    let args = serde_json::Deserializer::from_str(json)
+        .into_iter::<Value>()
+        .next()
+        .and_then(Result::ok);
+    Some((name.to_string(), args))
+}
+
+/// Code Mode does not expose a structured read event. Recognize the conservative set of commands
+/// Codex normally uses to inspect files; every other command remains visible through the Run fallback.
+fn is_common_read_command(cmd: &str) -> bool {
+    let first = cmd.trim_start().split_whitespace().next().unwrap_or("");
+    matches!(
+        first,
+        "rg" | "grep" | "cat" | "head" | "tail" | "less" | "jq"
+    ) || (first == "sed"
+        && !cmd
+            .split_whitespace()
+            .any(|part| part == "-i" || part.starts_with("-i.")))
+}
+
+fn custom_tool_output_failed(payload: &Value) -> bool {
+    value_text(payload.get("output"))
+        .is_some_and(|output| output.trim_start().starts_with("Script failed"))
+}
+
+/// `patch_apply_end.changes` 的路径表 → `首文件名 +N`。只展示 basename，不读取 diff/stdout。
+fn patch_changes_object(changes: Option<&Value>) -> Option<String> {
+    let mut names: Vec<String> = changes?
+        .as_object()?
+        .keys()
+        .filter_map(|path| {
+            Path::new(path)
+                .file_name()
+                .map(|name| name.to_string_lossy().to_string())
+        })
+        .filter(|name| !name.is_empty())
+        .collect();
+    names.sort();
+    names.dedup();
+    let first = names.first()?;
+    let value = if names.len() == 1 {
+        first.clone()
+    } else {
+        format!("{} +{}", first, names.len() - 1)
+    };
+    Some(truncate(&value, MAX_TOOL_OBJECT_CHARS))
 }
 
 /// Grok：`{type:assistant, content, tool_calls:[{function:{name,arguments}}]}`；`{type:tool_result}`。
@@ -872,6 +999,87 @@ mod tests {
         assert_eq!(step.tool.label, ToolLabel::Run);
         assert_eq!(step.tool.object.as_deref(), Some("bash -lc ls -la"));
         assert_eq!(step.state, StepState::Running);
+    }
+
+    #[test]
+    fn codex_custom_exec_read_command_is_visible() {
+        let ls = lines(&[
+            r#"{"type":"response_item","payload":{"type":"custom_tool_call","name":"exec","input":"const r = await tools.exec_command({\"cmd\":\"sed -n '1,80p' src/lib.rs && rg -n TODO src\",\"workdir\":\"/repo\"});\ntext(r.output);"}}"#,
+            r#"{"type":"response_item","payload":{"type":"custom_tool_call_output","output":[{"type":"input_text","text":"Script completed\nWall time 0.1 seconds\nOutput:\n"}]}}"#,
+        ]);
+        let a = analyze(AgentKind::Codex, &ls).unwrap();
+        let step = a.steps.last().unwrap();
+        assert_eq!(step.tool.label, ToolLabel::Read);
+        assert_eq!(
+            step.tool.object.as_deref(),
+            Some("sed -n '1,80p' src/lib.rs && rg -n TODO src")
+        );
+        assert_eq!(step.state, StepState::Done);
+    }
+
+    #[test]
+    fn codex_custom_exec_non_read_command_falls_back_to_run() {
+        let ls = lines(&[
+            r#"{"type":"response_item","payload":{"type":"custom_tool_call","name":"exec","input":"const r = await tools.exec_command({\"cmd\":\"cargo test\",\"workdir\":\"/repo\"});\ntext(r.output);"}}"#,
+            r#"{"type":"response_item","payload":{"type":"custom_tool_call_output","output":[{"type":"input_text","text":"Script failed\nWall time 0.1 seconds\nOutput:\nboom"}]}}"#,
+        ]);
+        let a = analyze(AgentKind::Codex, &ls).unwrap();
+        let step = a.steps.last().unwrap();
+        assert_eq!(step.tool.label, ToolLabel::Run);
+        assert_eq!(step.tool.object.as_deref(), Some("cargo test"));
+        assert_eq!(step.state, StepState::Failed);
+    }
+
+    #[test]
+    fn codex_custom_inner_tool_uses_named_fallback() {
+        let ls = lines(&[
+            r#"{"type":"response_item","payload":{"type":"custom_tool_call","name":"exec","input":"const r = await tools.write_stdin({\"session_id\":42,\"chars\":\"\"});\ntext(r.output);"}}"#,
+        ]);
+        let a = analyze(AgentKind::Codex, &ls).unwrap();
+        let step = a.steps.last().unwrap();
+        assert_eq!(step.tool.label, ToolLabel::Other("write_stdin".to_string()));
+        assert_eq!(step.state, StepState::Running);
+    }
+
+    #[test]
+    fn codex_patch_apply_end_is_completed_write_step() {
+        let ls = lines(&[
+            r#"{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"修改文件"}]}}"#,
+            r#"{"type":"event_msg","payload":{"type":"patch_apply_end","success":true,"changes":{"/repo/src/b.rs":{"type":"update"},"/repo/docs/a.md":{"type":"update"},"/repo/src/c.rs":{"type":"add"}}}}"#,
+        ]);
+        let a = analyze(AgentKind::Codex, &ls).unwrap();
+        assert_eq!(a.steps.len(), 1);
+        let step = &a.steps[0];
+        assert_eq!(step.tool.label, ToolLabel::Write);
+        assert_eq!(step.tool.object.as_deref(), Some("a.md +2"));
+        assert_eq!(step.state, StepState::Done);
+    }
+
+    #[test]
+    fn codex_custom_apply_patch_is_not_duplicated() {
+        let ls = lines(&[
+            r#"{"type":"response_item","payload":{"type":"custom_tool_call","name":"exec","input":"const patch = \"*** Begin Patch\\n*** End Patch\";\ntext(await tools.apply_patch(patch));"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"patch_apply_end","success":true,"changes":{"/repo/src/lib.rs":{"type":"update"}}}}"#,
+            r#"{"type":"response_item","payload":{"type":"custom_tool_call_output","output":[{"type":"input_text","text":"Script completed\nWall time 0.0 seconds\nOutput:\n"}]}}"#,
+        ]);
+        let a = analyze(AgentKind::Codex, &ls).unwrap();
+        assert_eq!(a.steps.len(), 1);
+        let step = &a.steps[0];
+        assert_eq!(step.tool.label, ToolLabel::Write);
+        assert_eq!(step.tool.object.as_deref(), Some("lib.rs"));
+        assert_eq!(step.state, StepState::Done);
+    }
+
+    #[test]
+    fn codex_failed_patch_apply_end_is_failed_write_step() {
+        let ls = lines(&[
+            r#"{"type":"event_msg","payload":{"type":"patch_apply_end","success":false,"changes":{}}}"#,
+        ]);
+        let a = analyze(AgentKind::Codex, &ls).unwrap();
+        let step = a.steps.last().unwrap();
+        assert_eq!(step.tool.label, ToolLabel::Write);
+        assert_eq!(step.tool.object, None);
+        assert_eq!(step.state, StepState::Failed);
     }
 
     #[test]
