@@ -175,6 +175,16 @@ impl TelegramClient {
             .unwrap_or(0))
     }
 
+    /// 删除 bot 发出的消息（ForceReply 输入提示完成或过期后的清理）。
+    pub async fn delete_message(&self, message_id: i64) -> Result<(), TelegramError> {
+        self.call(
+            "deleteMessage",
+            json!({ "chat_id": self.chat_id, "message_id": message_id }),
+        )
+        .await
+        .map(|_| ())
+    }
+
     /// 上传文件（multipart）。`method` 为 sendDocument/sendPhoto，`field` 为 document/photo。
     async fn send_file(
         &self,

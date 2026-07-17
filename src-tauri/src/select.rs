@@ -49,6 +49,8 @@ pub enum SelectAction {
     Unwatch,
     /// 发送插话（`/msg` 无编号时的选择卡；按钮「发送」，点它把预存内容发给该 agent）。
     Msg,
+    /// 空 `/msg` 的目标选择；点选后进入一次性输入卡，不在本次点击发送正文。
+    MsgTarget,
     /// 导出未暂存 diff。
     Diff,
     /// 发起 stage 确认。
@@ -78,6 +80,7 @@ impl SelectAction {
             SelectAction::Status => "select.btnStatus",
             SelectAction::Unwatch => "select.btnUnwatch",
             SelectAction::Msg => "select.btnMsg",
+            SelectAction::MsgTarget => "select.btnChoose",
             SelectAction::Diff => "select.btnDiff",
             SelectAction::Stage => "select.btnStage",
             SelectAction::Transcript => "select.btnTranscript",
@@ -597,6 +600,7 @@ mod tests {
         assert_eq!(SelectAction::Status.button_label(Lang::Zh), "查看");
         assert_eq!(SelectAction::Unwatch.button_label(Lang::Zh), "取消");
         assert_eq!(SelectAction::Msg.button_label(Lang::Zh), "发送");
+        assert_eq!(SelectAction::MsgTarget.button_label(Lang::Zh), "选择");
         assert_eq!(SelectAction::Diff.button_label(Lang::Zh), "差异");
         assert_eq!(SelectAction::Stage.button_label(Lang::Zh), "暂存");
         assert_eq!(SelectAction::Transcript.button_label(Lang::Zh), "会话");

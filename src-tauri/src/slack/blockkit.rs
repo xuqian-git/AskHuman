@@ -215,6 +215,30 @@ pub fn build_question_card_with_state(
     Value::Array(blocks)
 }
 
+/// `/msg` 一次性输入卡。复用提问卡的原生多行输入和提交动作，不创建额外交互协议。
+pub fn build_msg_compose_card(
+    view: &crate::msg_card::MsgComposeView,
+    nonce: &str,
+    user_input_draft: Option<&str>,
+) -> Value {
+    build_question_card_with_state(
+        &view.title,
+        &view.plain_body(),
+        &[],
+        false,
+        false,
+        false,
+        "",
+        &view.input_label,
+        &view.input_placeholder,
+        &view.send_label,
+        "",
+        nonce,
+        None,
+        user_input_draft,
+    )
+}
+
 /// 组装「消息」blocks：大号 header（`header` 已含调用方图标前缀，如 ✉️）+ 可选正文 section。
 /// `is_markdown` 决定正文用 mrkdwn 还是 plain_text。
 pub fn build_message_blocks(header: &str, body: &str, is_markdown: bool) -> Value {
@@ -871,5 +895,37 @@ mod tests {
             .unwrap_or("")
             .contains("💬 再想想")));
         assert!(bs.iter().any(|b| b["type"] == "context"));
+    }
+
+    #[test]
+    fn msg_compose_card_uses_multiline_input_nonce_and_draft() {
+        let view = crate::msg_card::MsgComposeView {
+            seq: 3,
+            title: "Message [3] Codex".into(),
+            target_label: "Target".into(),
+            target: "Codex — project".into(),
+            pending_label: "No message is pending.".into(),
+            pending_preview: None,
+            preview_omitted: None,
+            input_label: "Message".into(),
+            input_placeholder: "Enter a message".into(),
+            send_label: "Send".into(),
+            error: None,
+        };
+        let card = build_msg_compose_card(&view, "nonce-1", Some("draft"));
+        let input = blocks(&card)
+            .iter()
+            .find(|block| block["type"] == "input")
+            .unwrap();
+        assert_eq!(input["block_id"], "userinput_nonce-1");
+        assert_eq!(input["element"]["multiline"], true);
+        assert_eq!(input["element"]["initial_value"], "draft");
+        assert_eq!(
+            blocks(&card)
+                .iter()
+                .filter(|block| block["type"] == "actions")
+                .count(),
+            1
+        );
     }
 }

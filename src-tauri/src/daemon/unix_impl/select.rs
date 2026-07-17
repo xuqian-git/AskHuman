@@ -7,19 +7,200 @@ use super::*;
 /// 登记一条单选卡台账（顺带按 TTL + 每渠道软上限清理旧卡）。
 pub(super) fn register_picker(state: &Arc<ServerState>, entry: PickerEntry) {
     let now = now_secs();
+    let is_msg_compose = entry.kind == PickerKind::MsgCompose;
     let mut pickers = state.select.pickers.lock().unwrap();
     // TTL 兜底清理（全渠道）。
-    pickers.retain(|p| now.saturating_sub(p.created_at) < SELECT_PICKER_TTL_SECS);
+    // MsgCompose 有独立的可见过期收尾，不能在这里静默丢弃。
+    pickers.retain(|p| {
+        p.kind == PickerKind::MsgCompose
+            || now.saturating_sub(p.created_at) < SELECT_PICKER_TTL_SECS
+    });
     let channel = entry.channel.clone();
     pickers.push(entry);
     // 每渠道软上限：超出丢最旧（本渠道最靠前的条目）。
     while pickers.iter().filter(|p| p.channel == channel).count() > SELECT_MAX_PICKERS_PER_CHANNEL {
-        if let Some(pos) = pickers.iter().position(|p| p.channel == channel) {
+        if let Some(pos) = pickers
+            .iter()
+            .position(|p| p.channel == channel && p.kind != PickerKind::MsgCompose)
+        {
             pickers.remove(pos);
         } else {
             break;
         }
     }
+    drop(pickers);
+    if is_msg_compose {
+        persist_msg_compose_recovery(state);
+    }
+}
+
+fn persist_msg_compose_recovery(state: &Arc<ServerState>) {
+    let items: Vec<crate::msg_card::MsgComposeRecovery> = state
+        .select
+        .pickers
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|picker| picker.kind == PickerKind::MsgCompose)
+        .filter_map(|picker| {
+            let payload = crate::msg_card::decode_payload(picker.payload.as_deref())?;
+            Some(crate::msg_card::MsgComposeRecovery {
+                channel: picker.channel.clone(),
+                message_id: picker.message_id.clone(),
+                session_id: payload.session_id,
+                expires_at: payload.expires_at,
+            })
+        })
+        .collect();
+    crate::msg_card::save_recovery(&items);
+}
+
+fn msg_compose_payload(session_id: &str, recovered: bool) -> Option<String> {
+    crate::msg_card::encode_payload(&crate::msg_card::MsgComposePayload {
+        session_id: session_id.to_string(),
+        expires_at: now_secs().saturating_add(SELECT_PICKER_TTL_SECS),
+        recovered,
+    })
+}
+
+/// 发送一张 `/msg` 一次性输入卡并登记最小恢复记录。
+pub(super) async fn send_msg_compose_card(
+    state: &Arc<ServerState>,
+    channel_id: &str,
+    config: &AppConfig,
+    session_id: &str,
+    lang: Lang,
+) -> bool {
+    let snapshot = state.agents.snapshot();
+    let Some(rec) = find_agent_by_session(&snapshot, session_id) else {
+        return false;
+    };
+    if !is_working_non_grok(&snapshot, session_id) {
+        return false;
+    }
+    let view = crate::msg_card::build_view(
+        rec,
+        state.interject.pending_count(session_id),
+        &state.interject.full_text(session_id),
+        None,
+        lang,
+    );
+    let message_id = match channel_id {
+        "feishu" => {
+            let Ok(client) = crate::feishu::client::FeishuClient::new(&config.channels.feishu)
+            else {
+                return false;
+            };
+            let card = crate::feishu::card::build_msg_compose_card(&view, None);
+            match client.send_card(&card).await {
+                Ok(mid) => mid,
+                Err(err) => {
+                    log(&format!("msg compose: send feishu card failed: {}", err));
+                    return false;
+                }
+            }
+        }
+        "dingding" => {
+            let Ok(client) =
+                crate::dingtalk::client::DingTalkClient::new(&config.channels.dingding)
+            else {
+                return false;
+            };
+            let otid = format!("msg-{}", uuid::Uuid::new_v4());
+            let map = crate::dingtalk::card::build_card_param_map(
+                &view.title,
+                &crate::msg_card::escape_markdown(&view.plain_body()),
+                &[],
+                false,
+                false,
+                "",
+            );
+            if let Err(err) = client
+                .create_and_deliver_card(
+                    &otid,
+                    crate::channels::dingding::effective_template_id(&config.channels.dingding),
+                    map,
+                    crate::dingtalk::card::build_card_private_map(),
+                )
+                .await
+            {
+                log(&format!("msg compose: send dingtalk card failed: {}", err));
+                return false;
+            }
+            otid
+        }
+        "telegram" => {
+            let tg = &config.channels.telegram;
+            let Ok(client) = crate::telegram::TelegramClient::new(
+                tg.bot_token.clone(),
+                tg.chat_id.clone(),
+                tg.api_base_url.clone(),
+            ) else {
+                return false;
+            };
+            let html = render_msg_compose_telegram(&view);
+            let force_reply = serde_json::json!({
+                "force_reply": true,
+                "selective": true,
+                "input_field_placeholder": view.input_placeholder,
+            });
+            match client
+                .send_message(&html, Some("HTML"), Some(force_reply))
+                .await
+            {
+                Ok(mid) if mid != 0 => mid.to_string(),
+                Ok(_) => return false,
+                Err(err) => {
+                    log(&format!(
+                        "msg compose: send telegram prompt failed: {}",
+                        err
+                    ));
+                    return false;
+                }
+            }
+        }
+        "slack" => {
+            let Ok(client) = crate::slack::client::SlackClient::new(&config.channels.slack) else {
+                return false;
+            };
+            let Ok(dm) = client.open_dm().await else {
+                return false;
+            };
+            let nonce = uuid::Uuid::new_v4().to_string();
+            let blocks = crate::slack::blockkit::build_msg_compose_card(&view, &nonce, None);
+            match client.post_message(&dm, Some(&blocks), &view.title).await {
+                Ok(ts) => ts,
+                Err(err) => {
+                    log(&format!("msg compose: send slack card failed: {}", err));
+                    return false;
+                }
+            }
+        }
+        _ => return false,
+    };
+    let Some(payload) = msg_compose_payload(session_id, false) else {
+        return false;
+    };
+    register_picker(
+        state,
+        PickerEntry {
+            channel: channel_id.to_string(),
+            message_id,
+            kind: PickerKind::MsgCompose,
+            title: view.title,
+            options: Vec::new(),
+            payload: Some(payload),
+            created_at: now_secs(),
+            posted_ms: now_ms(),
+        },
+    );
+    state.select.route_refresh.notify_one();
+    true
+}
+
+fn render_msg_compose_telegram(view: &crate::msg_card::MsgComposeView) -> String {
+    let esc = crate::telegram::markdown::escape_html;
+    format!("<b>{}</b>\n\n{}", esc(&view.title), esc(&view.plain_body()))
 }
 
 /// 发一张单选卡到某渠道，返回消息 id（MVP 仅飞书；其它渠道 None → 调用方回文本兜底）。
@@ -104,7 +285,9 @@ pub(super) async fn send_agent_picker(
         PickerKind::Watch => crate::select::SelectAction::Watch,
         PickerKind::Status => crate::select::SelectAction::Status,
         PickerKind::Unwatch => crate::select::SelectAction::Unwatch,
+        PickerKind::Msg if payload.is_none() => crate::select::SelectAction::MsgTarget,
         PickerKind::Msg => crate::select::SelectAction::Msg,
+        PickerKind::MsgCompose => return false,
         PickerKind::Diff => crate::select::SelectAction::Diff,
         PickerKind::Stage => crate::select::SelectAction::Stage,
         PickerKind::Transcript => crate::select::SelectAction::Transcript,
@@ -210,14 +393,55 @@ pub(super) fn status_detail_by_session(
 /// （`last_move_ms=0`）并唤醒引擎——单选期间被抑制的跟底在下一次内容变化时立即重发到会话底部
 /// （用户定案，与「提问完结」一致；此处覆盖到钉钉，补上提问路径遗漏 dingding 的口径差）。
 pub(super) fn remove_picker(state: &Arc<ServerState>, channel_id: &str, message_id: &str) {
+    let removed_kind = {
+        let mut pickers = state.select.pickers.lock().unwrap();
+        pickers
+            .iter()
+            .position(|p| p.channel == channel_id && p.message_id == message_id)
+            .map(|pos| pickers.remove(pos).kind)
+    };
+    let Some(removed_kind) = removed_kind else {
+        return;
+    };
+    after_picker_removed(state, channel_id, message_id, removed_kind);
+}
+
+fn take_msg_compose_picker(
+    state: &Arc<ServerState>,
+    channel_id: &str,
+    message_id: &str,
+) -> Option<PickerEntry> {
     let removed = {
         let mut pickers = state.select.pickers.lock().unwrap();
-        let before = pickers.len();
-        pickers.retain(|p| !(p.channel == channel_id && p.message_id == message_id));
-        pickers.len() != before
+        let pos = pickers.iter().position(|picker| {
+            picker.channel == channel_id
+                && picker.message_id == message_id
+                && picker.kind == PickerKind::MsgCompose
+        })?;
+        pickers.remove(pos)
     };
-    if !removed {
-        return;
+    after_picker_removed(state, channel_id, message_id, removed.kind);
+    Some(removed)
+}
+
+fn after_picker_removed(
+    state: &Arc<ServerState>,
+    channel_id: &str,
+    message_id: &str,
+    kind: PickerKind,
+) {
+    if kind == PickerKind::MsgCompose {
+        let now = now_secs();
+        let mut tombstones = state.select.msg_compose_tombstones.lock().unwrap();
+        tombstones.retain(|_, expires_at| *expires_at > now);
+        // Router/observer 的调度差通常只有毫秒；保留一分钟足以封住重复消费，又不会长期吞旧回复。
+        tombstones.insert(
+            format!("{}\n{}", channel_id, message_id),
+            now.saturating_add(60),
+        );
+        drop(tombstones);
+        persist_msg_compose_recovery(state);
+        state.select.route_refresh.notify_one();
     }
     // 本渠道若已无其它在途单选卡，放开跟底：清零节流 + 唤醒引擎。
     if !has_active_select_on(state, channel_id) {
@@ -253,9 +477,15 @@ pub(super) async fn finalize_all_select_cards(state: &Arc<ServerState>) {
     let config = state.config_snapshot();
     let label = crate::i18n::tr(lang, "select.expiredCard");
     for p in &pickers {
+        let picker_label = if p.kind == PickerKind::MsgCompose {
+            msg_compose_expired_label(&p.channel, lang)
+        } else {
+            label.to_string()
+        };
         match p.channel.as_str() {
             "feishu" => {
-                let card = crate::feishu::card::build_select_final_card(&p.title, label);
+                let card =
+                    crate::feishu::card::build_select_final_card(&p.title, &picker_label);
                 if let Ok(client) =
                     crate::feishu::client::FeishuClient::new(&config.channels.feishu)
                 {
@@ -265,7 +495,7 @@ pub(super) async fn finalize_all_select_cards(state: &Arc<ServerState>) {
                 }
             }
             "dingding" => {
-                if p.kind == PickerKind::TodoManage {
+                if matches!(p.kind, PickerKind::TodoManage | PickerKind::MsgCompose) {
                     // 管理卡走提问卡模板：置私有 `submitted=true` 关表单 + 公有终态文案。
                     if let Ok(client) =
                         crate::dingtalk::client::DingTalkClient::new(&config.channels.dingding)
@@ -273,7 +503,7 @@ pub(super) async fn finalize_all_select_cards(state: &Arc<ServerState>) {
                         if let Err(err) = client
                             .update_card_private(
                                 &p.message_id,
-                                serde_json::json!({ "submit_status": label }),
+                                serde_json::json!({ "submit_status": picker_label }),
                                 serde_json::json!({ "submitted": "true" }),
                             )
                             .await
@@ -288,9 +518,29 @@ pub(super) async fn finalize_all_select_cards(state: &Arc<ServerState>) {
                     dd_finalize_select_card(&config, &p.message_id, label).await;
                 }
             }
+            "telegram" if p.kind == PickerKind::MsgCompose => {
+                let tg = &config.channels.telegram;
+                if let (Ok(client), Ok(mid)) = (
+                    crate::telegram::TelegramClient::new(
+                        tg.bot_token.clone(),
+                        tg.chat_id.clone(),
+                        tg.api_base_url.clone(),
+                    ),
+                    p.message_id.parse::<i64>(),
+                ) {
+                    let _ = client.send_message(&picker_label, None, None).await;
+                    let _ = client.delete_message(mid).await;
+                }
+            }
             _ => {
-                finalize_select_card_edit(&p.channel, &config, &p.message_id, &p.title, label)
-                    .await
+                finalize_select_card_edit(
+                    &p.channel,
+                    &config,
+                    &p.message_id,
+                    &p.title,
+                    &picker_label,
+                )
+                .await
             }
         }
     }
@@ -302,6 +552,98 @@ pub(super) async fn finalize_all_select_cards(state: &Arc<ServerState>) {
         };
         crate::confirm::transport::finalize(&c.channel, &config, &c.message_id, &fv, None).await;
     }
+}
+
+/// 启动恢复与运行时 TTL 共用的过期收尾。只有远端卡片成功定格后才删除恢复记录；失败项留待
+/// 下一轮重试，且回调处理仍会拒绝发送。
+pub(super) async fn finalize_expired_msg_compose_cards(state: &Arc<ServerState>) {
+    let now = now_secs();
+    let expired: Vec<PickerEntry> = state
+        .select
+        .pickers
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|picker| picker.kind == PickerKind::MsgCompose)
+        .filter(|picker| {
+            crate::msg_card::decode_payload(picker.payload.as_deref())
+                .map(|payload| payload.recovered || now >= payload.expires_at)
+                .unwrap_or(true)
+        })
+        .cloned()
+        .collect();
+    if expired.is_empty() {
+        return;
+    }
+    let config = state.config_snapshot();
+    let lang = Lang::current();
+    for picker in expired {
+        let label = msg_compose_expired_label(&picker.channel, lang);
+        let finalized = match picker.channel.as_str() {
+            "feishu" => match crate::feishu::client::FeishuClient::new(&config.channels.feishu) {
+                Ok(client) => {
+                    let card = crate::feishu::card::build_select_final_card(&picker.title, &label);
+                    client.patch_card(&picker.message_id, &card).await.is_ok()
+                }
+                Err(_) => false,
+            },
+            "dingding" => {
+                match crate::dingtalk::client::DingTalkClient::new(&config.channels.dingding) {
+                    Ok(client) => client
+                        .update_card_private(
+                            &picker.message_id,
+                            serde_json::json!({ "submit_status": label }),
+                            serde_json::json!({ "submitted": "true" }),
+                        )
+                        .await
+                        .is_ok(),
+                    Err(_) => false,
+                }
+            }
+            "telegram" => {
+                let tg = &config.channels.telegram;
+                match (
+                    crate::telegram::TelegramClient::new(
+                        tg.bot_token.clone(),
+                        tg.chat_id.clone(),
+                        tg.api_base_url.clone(),
+                    ),
+                    picker.message_id.parse::<i64>(),
+                ) {
+                    (Ok(client), Ok(mid)) => {
+                        let notified = client.send_message(&label, None, None).await.is_ok();
+                        if let Err(err) = client.delete_message(mid).await {
+                            log(&format!(
+                                "msg compose: delete expired telegram prompt failed: {}",
+                                err
+                            ));
+                        }
+                        notified
+                    }
+                    _ => false,
+                }
+            }
+            "slack" => match crate::slack::client::SlackClient::new(&config.channels.slack) {
+                Ok(client) => match client.open_dm().await {
+                    Ok(dm) => {
+                        let (blocks, fallback) =
+                            crate::slack::select::build_select_final_blocks(&picker.title, &label);
+                        client
+                            .update_message(&dm, &picker.message_id, Some(&blocks), &fallback)
+                            .await
+                            .is_ok()
+                    }
+                    Err(_) => false,
+                },
+                Err(_) => false,
+            },
+            _ => true,
+        };
+        if finalized {
+            remove_picker(state, &picker.channel, &picker.message_id);
+        }
+    }
+    state.select.route_refresh.notify_one();
 }
 
 /// 幂等确保各渠道的单选卡回调路由任务在位（撤掉已无 picker 的渠道路由）。飞书 / 钉钉 / TG / Slack。
@@ -350,6 +692,20 @@ pub(super) async fn ensure_select_route_for(
     channel_id: &str,
     mids: Vec<String>,
 ) {
+    let msg_compose: HashMap<String, crate::msg_card::MsgComposePayload> = state
+        .select
+        .pickers
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|picker| picker.channel == channel_id && picker.kind == PickerKind::MsgCompose)
+        .filter_map(|picker| {
+            Some((
+                picker.message_id.clone(),
+                crate::msg_card::decode_payload(picker.payload.as_deref())?,
+            ))
+        })
+        .collect();
     // 取该渠道的共享 Router（渠道不可用则跳过；picker 仍在，渠道恢复后下一拍补挂）。
     let router: WatchChannelRouter = match channel_id {
         "feishu" => {
@@ -458,8 +814,18 @@ pub(super) async fn ensure_select_route_for(
             let routed = r.register();
             for mid in &mids {
                 if let Ok(m) = mid.parse::<i64>() {
-                    // 仅认领卡片回调（`set_card_route`），不认领自由文字（不抢提问卡答案）。
-                    routed.set_card_route(m);
+                    if let Some(payload) = msg_compose.get(mid) {
+                        if payload.recovered {
+                            // 重启恢复的旧 ForceReply 只保留精确 reply 路由，不抢松散文字。
+                            routed.set_card_route(m);
+                        } else if let Ok(chat_id) = config.channels.telegram.chat_id.parse::<i64>()
+                        {
+                            routed.set_active(chat_id, m);
+                        }
+                    } else {
+                        // 普通单选只认领 callback，不抢提问卡答案。
+                        routed.set_card_route(m);
+                    }
                 }
             }
             let mut routed = routed;
@@ -471,7 +837,15 @@ pub(super) async fn ensure_select_route_for(
                             Some(crate::telegram::router::TgInbound::Callback(cb)) => {
                                 handle_select_tg_action(&st, &cb).await;
                             }
-                            Some(_) => {} // 未认领自由文字，不会到达；防御性忽略。
+                            Some(crate::telegram::router::TgInbound::Text { text, message_id, reply_to_message_id }) => {
+                                handle_msg_compose_tg_text(
+                                    &st,
+                                    &text,
+                                    message_id,
+                                    reply_to_message_id,
+                                )
+                                .await;
+                            }
                             None => break,
                         },
                     }
@@ -526,6 +900,17 @@ pub(super) async fn handle_select_card_action(
     if let Some((mid, slot)) = crate::feishu::card::parse_confirm_action(data) {
         handle_confirm_action(state, channel_id, &mid, slot, Some(ack)).await;
         return;
+    }
+    if let Some(submit) = crate::feishu::card::parse_card_submit(data, &[]) {
+        let is_msg_compose = state.select.pickers.lock().unwrap().iter().any(|picker| {
+            picker.channel == channel_id
+                && picker.message_id == submit.message_id
+                && picker.kind == PickerKind::MsgCompose
+        });
+        if is_msg_compose {
+            handle_fs_msg_compose_submit(state, channel_id, submit, ack).await;
+            return;
+        }
     }
     let Some((mid, idx)) = crate::feishu::card::parse_select_action(data) else {
         // 非单选点击：可能是普通 / 自动待办卡的表单提交；否则空 ACK。
@@ -601,10 +986,25 @@ pub(super) async fn handle_select_card_action(
             select_pick_unwatch(state, channel_id, &mid, &session_id, &config, lang, ack).await;
         }
         PickerKind::Msg => {
-            let content = picker.payload.clone().unwrap_or_default();
-            select_pick_msg(state, channel_id, &mid, &session_id, &content, lang, ack).await;
+            if let Some(content) = picker.payload.as_deref() {
+                select_pick_msg(state, channel_id, &mid, &session_id, content, lang, ack).await;
+            } else {
+                fs_select_pick_msg_compose(
+                    state,
+                    channel_id,
+                    &mid,
+                    &session_id,
+                    &config,
+                    lang,
+                    ack,
+                )
+                .await;
+            }
             // 卡片点『发送』＝在该渠道操作 → 设为活跃槽（与 /msg 一致，用户决策）。
             activate_channel_on_action(state, channel_id, &config, lang).await;
+        }
+        PickerKind::MsgCompose => {
+            let _ = ack.send(None);
         }
         PickerKind::Diff | PickerKind::Stage | PickerKind::Transcript => {
             select_pick_export(
@@ -662,6 +1062,94 @@ pub(super) async fn handle_select_card_action(
     }
 }
 
+async fn handle_fs_msg_compose_submit(
+    state: &Arc<ServerState>,
+    channel_id: &str,
+    submit: crate::feishu::card::CardSubmit,
+    ack: crate::feishu::router::CardAck,
+) {
+    let picker = state
+        .select
+        .pickers
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|picker| {
+            picker.channel == channel_id
+                && picker.message_id == submit.message_id
+                && picker.kind == PickerKind::MsgCompose
+        })
+        .cloned();
+    let Some(picker) = picker else {
+        let _ = ack.send(None);
+        return;
+    };
+    let Some(payload) = crate::msg_card::decode_payload(picker.payload.as_deref()) else {
+        let _ = ack.send(None);
+        return;
+    };
+    let lang = Lang::current();
+    let config = state.config_snapshot();
+    if payload.recovered || now_secs() >= payload.expires_at {
+        let label = msg_compose_expired_label(channel_id, lang);
+        let card = crate::feishu::card::build_select_final_card(&picker.title, &label);
+        let _ = ack.send(Some(crate::feishu::card::callback_update_card(card)));
+        remove_picker(state, channel_id, &submit.message_id);
+        return;
+    }
+    let snapshot = state.agents.snapshot();
+    let Some(rec) = find_agent_by_session(&snapshot, &payload.session_id) else {
+        let card = crate::feishu::card::build_select_final_card(
+            &picker.title,
+            crate::i18n::tr(lang, "select.msgTargetGone"),
+        );
+        let _ = ack.send(Some(crate::feishu::card::callback_update_card(card)));
+        remove_picker(state, channel_id, &submit.message_id);
+        return;
+    };
+    if !is_working_non_grok(&snapshot, &payload.session_id) {
+        let card = crate::feishu::card::build_select_final_card(
+            &picker.title,
+            crate::i18n::tr(lang, "select.msgTargetGone"),
+        );
+        let _ = ack.send(Some(crate::feishu::card::callback_update_card(card)));
+        remove_picker(state, channel_id, &submit.message_id);
+        return;
+    }
+    let content = match crate::msg_card::validate_input(submit.user_input.as_deref(), lang) {
+        Ok(content) => content,
+        Err(error) => {
+            let view = crate::msg_card::build_view(
+                rec,
+                state.interject.pending_count(&payload.session_id),
+                &state.interject.full_text(&payload.session_id),
+                Some(error),
+                lang,
+            );
+            let card =
+                crate::feishu::card::build_msg_compose_card(&view, submit.user_input.as_deref());
+            let _ = ack.send(Some(crate::feishu::card::callback_update_card(card)));
+            return;
+        }
+    };
+    if take_msg_compose_picker(state, channel_id, &submit.message_id).is_none() {
+        let _ = ack.send(None);
+        return;
+    }
+    let snapshot = state.agents.snapshot();
+    let rec = find_agent_by_session(&snapshot, &payload.session_id);
+    let label = msg_pick_deliver(state, channel_id, &payload.session_id, rec, &content, lang);
+    let card = crate::feishu::card::build_select_final_card(&picker.title, &label);
+    let _ = ack.send(Some(crate::feishu::card::callback_update_card(card)));
+    state.select.route_refresh.notify_one();
+    activate_channel_on_action(state, channel_id, &config, lang).await;
+}
+
+fn msg_compose_expired_label(channel_id: &str, lang: Lang) -> String {
+    crate::i18n::tr(lang, "msgCard.expired")
+        .replace("{p}", crate::autochannel::cmd_prefix(channel_id))
+}
+
 /// 单选卡点选「发送」（飞书就地定格）：校验目标工作中·非 grok → 投递 + 定格「已发送给 [编号]」；
 /// 目标已漂移（不在工作中 / 已结束 / 消失）→ 定格「已不在工作中，未发送」。定格文案随卡回（ack）。
 #[allow(clippy::too_many_arguments)]
@@ -681,6 +1169,79 @@ pub(super) async fn select_pick_msg(
         crate::feishu::card::build_select_final_card(&crate::select::title_msg(lang), &label);
     let _ = ack.send(Some(crate::feishu::card::callback_update_card(card)));
     remove_picker(state, channel_id, mid);
+}
+
+fn morph_picker_to_msg_compose(
+    state: &Arc<ServerState>,
+    channel_id: &str,
+    mid: &str,
+    session_id: &str,
+    title: String,
+) -> bool {
+    let Some(payload) = msg_compose_payload(session_id, false) else {
+        return false;
+    };
+    let changed = {
+        let mut pickers = state.select.pickers.lock().unwrap();
+        let Some(picker) = pickers
+            .iter_mut()
+            .find(|picker| picker.channel == channel_id && picker.message_id == mid)
+        else {
+            return false;
+        };
+        picker.kind = PickerKind::MsgCompose;
+        picker.title = title;
+        picker.options.clear();
+        picker.payload = Some(payload);
+        picker.created_at = now_secs();
+        true
+    };
+    if changed {
+        persist_msg_compose_recovery(state);
+        state.select.route_refresh.notify_one();
+    }
+    changed
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn fs_select_pick_msg_compose(
+    state: &Arc<ServerState>,
+    channel_id: &str,
+    mid: &str,
+    session_id: &str,
+    _config: &AppConfig,
+    lang: Lang,
+    ack: crate::feishu::router::CardAck,
+) {
+    let snapshot = state.agents.snapshot();
+    let Some(rec) = find_agent_by_session(&snapshot, session_id) else {
+        let card = crate::feishu::card::build_select_final_card(
+            &crate::select::title_msg(lang),
+            crate::i18n::tr(lang, "select.msgTargetGone"),
+        );
+        let _ = ack.send(Some(crate::feishu::card::callback_update_card(card)));
+        remove_picker(state, channel_id, mid);
+        return;
+    };
+    if !is_working_non_grok(&snapshot, session_id) {
+        let card = crate::feishu::card::build_select_final_card(
+            &crate::select::title_msg(lang),
+            crate::i18n::tr(lang, "select.msgTargetGone"),
+        );
+        let _ = ack.send(Some(crate::feishu::card::callback_update_card(card)));
+        remove_picker(state, channel_id, mid);
+        return;
+    }
+    let view = crate::msg_card::build_view(
+        rec,
+        state.interject.pending_count(session_id),
+        &state.interject.full_text(session_id),
+        None,
+        lang,
+    );
+    let card = crate::feishu::card::build_msg_compose_card(&view, None);
+    let _ = ack.send(Some(crate::feishu::card::callback_update_card(card)));
+    morph_picker_to_msg_compose(state, channel_id, mid, session_id, view.title);
 }
 
 /// 单选卡「发送」的共享收尾：目标仍工作中·非 grok → 投递并返回「已发送给 [编号] · 回执」定格文案；
@@ -705,7 +1266,12 @@ pub(super) fn msg_pick_deliver(
     let seq = rec
         .and_then(|r| r.get("seq").and_then(|v| v.as_u64()))
         .unwrap_or(0);
-    let note = deliver_msg(state, channel_id, session_id, content, lang);
+    let delivered = deliver_msg(state, channel_id, session_id, content, lang);
+    let note = if delivered == crate::i18n::tr(lang, "autoChannel.msgDeliveredNow") {
+        delivered
+    } else {
+        crate::i18n::tr(lang, "msgCard.queuedShort").to_string()
+    };
     crate::i18n::tr(lang, "select.msgSentCard")
         .replace("{id}", &seq.to_string())
         .replace("{note}", &note)
@@ -900,6 +1466,9 @@ pub(super) async fn handle_select_dd_action(state: &Arc<ServerState>, data: &ser
     if handle_stage_dd_submit(state, data).await {
         return;
     }
+    if handle_msg_compose_dd_submit(state, data).await {
+        return;
+    }
     // 待办管理卡「新增」提交（提问卡模板复用，spec todo-whats-next D8）。
     if handle_todo_dd_submit(state, data).await {
         return;
@@ -973,11 +1542,23 @@ pub(super) async fn handle_select_dd_action(state: &Arc<ServerState>, data: &ser
             dd_select_pick_unwatch(state, &otid, &session_id, &config, lang).await;
         }
         PickerKind::Msg => {
-            let content = picker.payload.clone().unwrap_or_default();
-            dd_select_pick_msg(state, &otid, &session_id, &content, &config, lang).await;
+            if let Some(content) = picker.payload.as_deref() {
+                dd_select_pick_msg(state, &otid, &session_id, content, &config, lang).await;
+            } else {
+                select_pick_msg_compose_sequential(
+                    state,
+                    "dingding",
+                    &otid,
+                    &session_id,
+                    &config,
+                    lang,
+                )
+                .await;
+            }
             // 卡片点『发送』＝在该渠道操作 → 设为活跃槽（与 /msg 一致，用户决策）。
             activate_channel_on_action(state, "dingding", &config, lang).await;
         }
+        PickerKind::MsgCompose => {}
         PickerKind::Diff | PickerKind::Stage | PickerKind::Transcript => {
             select_pick_export(
                 state,
@@ -1030,6 +1611,116 @@ pub(super) async fn handle_select_dd_action(state: &Arc<ServerState>, data: &ser
         // 管理卡提交已在上方 handle_todo_dd_submit 处理；行按钮不存在。
         PickerKind::TodoManage => {}
     }
+}
+
+async fn handle_msg_compose_dd_submit(state: &Arc<ServerState>, data: &serde_json::Value) -> bool {
+    let Some(submit) = crate::dingtalk::card::parse_card_submit(data) else {
+        return false;
+    };
+    let picker = state
+        .select
+        .pickers
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|picker| {
+            picker.channel == "dingding"
+                && picker.message_id == submit.out_track_id
+                && picker.kind == PickerKind::MsgCompose
+        })
+        .cloned();
+    let Some(picker) = picker else {
+        return false;
+    };
+    let Some(payload) = crate::msg_card::decode_payload(picker.payload.as_deref()) else {
+        return true;
+    };
+    let lang = Lang::current();
+    let config = state.config_snapshot();
+    let Ok(client) = crate::dingtalk::client::DingTalkClient::new(&config.channels.dingding) else {
+        return true;
+    };
+    if payload.recovered || now_secs() >= payload.expires_at {
+        let _ = client
+            .update_card_private(
+                &submit.out_track_id,
+                serde_json::json!({ "submit_status": msg_compose_expired_label("dingding", lang) }),
+                serde_json::json!({ "submitted": "true" }),
+            )
+            .await;
+        remove_picker(state, "dingding", &submit.out_track_id);
+        return true;
+    }
+    let snapshot = state.agents.snapshot();
+    let Some(rec) = find_agent_by_session(&snapshot, &payload.session_id) else {
+        let _ = client
+            .update_card_private(
+                &submit.out_track_id,
+                serde_json::json!({ "submit_status": crate::i18n::tr(lang, "select.msgTargetGone") }),
+                serde_json::json!({ "submitted": "true" }),
+            )
+            .await;
+        remove_picker(state, "dingding", &submit.out_track_id);
+        return true;
+    };
+    if !is_working_non_grok(&snapshot, &payload.session_id) {
+        let _ = client
+            .update_card_private(
+                &submit.out_track_id,
+                serde_json::json!({ "submit_status": crate::i18n::tr(lang, "select.msgTargetGone") }),
+                serde_json::json!({ "submitted": "true" }),
+            )
+            .await;
+        remove_picker(state, "dingding", &submit.out_track_id);
+        return true;
+    }
+    let content = match crate::msg_card::validate_input(submit.user_input.as_deref(), lang) {
+        Ok(content) => content,
+        Err(error) => {
+            let view = crate::msg_card::build_view(
+                rec,
+                state.interject.pending_count(&payload.session_id),
+                &state.interject.full_text(&payload.session_id),
+                Some(error),
+                lang,
+            );
+            let map = crate::dingtalk::card::build_card_param_map(
+                &view.title,
+                &crate::msg_card::escape_markdown(&view.plain_body()),
+                &[],
+                false,
+                false,
+                "",
+            );
+            let _ = client
+                .update_card_private(
+                    &submit.out_track_id,
+                    map,
+                    serde_json::json!({
+                        "submitted": "false",
+                        "private_input": submit.user_input.unwrap_or_default(),
+                    }),
+                )
+                .await;
+            return true;
+        }
+    };
+    if take_msg_compose_picker(state, "dingding", &submit.out_track_id).is_none() {
+        return true;
+    }
+    let snapshot = state.agents.snapshot();
+    let rec = find_agent_by_session(&snapshot, &payload.session_id);
+    let label = msg_pick_deliver(state, "dingding", &payload.session_id, rec, &content, lang);
+    let _ = client
+        .update_card_private(
+            &submit.out_track_id,
+            serde_json::json!({ "submit_status": label }),
+            serde_json::json!({ "submitted": "true" }),
+        )
+        .await;
+    state.select.route_refresh.notify_one();
+    activate_channel_on_action(state, "dingding", &config, lang).await;
+    true
 }
 
 /// 钉钉单选卡点选「发送」：投递（若目标仍工作中·非 grok）+ 单选卡定格（OpenAPI 更新）。
@@ -1229,6 +1920,10 @@ pub(super) async fn dd_select_pick_unwatch(
 
 /// 定格一张钉钉单选卡（按 key 更新公有 `finalized=true` + `final_label`）：隐藏循环、显示定格文案。
 pub(super) async fn dd_finalize_select_card(config: &AppConfig, otid: &str, final_label: &str) {
+    let _ = try_dd_finalize_select_card(config, otid, final_label).await;
+}
+
+async fn try_dd_finalize_select_card(config: &AppConfig, otid: &str, final_label: &str) -> bool {
     if let Ok(client) = crate::dingtalk::client::DingTalkClient::new(&config.channels.dingding) {
         let map = crate::dingtalk::select::build_select_final_param_map(final_label);
         if let Err(err) = client
@@ -1239,8 +1934,11 @@ pub(super) async fn dd_finalize_select_card(config: &AppConfig, otid: &str, fina
                 "select: finalize dingtalk select card failed: {}",
                 err
             ));
+            return false;
         }
+        return true;
     }
+    false
 }
 
 // ===== Telegram / Slack 单选卡点选（可就地编辑：点 watch → 本消息变身为实时 watch 卡）=====
@@ -1277,6 +1975,102 @@ pub(super) async fn handle_select_tg_action(state: &Arc<ServerState>, cb: &serde
     dispatch_select_pick(state, "telegram", &mid.to_string(), idx, &config).await;
 }
 
+async fn handle_msg_compose_tg_text(
+    state: &Arc<ServerState>,
+    text: &str,
+    message_id: i64,
+    reply_to_message_id: Option<i64>,
+) {
+    let Some(prompt_mid) = reply_to_message_id else {
+        return;
+    };
+    let prompt_mid = prompt_mid.to_string();
+    let picker = state
+        .select
+        .pickers
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|picker| {
+            picker.channel == "telegram"
+                && picker.message_id == prompt_mid
+                && picker.kind == PickerKind::MsgCompose
+        })
+        .cloned();
+    let Some(picker) = picker else { return };
+    let Some(payload) = crate::msg_card::decode_payload(picker.payload.as_deref()) else {
+        return;
+    };
+    let lang = Lang::current();
+    let config = state.config_snapshot();
+    let tg = &config.channels.telegram;
+    let Ok(client) = crate::telegram::TelegramClient::new(
+        tg.bot_token.clone(),
+        tg.chat_id.clone(),
+        tg.api_base_url.clone(),
+    ) else {
+        return;
+    };
+    let Ok(mid) = prompt_mid.parse::<i64>() else {
+        return;
+    };
+    if payload.recovered || now_secs() >= payload.expires_at {
+        let label = msg_compose_expired_label("telegram", lang);
+        finalize_msg_compose_telegram(&client, mid, message_id, &label).await;
+        remove_picker(state, "telegram", &prompt_mid);
+        return;
+    }
+    let snapshot = state.agents.snapshot();
+    if !is_working_non_grok(&snapshot, &payload.session_id) {
+        finalize_msg_compose_telegram(
+            &client,
+            mid,
+            message_id,
+            crate::i18n::tr(lang, "select.msgTargetGone"),
+        )
+        .await;
+        remove_picker(state, "telegram", &prompt_mid);
+        return;
+    }
+    let content = match crate::msg_card::validate_input(Some(text), lang) {
+        Ok(content) => content,
+        Err(error) => {
+            // ForceReply 无法通过 editMessageText 重新唤起，保留原 prompt 并回一条校验提示。
+            let _ = client.send_reply_message(message_id, &error).await;
+            return;
+        }
+    };
+    if take_msg_compose_picker(state, "telegram", &prompt_mid).is_none() {
+        return;
+    }
+    let snapshot = state.agents.snapshot();
+    let rec = find_agent_by_session(&snapshot, &payload.session_id);
+    let label = msg_pick_deliver(state, "telegram", &payload.session_id, rec, &content, lang);
+    finalize_msg_compose_telegram(&client, mid, message_id, &label).await;
+    state.select.route_refresh.notify_one();
+    activate_channel_on_action(state, "telegram", &config, lang).await;
+}
+
+async fn finalize_msg_compose_telegram(
+    client: &crate::telegram::TelegramClient,
+    prompt_message_id: i64,
+    reply_message_id: i64,
+    label: &str,
+) {
+    if let Err(err) = client.delete_message(prompt_message_id).await {
+        log(&format!(
+            "msg compose: delete telegram ForceReply prompt failed: {}",
+            err
+        ));
+    }
+    if let Err(err) = client.send_reply_message(reply_message_id, label).await {
+        log(&format!(
+            "msg compose: send telegram terminal reply failed: {}",
+            err
+        ));
+    }
+}
+
 /// 处理 Slack 单选卡 / 确认卡点击（ack 已在 ws 层完成）。
 pub(super) async fn handle_select_slack_action(
     state: &Arc<ServerState>,
@@ -1287,10 +2081,116 @@ pub(super) async fn handle_select_slack_action(
         handle_confirm_action(state, "slack", &ts, slot, None).await;
         return;
     }
+    if let Some(submit) = crate::slack::blockkit::parse_submit(payload, &[]) {
+        let is_msg_compose = state.select.pickers.lock().unwrap().iter().any(|picker| {
+            picker.channel == "slack"
+                && picker.message_id == submit.message_ts
+                && picker.kind == PickerKind::MsgCompose
+        });
+        if is_msg_compose {
+            handle_msg_compose_slack_submit(state, submit, &config).await;
+            return;
+        }
+    }
     let Some((ts, idx)) = crate::slack::select::parse_select_action(payload) else {
         return;
     };
     dispatch_select_pick(state, "slack", &ts, idx, &config).await;
+}
+
+async fn handle_msg_compose_slack_submit(
+    state: &Arc<ServerState>,
+    submit: crate::slack::blockkit::CardSubmit,
+    config: &AppConfig,
+) {
+    let picker = state
+        .select
+        .pickers
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|picker| {
+            picker.channel == "slack"
+                && picker.message_id == submit.message_ts
+                && picker.kind == PickerKind::MsgCompose
+        })
+        .cloned();
+    let Some(picker) = picker else { return };
+    let Some(payload) = crate::msg_card::decode_payload(picker.payload.as_deref()) else {
+        return;
+    };
+    let lang = Lang::current();
+    let Ok(client) = crate::slack::client::SlackClient::new(&config.channels.slack) else {
+        return;
+    };
+    let Ok(dm) = client.open_dm().await else {
+        return;
+    };
+    if payload.recovered || now_secs() >= payload.expires_at {
+        let label = msg_compose_expired_label("slack", lang);
+        let (blocks, fallback) =
+            crate::slack::select::build_select_final_blocks(&picker.title, &label);
+        let _ = client
+            .update_message(&dm, &submit.message_ts, Some(&blocks), &fallback)
+            .await;
+        remove_picker(state, "slack", &submit.message_ts);
+        return;
+    }
+    let snapshot = state.agents.snapshot();
+    let Some(rec) = find_agent_by_session(&snapshot, &payload.session_id) else {
+        let label = crate::i18n::tr(lang, "select.msgTargetGone");
+        let (blocks, fallback) =
+            crate::slack::select::build_select_final_blocks(&picker.title, label);
+        let _ = client
+            .update_message(&dm, &submit.message_ts, Some(&blocks), &fallback)
+            .await;
+        remove_picker(state, "slack", &submit.message_ts);
+        return;
+    };
+    if !is_working_non_grok(&snapshot, &payload.session_id) {
+        let label = crate::i18n::tr(lang, "select.msgTargetGone");
+        let (blocks, fallback) =
+            crate::slack::select::build_select_final_blocks(&picker.title, label);
+        let _ = client
+            .update_message(&dm, &submit.message_ts, Some(&blocks), &fallback)
+            .await;
+        remove_picker(state, "slack", &submit.message_ts);
+        return;
+    }
+    let content = match crate::msg_card::validate_input(submit.user_input.as_deref(), lang) {
+        Ok(content) => content,
+        Err(error) => {
+            let view = crate::msg_card::build_view(
+                rec,
+                state.interject.pending_count(&payload.session_id),
+                &state.interject.full_text(&payload.session_id),
+                Some(error),
+                lang,
+            );
+            let nonce = uuid::Uuid::new_v4().to_string();
+            let blocks = crate::slack::blockkit::build_msg_compose_card(
+                &view,
+                &nonce,
+                submit.user_input.as_deref(),
+            );
+            let _ = client
+                .update_message(&dm, &submit.message_ts, Some(&blocks), &view.title)
+                .await;
+            return;
+        }
+    };
+    if take_msg_compose_picker(state, "slack", &submit.message_ts).is_none() {
+        return;
+    }
+    let snapshot = state.agents.snapshot();
+    let rec = find_agent_by_session(&snapshot, &payload.session_id);
+    let label = msg_pick_deliver(state, "slack", &payload.session_id, rec, &content, lang);
+    let (blocks, fallback) = crate::slack::select::build_select_final_blocks(&picker.title, &label);
+    let _ = client
+        .update_message(&dm, &submit.message_ts, Some(&blocks), &fallback)
+        .await;
+    state.select.route_refresh.notify_one();
+    activate_channel_on_action(state, "slack", config, lang).await;
 }
 
 /// TG/Slack 共用的下标分派：找 picker → 按下标取 session_id → 按 kind 处理。
@@ -1365,12 +2265,26 @@ pub(super) async fn dispatch_select_pick(
             select_pick_unwatch_inplace(state, channel_id, mid, &session_id, config, lang).await;
         }
         PickerKind::Msg => {
-            let content = picker.payload.clone().unwrap_or_default();
-            select_pick_msg_inplace(state, channel_id, mid, &session_id, &content, config, lang)
+            if let Some(content) = picker.payload.as_deref() {
+                select_pick_msg_inplace(state, channel_id, mid, &session_id, content, config, lang)
+                    .await;
+            } else if channel_id == "slack" {
+                slack_select_pick_msg_compose(state, mid, &session_id, config, lang).await;
+            } else {
+                select_pick_msg_compose_sequential(
+                    state,
+                    channel_id,
+                    mid,
+                    &session_id,
+                    config,
+                    lang,
+                )
                 .await;
+            }
             // 卡片点『发送』＝在该渠道操作 → 设为活跃槽（与 /msg 一致，用户决策）。
             activate_channel_on_action(state, channel_id, config, lang).await;
         }
+        PickerKind::MsgCompose => {}
         PickerKind::Diff | PickerKind::Stage | PickerKind::Transcript => {
             select_pick_export(
                 state,
@@ -1467,6 +2381,128 @@ pub(super) async fn select_pick_msg_inplace(
     )
     .await;
     remove_picker(state, channel_id, mid);
+}
+
+async fn slack_select_pick_msg_compose(
+    state: &Arc<ServerState>,
+    mid: &str,
+    session_id: &str,
+    config: &AppConfig,
+    lang: Lang,
+) {
+    let snapshot = state.agents.snapshot();
+    let Some(rec) = find_agent_by_session(&snapshot, session_id) else {
+        finalize_select_card_edit(
+            "slack",
+            config,
+            mid,
+            &crate::select::title_msg(lang),
+            crate::i18n::tr(lang, "select.msgTargetGone"),
+        )
+        .await;
+        remove_picker(state, "slack", mid);
+        return;
+    };
+    if !is_working_non_grok(&snapshot, session_id) {
+        finalize_select_card_edit(
+            "slack",
+            config,
+            mid,
+            &crate::select::title_msg(lang),
+            crate::i18n::tr(lang, "select.msgTargetGone"),
+        )
+        .await;
+        remove_picker(state, "slack", mid);
+        return;
+    }
+    let view = crate::msg_card::build_view(
+        rec,
+        state.interject.pending_count(session_id),
+        &state.interject.full_text(session_id),
+        None,
+        lang,
+    );
+    let Ok(client) = crate::slack::client::SlackClient::new(&config.channels.slack) else {
+        return;
+    };
+    let Ok(dm) = client.open_dm().await else {
+        return;
+    };
+    let nonce = uuid::Uuid::new_v4().to_string();
+    let blocks = crate::slack::blockkit::build_msg_compose_card(&view, &nonce, None);
+    if let Err(err) = client
+        .update_message(&dm, mid, Some(&blocks), &view.title)
+        .await
+    {
+        log(&format!("msg compose: morph slack card failed: {}", err));
+        return;
+    }
+    morph_picker_to_msg_compose(state, "slack", mid, session_id, view.title);
+}
+
+async fn select_pick_msg_compose_sequential(
+    state: &Arc<ServerState>,
+    channel_id: &str,
+    mid: &str,
+    session_id: &str,
+    config: &AppConfig,
+    lang: Lang,
+) {
+    let snapshot = state.agents.snapshot();
+    let rec = find_agent_by_session(&snapshot, session_id);
+    let seq = rec
+        .and_then(|item| item.get("seq").and_then(|value| value.as_u64()))
+        .unwrap_or(0);
+    let working = is_working_non_grok(&snapshot, session_id);
+    let label = if working {
+        crate::i18n::tr(lang, "select.pickedCard").replace("{id}", &seq.to_string())
+    } else {
+        crate::i18n::tr(lang, "select.msgTargetGone").to_string()
+    };
+    let finalized = if channel_id == "dingding" {
+        try_dd_finalize_select_card(config, mid, &label).await
+    } else {
+        try_finalize_select_card_edit(
+            channel_id,
+            config,
+            mid,
+            &crate::select::title_msg(lang),
+            &label,
+        )
+        .await
+    };
+    if !finalized {
+        return;
+    }
+    remove_picker(state, channel_id, mid);
+    if !working {
+        return;
+    }
+    // 钉钉 / Telegram 必须先让选择卡终态化，再投放输入卡，保证任一时刻只有一个活动载体。
+    if send_msg_compose_card(state, channel_id, config, session_id, lang).await {
+        return;
+    }
+    let snapshot = state.agents.snapshot();
+    let failed = if is_working_non_grok(&snapshot, session_id) {
+        crate::i18n::tr(lang, "msgCard.openFailed")
+            .replace("{p}", crate::autochannel::cmd_prefix(channel_id))
+            .replace("{id}", &seq.to_string())
+    } else {
+        crate::i18n::tr(lang, "select.msgTargetGone").to_string()
+    };
+    if channel_id == "dingding" {
+        dd_finalize_select_card(config, mid, &failed).await;
+    } else {
+        finalize_select_card_edit(
+            channel_id,
+            config,
+            mid,
+            &crate::select::title_msg(lang),
+            &failed,
+        )
+        .await;
+    }
+    let _ = reply_channel_text(channel_id, config, &failed).await;
 }
 
 /// 单选卡点选「watch」（TG/Slack 可就地编辑）：把本消息编辑成实时 watch 卡（`WatchClient::edit`），
@@ -1713,9 +2749,19 @@ pub(super) async fn finalize_select_card_edit(
     title: &str,
     final_label: &str,
 ) {
+    let _ = try_finalize_select_card_edit(channel_id, config, mid, title, final_label).await;
+}
+
+async fn try_finalize_select_card_edit(
+    channel_id: &str,
+    config: &AppConfig,
+    mid: &str,
+    title: &str,
+    final_label: &str,
+) -> bool {
     match channel_id {
         "telegram" => {
-            let Ok(m) = mid.parse::<i64>() else { return };
+            let Ok(m) = mid.parse::<i64>() else { return false };
             let tg = &config.channels.telegram;
             if let Ok(c) = crate::telegram::TelegramClient::new(
                 tg.bot_token.clone(),
@@ -1728,8 +2774,11 @@ pub(super) async fn finalize_select_card_edit(
                         "select: finalize telegram select card failed: {}",
                         err
                     ));
+                    return false;
                 }
+                return true;
             }
+            false
         }
         "slack" => {
             if let Ok(c) = crate::slack::client::SlackClient::new(&config.channels.slack) {
@@ -1741,11 +2790,14 @@ pub(super) async fn finalize_select_card_edit(
                             "select: finalize slack select card failed: {}",
                             err
                         ));
+                        return false;
                     }
+                    return true;
                 }
             }
+            false
         }
-        _ => {}
+        _ => false,
     }
 }
 

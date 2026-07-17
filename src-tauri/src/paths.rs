@@ -116,6 +116,11 @@ pub fn interject_file() -> PathBuf {
     state_dir().join("interject.json")
 }
 
+/// `/msg` 一次性输入卡的最小恢复账本。只保存卡片定位与目标会话，不保存用户输入内容。
+pub fn msg_compose_file() -> PathBuf {
+    state_dir().join("msg-compose.json")
+}
+
 /// Workspaces discovered from recent local Agent sessions and user curation.
 pub fn agent_workspaces_file() -> PathBuf {
     config_dir().join("agent-workspaces.json")

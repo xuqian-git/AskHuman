@@ -4,6 +4,9 @@
 > （插话）、`im-watch`（实时关注）三套基础设施扩展，尽量复用。
 >
 > 相关既有 spec：`docs/specs/im-select-card.md`、`docs/specs/agent-interject.md`、`docs/specs/im-watch.md`。
+>
+> 后续的一次性消息输入卡已实现，见 `docs/specs/im-msg-compose-card.md` 与
+> `docs/plans/im-msg-compose-card.md`。
 
 ## 需求 A：`/msg` 支持「选择项目卡」（无需先给编号）
 

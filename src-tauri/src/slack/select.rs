@@ -31,6 +31,7 @@ fn button_style(action: SelectAction) -> Option<&'static str> {
         | SelectAction::TaskAgent
         | SelectAction::TaskPermission
         |         SelectAction::Msg
+        | SelectAction::MsgTarget
         | SelectAction::Stage
         | SelectAction::TodoRm
         | SelectAction::TodoAuto => Some("primary"),

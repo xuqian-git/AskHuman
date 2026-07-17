@@ -77,6 +77,28 @@ pub fn build_question_card(
     assemble_card(title, elements, true)
 }
 
+/// `/msg` 一次性输入卡。正文始终按纯文本渲染，避免待发送内容被解释为卡片 markdown。
+pub fn build_msg_compose_card(
+    view: &crate::msg_card::MsgComposeView,
+    user_input_draft: Option<&str>,
+) -> Value {
+    let elements = vec![
+        body_text(&view.plain_body(), false),
+        build_form(
+            &[],
+            &[],
+            user_input_draft,
+            false,
+            false,
+            false,
+            &view.input_placeholder,
+            &view.send_label,
+            "",
+        ),
+    ];
+    assemble_card(&view.title, elements, true)
+}
+
 /// 终态卡片入参（复刻钉钉「已提交」态）。
 pub struct Finalized<'a> {
     pub title: &'a str,
@@ -556,6 +578,7 @@ fn select_button_type(action: crate::select::SelectAction) -> &'static str {
         | crate::select::SelectAction::TaskAgent
         | crate::select::SelectAction::TaskPermission
         |         crate::select::SelectAction::Msg
+        | crate::select::SelectAction::MsgTarget
         | crate::select::SelectAction::Stage
         | crate::select::SelectAction::TodoRm
         | crate::select::SelectAction::TodoAuto => "primary",
@@ -1643,5 +1666,36 @@ mod tests {
             "action": { "value": { "confirm": "approve_once" } }
         });
         assert!(parse_confirm_action(&injected).is_none());
+    }
+
+    #[test]
+    fn msg_compose_card_has_one_active_input_and_preserves_draft() {
+        let view = crate::msg_card::MsgComposeView {
+            seq: 3,
+            title: "给 [3] Codex 发送消息".into(),
+            target_label: "目标".into(),
+            target: "Codex — project".into(),
+            pending_label: "待送达 1 条：".into(),
+            pending_preview: Some(crate::msg_card::PendingPreview {
+                text: "<pending>".into(),
+                omitted_chars: 0,
+            }),
+            preview_omitted: None,
+            input_label: "消息".into(),
+            input_placeholder: "请输入".into(),
+            send_label: "发送".into(),
+            error: Some("太长".into()),
+        };
+        let card = build_msg_compose_card(&view, Some("draft"));
+        let elements = card["body"]["elements"].as_array().unwrap();
+        let form = elements.iter().find(|item| item["tag"] == "form").unwrap();
+        let controls = form["elements"].as_array().unwrap();
+        assert_eq!(controls.iter().filter(|item| item["tag"] == "input").count(), 1);
+        assert_eq!(controls.iter().filter(|item| item["tag"] == "button").count(), 1);
+        assert_eq!(controls[0]["default_value"], "draft");
+        assert!(elements.iter().any(|item| item["text"]["content"]
+            .as_str()
+            .unwrap_or("")
+            .contains("<pending>")));
     }
 }

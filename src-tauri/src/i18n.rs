@@ -469,6 +469,49 @@ pub fn tr(lang: Lang, key: &'static str) -> &'static str {
             "✅ Your message to [{id}] was read by the agent.",
             "✅ 你发给 [{id}] 的插话已被 Agent 阅读。",
         ),
+        // —— `/msg` 一次性消息输入卡（spec im-msg-compose-card）。——
+        "msgCard.title" => pick(
+            lang,
+            "Message [{id}] {agent}",
+            "给 [{id}] {agent} 发送消息",
+        ),
+        "msgCard.recoveredTitle" => pick(lang, "Send message", "发送消息"),
+        "msgCard.target" => pick(lang, "Target", "目标"),
+        "msgCard.pendingNone" => pick(lang, "No message is pending.", "暂无待送达消息。"),
+        "msgCard.pendingCount" => pick(
+            lang,
+            "{n} message(s) pending:",
+            "待送达 {n} 条：",
+        ),
+        "msgCard.previewOmitted" => pick(
+            lang,
+            "… {n} character(s) not shown …",
+            "… 还有 {n} 字未显示 …",
+        ),
+        "msgCard.inputLabel" => pick(lang, "Message", "消息"),
+        "msgCard.inputPlaceholder" => pick(
+            lang,
+            "Enter the message to send to the agent (up to 3000 characters)",
+            "输入要发送给 Agent 的消息（最多 3000 字）",
+        ),
+        "msgCard.send" => pick(lang, "Send", "发送"),
+        "msgCard.queuedShort" => pick(lang, "Queued", "已排队"),
+        "msgCard.inputRequired" => pick(lang, "Enter a message before sending.", "请输入消息后再发送。"),
+        "msgCard.inputTooLong" => pick(
+            lang,
+            "The message is too long (maximum {n} characters).",
+            "消息过长（最多 {n} 字）。",
+        ),
+        "msgCard.expired" => pick(
+            lang,
+            "This message card has expired; nothing was sent. Send {p}msg again.",
+            "消息卡已过期，未发送。请重新发送 {p}msg。",
+        ),
+        "msgCard.openFailed" => pick(
+            lang,
+            "Could not open the message card. Use {p}msg {id} <text> instead.",
+            "无法打开消息卡，请改用 {p}msg {id} <内容>。",
+        ),
         // grok 不支持插话（无可靠传话通道，spec agent-interject D1）。
         "autoChannel.msgGrokUnsupported" => pick(
             lang,
@@ -681,8 +724,8 @@ pub fn tr(lang: Lang, key: &'static str) -> &'static str {
         // `/msg` 无编号选择卡标题（发送插话；仅列工作中·非 grok）。
         "select.titleMsg" => pick(
             lang,
-            "Pick an agent to message (tap Send):",
-            "选择要发送消息的 Agent（点「发送」）：",
+            "Pick an agent to message:",
+            "选择要发送消息的 Agent：",
         ),
         // 每行触发按钮文案（按动作种类）。
         "select.btnWatch" => pick(lang, "Watch", "关注"),

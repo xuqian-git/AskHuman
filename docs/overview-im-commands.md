@@ -26,8 +26,9 @@
 - `/status [编号]`：无编号查看 Agent 列表；带编号查看最近助手文字和当前/最近工具活动。
 - `/watch [编号]`：创建或替换实时状态卡；无编号时可用单选卡选择 Agent。
 - `/unwatch [编号|all]`：结束关注并定格旧卡；无编号且有多个订阅时可用单选卡选择。
-- `/msg <编号> <内容>`：给工作中的非 Grok Agent 排队插话；`/msg <内容>` 可按关注关系直发或弹出目标选择卡。
-- `/msg <编号>`：查看待送达内容；`/msg-clear <编号>` 撤回待送达内容。
+- `/msg`：唯一关注目标可发送时直接打开一次性输入卡，否则先选工作中的非 Grok Agent（按钮为“选择”）；输入卡展示目标与待送达预览。飞书/Slack 同卡变身并定格，钉钉先终态化选择卡再进入输入，Telegram 使用 ForceReply，完成后删提示并回复短终态。
+- `/msg <编号>`：工作中目标打开一次性输入卡，空闲目标查看待送达内容；`/msg-clear <编号>` 撤回待送达内容。
+- `/msg <编号> <内容>`：直接给工作中的非 Grok Agent 追加插话；`/msg <内容>` 保留按关注关系直发或带正文选目标的快捷流。
 - `/diff [编号]`：导出目标 workspace 的 unstaged 与 untracked 变更摘要和附件。
 - `/stage [编号]`：显示变更确认卡，确认后执行 `git add -A`；不会绕过 Confirm 直接暂存。
 - `/transcript [编号]`：按渠道适配的附件格式导出完整会话。
@@ -52,7 +53,10 @@ Watch 规格见 `docs/specs/im-watch.md`。订阅持久化在 `~/.askhuman/state
 
 `/stage` 复用 `confirm/` 的跨渠道双动作展示与传输，但 Git 指纹、slot 到业务动作的映射和 `git add -A` 仍由 daemon 台账负责。diff/transcript 内容分别由 `gitutil.rs`、`agents/transcript_full.rs` 生成，再由 `export/` 转成渠道支持的附件格式。详细协议见 `docs/specs/im-diff-stage-transcript.md`。
 
-`/msg` 的目标选择复用同一单选卡模型，实际队列由 `agents/interject.rs` 管理；插话能力见 `docs/specs/agent-interject.md`。
+`/msg` 的目标选择复用同一单选卡模型，一次性输入由 `PickerKind::MsgCompose` 管理；30 分钟 TTL 与
+`~/.askhuman/state/msg-compose.json` 的无正文最小恢复账本保证重复提交、过期和 daemon 重启不会误发。
+共享视图/校验在 `msg_card.rs`，实际队列仍由 `agents/interject.rs` 管理；交互规格见
+`docs/specs/im-msg-compose-card.md`，插话能力见 `docs/specs/agent-interject.md`。
 
 `/todo`、`/todo-rm`、`/todo-auto` 的项目选择、逐条删除与自动执行切换同样复用单选卡台账（`PickerKind::Todo/TodoRm/TodoRmEntry/TodoAuto/TodoAutoEntry/TodoManage`）；项目路径直接作为稳定选项 ID，待新增文本暂存在 picker payload。待办存储直读 `todos.json`，命令层实现在 `daemon/unix_impl/todo.rs`，能力边界见 `docs/specs/todo-whats-next.md`。
 
@@ -64,7 +68,7 @@ Terminal shell 只接收 AskHuman 绝对路径和 UUID token。详细边界见 `
 
 - `src-tauri/src/autochannel.rs`：命令分类、帮助文案、活跃槽与共享回复文案。
 - `src-tauri/src/daemon/mod.rs`：入站监听、命令分派、补推、watch/select/confirm 台账。
-- `src-tauri/src/watch.rs`、`select.rs`：传输无关状态与视图模型。
+- `src-tauri/src/watch.rs`、`select.rs`、`msg_card.rs`：传输无关状态、选择与 `/msg` 输入视图模型。
 - `src-tauri/src/agents/workspaces.rs`、`integrations/agent_launch.rs`：workspace 索引、readiness 与安全终端启动。
 - `src-tauri/src/gitutil.rs`、`confirm/`、`export/`：Git 操作、确认和附件导出。
 - `src-tauri/src/{telegram,dingtalk,feishu,slack}/`：平台传输、渲染、回调与路由。

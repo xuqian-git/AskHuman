@@ -40,6 +40,7 @@ mod macos_quicklook;
 mod macos_window_anim;
 mod mcp;
 mod models;
+mod msg_card;
 mod paths;
 mod perf;
 mod permission_diff;

@@ -338,7 +338,7 @@ enum WatchChannelRouter {
 }
 
 /// 通用「单选卡」子系统的 daemon 侧状态（spec docs/specs/im-select-card.md）。
-/// picker 是一次性选择器、**不持久化**（daemon 重启后旧卡点击静默无效，D7）。
+/// 普通 picker 不持久化；`MsgCompose` 仅持久化不含正文的最小恢复记录，以便重启后定格旧输入卡。
 /// 同台账挂 `/stage` Confirm 卡（spec im-diff-stage-transcript；不持久化，TTL 同 picker）。
 struct SelectState {
     /// 活动的单选卡台账（被消费即移除；软上限 + TTL 兜底清理，见 `register_picker`）。
@@ -349,15 +349,41 @@ struct SelectState {
     routes: Mutex<HashMap<String, WatchRouteHandle>>,
     /// 异步请求重建 select/confirm 路由（打破 ensure_select_route_for ↔ card handler 的 async 环）。
     route_refresh: tokio::sync::Notify,
+    /// 已消费 `/msg` 输入卡的短期 tombstone（key=`channel\nmessage_id`，value=过期秒）。
+    /// 主要封住 Telegram 原始观察者与 ForceReply 路由并发消费时的重复入站窗口。
+    msg_compose_tombstones: Mutex<HashMap<String, u64>>,
 }
 
 impl Default for SelectState {
     fn default() -> Self {
+        let now = now_secs();
+        let pickers: Vec<PickerEntry> = crate::msg_card::load_recovery()
+            .into_iter()
+            .filter_map(|item| {
+                let payload =
+                    crate::msg_card::encode_payload(&crate::msg_card::MsgComposePayload {
+                        session_id: item.session_id,
+                        expires_at: item.expires_at,
+                        recovered: true,
+                    })?;
+                Some(PickerEntry {
+                    channel: item.channel,
+                    message_id: item.message_id,
+                    kind: PickerKind::MsgCompose,
+                    title: crate::i18n::tr(Lang::current(), "msgCard.recoveredTitle").to_string(),
+                    options: Vec::new(),
+                    payload: Some(payload),
+                    created_at: now,
+                    posted_ms: 0,
+                })
+            })
+            .collect();
         Self {
-            pickers: Mutex::new(Vec::new()),
+            pickers: Mutex::new(pickers),
             confirms: Mutex::new(Vec::new()),
             routes: Mutex::new(HashMap::new()),
             route_refresh: tokio::sync::Notify::new(),
+            msg_compose_tombstones: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -373,6 +399,8 @@ enum PickerKind {
     Unwatch,
     /// 发送插话（`/msg` 无编号）：点选把 `PickerEntry::payload` 发给该 agent。
     Msg,
+    /// `/msg` 一次性输入卡：`payload` 是 `MsgComposePayload`，选项恒空。
+    MsgCompose,
     Diff,
     Stage,
     Transcript,
@@ -414,8 +442,8 @@ struct PickerEntry {
     /// 各选项的稳定 id（下标 = 按钮 `select:<idx>`）：agent 卡＝session_id；项目卡＝项目 key；
     /// `TodoRmEntry` / `TodoAutoEntry` 卡＝待办条目 id。
     options: Vec<String>,
-    /// `Msg` / `Todo` / `TodoAuto` 卡＝待发送内容；`TodoRmEntry` / `TodoAutoEntry` 卡＝项目 key；
-    /// `TodoManage` 卡＝含项目 key 的 JSON；其它 kind 恒 `None`。
+    /// `Msg` / `Todo` / `TodoAuto` 卡＝待发送内容；`MsgCompose`＝目标与过期时间 JSON；
+    /// `TodoRmEntry` / `TodoAutoEntry` 卡＝项目 key；`TodoManage` 卡＝含项目 key 的 JSON；其它恒 `None`。
     payload: Option<String>,
     created_at: u64,
     /// 发卡时刻的渠道扰动水位（Unix 毫秒，同 `WatchState::disturb` 量纲）：与当前渠道水位比较判定
@@ -835,6 +863,17 @@ async fn serve(_lock: LockGuard) -> i32 {
             loop {
                 st.select.route_refresh.notified().await;
                 ensure_select_routes(&st).await;
+            }
+        });
+    }
+
+    // `/msg` 输入卡恢复/过期引擎：启动即把上次异常退出留下的卡定格，之后每 15 秒收尾 TTL 到期卡。
+    {
+        let st = state.clone();
+        tokio::spawn(async move {
+            loop {
+                finalize_expired_msg_compose_cards(&st).await;
+                tokio::time::sleep(Duration::from_secs(15)).await;
             }
         });
     }

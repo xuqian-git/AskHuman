@@ -108,6 +108,13 @@ pub(super) fn spawn_listener(
                             if !expected_sender.is_empty() && inb.sender != expected_sender {
                                 continue;
                             }
+                            // ForceReply 的 `/msg` 作答同时会进入 Telegram 原始观察者；由 compose
+                            // 精确路由独占处理，避免又被当成普通聊天消息触发 autochannel。
+                            if channel_id == "telegram"
+                                && is_telegram_msg_compose_reply(&state, &ev)
+                            {
+                                continue;
+                            }
                             handle_inbound(&state, channel_id, inb.text.as_deref()).await;
                         }
                     }
@@ -117,6 +124,27 @@ pub(super) fn spawn_listener(
         }
         state.inbound_listeners.release(channel_id, &stop);
     });
+}
+
+fn is_telegram_msg_compose_reply(state: &Arc<ServerState>, ev: &serde_json::Value) -> bool {
+    let Some(reply_mid) = ev
+        .get("reply_to_message")
+        .and_then(|message| message.get("message_id"))
+        .and_then(|value| value.as_i64())
+    else {
+        return false;
+    };
+    if state.select.pickers.lock().unwrap().iter().any(|picker| {
+        picker.channel == "telegram"
+            && picker.kind == PickerKind::MsgCompose
+            && picker.message_id == reply_mid.to_string()
+    }) {
+        return true;
+    }
+    let now = now_secs();
+    let mut tombstones = state.select.msg_compose_tombstones.lock().unwrap();
+    tombstones.retain(|_, expires_at| *expires_at > now);
+    tombstones.contains_key(&format!("telegram\n{}", reply_mid))
 }
 
 /// 飞书原始消息 → `Inbound`（发送者 open_id + 文本？）；非文本时 `text=None`、非消息事件返回 None。
@@ -298,8 +326,8 @@ pub(super) async fn resolve_msg_target(
         .map(|s| s.to_string())
 }
 
-/// `/msg <编号> [内容]`（spec agent-interject D2/D9）：有内容 → **追加**排队（IM 看不到旧文本，
-/// 覆盖会静默丢内容；恰有 hook 挂起等待则立即送达）；无内容 → 回显当前待送达全文。
+/// `/msg <编号> [内容]`（spec agent-interject D2/D9）：有内容 → **追加**排队；工作中目标无内容 →
+/// 打开一次性输入卡；空闲目标无内容仍回显当前待送达全文。
 pub(super) async fn handle_msg_cmd(
     state: &Arc<ServerState>,
     channel_id: &str,
@@ -320,24 +348,91 @@ pub(super) async fn handle_msg_cmd(
             let text = deliver_msg(state, channel_id, &sid, &content, lang);
             let _ = reply_channel_text(channel_id, config, &text).await;
         }
-        // 显式编号无内容 → 回显待送达（不限工作中）。
+        // 显式编号无内容：工作中 → 输入卡；空闲 → 沿用待送达回显。
         (Some(_), None) => {
             let Some(sid) = resolve_msg_target(state, channel_id, sel, false, config, lang).await
             else {
                 return;
             };
-            let text = msg_echo_text(state, &sid, lang);
-            let _ = reply_channel_text(channel_id, config, &text).await;
+            let snapshot = state.agents.snapshot();
+            if is_working_non_grok(&snapshot, &sid) {
+                open_msg_compose_or_reply(state, channel_id, config, &sid, lang).await;
+            } else {
+                let text = msg_echo_text(state, &sid, lang);
+                let _ = reply_channel_text(channel_id, config, &text).await;
+            }
         }
         // 无编号 + 内容 → 自动选择（关注恰 1 个且工作中直发；否则弹选择卡）。
         (None, Some(content)) => {
             handle_msg_auto(state, channel_id, content, config, lang).await;
         }
-        // 无编号无内容 → 增强用法提示（用法示例 + 当前工作中 agent 列表）。
+        // 无编号无内容：唯一关注目标可发则直开输入卡，否则先选目标。
         (None, None) => {
-            let text = msg_usage_hint(state, channel_id, lang);
-            let _ = reply_channel_text(channel_id, config, &text).await;
+            handle_msg_compose_auto(state, channel_id, config, lang).await;
         }
+    }
+}
+
+async fn open_msg_compose_or_reply(
+    state: &Arc<ServerState>,
+    channel_id: &str,
+    config: &AppConfig,
+    session_id: &str,
+    lang: Lang,
+) {
+    if send_msg_compose_card(state, channel_id, config, session_id, lang).await {
+        return;
+    }
+    let snapshot = state.agents.snapshot();
+    let id = find_agent_by_session(&snapshot, session_id)
+        .and_then(|rec| rec.get("seq").and_then(|value| value.as_u64()))
+        .unwrap_or(0);
+    let text = crate::i18n::tr(lang, "msgCard.openFailed")
+        .replace("{p}", crate::autochannel::cmd_prefix(channel_id))
+        .replace("{id}", &id.to_string());
+    let _ = reply_channel_text(channel_id, config, &text).await;
+}
+
+async fn handle_msg_compose_auto(
+    state: &Arc<ServerState>,
+    channel_id: &str,
+    config: &AppConfig,
+    lang: Lang,
+) {
+    let snapshot = state.agents.snapshot();
+    let watching = watching_sessions(state, channel_id);
+    if watching.len() == 1 {
+        if let Some(session_id) = watching.iter().next() {
+            if is_working_non_grok(&snapshot, session_id) {
+                open_msg_compose_or_reply(state, channel_id, config, session_id, lang).await;
+                return;
+            }
+        }
+    }
+    let options = crate::select::msg_options(&snapshot, &watching, now_secs(), lang);
+    if options.is_empty() {
+        let _ = reply_channel_text(
+            channel_id,
+            config,
+            crate::i18n::tr(lang, "select.msgNoWorking"),
+        )
+        .await;
+        return;
+    }
+    if !send_agent_picker(
+        state,
+        channel_id,
+        config,
+        PickerKind::Msg,
+        crate::select::title_msg(lang),
+        options,
+        None,
+        lang,
+    )
+    .await
+    {
+        let text = msg_usage_hint(state, channel_id, lang);
+        let _ = reply_channel_text(channel_id, config, &text).await;
     }
 }
 
