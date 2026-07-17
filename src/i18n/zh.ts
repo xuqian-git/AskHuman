@@ -108,6 +108,7 @@ export default {
     },
     todos: {
       title: "待办",
+      optionPrefix: "执行待办：",
       picked: "已选 {n} 条",
       chipHint: "选中后随本次回复送达（agent 开始执行即从列表移除）",
       delete: "删除",

@@ -280,8 +280,15 @@ pub fn tr(lang: Lang, key: &'static str) -> &'static str {
             "<font color='green'>[👍Recommended]</font> ",
             "<font color='green'>【👍推荐】</font> ",
         ),
+        // Todo markers replace the legacy text prefix only in rich-text-capable channels.
+        "channel.feishuTodoPrefix" => pick(
+            lang,
+            "<font color='orange'>【TODO】</font> ",
+            "<font color='orange'>【TODO】</font> ",
+        ),
         // 钉钉选项 md 的推荐徽标文案（card.rs 用 h5 字号 + 绿色 font 包裹，含括号）。
         "channel.dingtalkRecommended" => pick(lang, "[👍Recommended]", "【👍推荐】"),
+        "channel.dingtalkTodo" => pick(lang, "【TODO】", "【TODO】"),
         "channel.tgSendButton" => pick(lang, "↑ Submit", "↑ 提交"),
         // 抢答收尾：赢家端名称 + 卡片终态状态行。
         "channel.sourcePopup" => pick(lang, "Popup", "弹窗"),

@@ -256,13 +256,15 @@ impl MessagingChannel for DingTalkSession {
         // 选项以 `[{id,md}]` 下发（md 富文本含推荐绿色徽标）；模板回传选项 id（下标），
         // 提交时经 restore_selected 按下标还原原文。单选/严格由 single/allow_input 变量控制。
         let recommended_label = i18n::tr(ctx.lang, "channel.dingtalkRecommended");
-        let param_map = card::build_card_param_map(
+        let param_map = card::build_card_param_map_with_todo(
             title,
             ctx.text,
             ctx.options,
             ctx.single,
             ctx.select_only,
             recommended_label,
+            i18n::tr(ctx.lang, "whatsNext.todoPrefix"),
+            i18n::tr(ctx.lang, "channel.dingtalkTodo"),
         );
         let private_param_map = card::build_card_private_map();
 

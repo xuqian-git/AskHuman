@@ -46,6 +46,39 @@ pub fn build_question_card(
     submit_label: &str,
     recommended_prefix: &str,
 ) -> Value {
+    build_question_card_with_todo(
+        title,
+        text,
+        options,
+        is_markdown,
+        single,
+        select_only,
+        selected,
+        input_placeholder,
+        submit_label,
+        recommended_prefix,
+        "",
+        "",
+    )
+}
+
+/// Build a question card with a channel-native colored marker for todo options.
+/// The stored option text remains untouched so callbacks still return the original value.
+#[allow(clippy::too_many_arguments)]
+pub fn build_question_card_with_todo(
+    title: &str,
+    text: &str,
+    options: &[OptionItem],
+    is_markdown: bool,
+    single: bool,
+    select_only: bool,
+    selected: &[String],
+    input_placeholder: &str,
+    submit_label: &str,
+    recommended_prefix: &str,
+    todo_text_prefix: &str,
+    todo_badge_prefix: &str,
+) -> Value {
     let mut elements: Vec<Value> = Vec::new();
     if !text.trim().is_empty() {
         elements.push(body_text(text, is_markdown));
@@ -60,6 +93,8 @@ pub fn build_question_card(
                 false,
                 true,
                 recommended_prefix,
+                todo_text_prefix,
+                todo_badge_prefix,
             ));
         }
     }
@@ -73,6 +108,8 @@ pub fn build_question_card(
         input_placeholder,
         submit_label,
         recommended_prefix,
+        todo_text_prefix,
+        todo_badge_prefix,
     ));
     assemble_card(title, elements, true)
 }
@@ -93,6 +130,8 @@ pub fn build_msg_compose_card(
             false,
             &view.input_placeholder,
             &view.send_label,
+            "",
+            "",
             "",
         ),
     ];
@@ -142,11 +181,20 @@ pub fn callback_update_card(card: Value) -> Value {
 /// 勾选器按用户选择 `checked` 且 `disabled`、输入框 `default_value` 回显补充文字且 `disabled`、
 /// 提交按钮 `disabled` 并改文案。
 pub fn build_finalized_card(p: &Finalized) -> Value {
+    build_finalized_card_with_todo(p, "", "")
+}
+
+/// Build a finalized card while preserving the todo-only display treatment.
+pub fn build_finalized_card_with_todo(
+    p: &Finalized,
+    todo_text_prefix: &str,
+    todo_badge_prefix: &str,
+) -> Value {
     let mut elements: Vec<Value> = Vec::new();
     if !p.text.trim().is_empty() {
         elements.push(body_text(p.text, p.is_markdown));
     }
-    // 单选：勾选器在表单外（与提问态一致），终态禁用。
+    // Single-select checkers live outside the form, matching the interactive card layout.
     if p.single {
         for (i, opt) in p.options.iter().enumerate() {
             elements.push(checker_element(
@@ -156,6 +204,8 @@ pub fn build_finalized_card(p: &Finalized) -> Value {
                 true,
                 true,
                 p.recommended_prefix,
+                todo_text_prefix,
+                todo_badge_prefix,
             ));
         }
     }
@@ -169,6 +219,8 @@ pub fn build_finalized_card(p: &Finalized) -> Value {
         p.input_placeholder,
         p.button_label,
         p.recommended_prefix,
+        todo_text_prefix,
+        todo_badge_prefix,
     ));
     assemble_card(p.title, elements, true)
 }
@@ -182,8 +234,13 @@ fn checker_element(
     disabled: bool,
     single: bool,
     recommended_prefix: &str,
+    todo_text_prefix: &str,
+    todo_badge_prefix: &str,
 ) -> Value {
-    let display = if opt.recommended {
+    let display = if opt.todo_id.is_some() {
+        let text = opt.text.strip_prefix(todo_text_prefix).unwrap_or(&opt.text);
+        format!("{}{}", todo_badge_prefix, text)
+    } else if opt.recommended {
         format!("{}{}", recommended_prefix, opt.text)
     } else {
         opt.text.clone()
@@ -241,6 +298,8 @@ fn build_form(
     input_placeholder: &str,
     button_label: &str,
     recommended_prefix: &str,
+    todo_text_prefix: &str,
+    todo_badge_prefix: &str,
 ) -> Value {
     let mut form_elements: Vec<Value> = Vec::new();
     // 多选：勾选器在表单内（提交时随 form_value 回传）。单选的勾选器在表单外。
@@ -253,6 +312,8 @@ fn build_form(
                 disabled,
                 false,
                 recommended_prefix,
+                todo_text_prefix,
+                todo_badge_prefix,
             ));
         }
     }
@@ -718,6 +779,8 @@ pub fn build_todo_auto_card(
         input_placeholder,
         submit_label,
         "",
+        "",
+        "",
     ));
     card
 }
@@ -742,6 +805,8 @@ pub fn build_todo_manage_card(
             false,
             input_placeholder,
             submit_label,
+            "",
+            "",
             "",
         ),
     ];
@@ -1163,6 +1228,48 @@ mod tests {
         });
         let s = parse_card_submit(&event, &opts).unwrap();
         assert_eq!(s.selected_options, vec!["继续".to_string()]);
+    }
+
+    #[test]
+    fn todo_option_uses_amber_marker_but_submits_original_text() {
+        let opts = vec![OptionItem::with_todo("执行待办：修复登录", "todo-1")];
+        let card = build_question_card_with_todo(
+            "T",
+            "Q",
+            &opts,
+            true,
+            false,
+            false,
+            &[],
+            "ph",
+            "提交",
+            "<font color='green'>【👍推荐】</font> ",
+            "执行待办：",
+            "<font color='orange'>【TODO】</font> ",
+        );
+        let form = form_of(&card);
+        let checker = form["elements"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["tag"] == "checker")
+            .unwrap();
+        assert_eq!(
+            checker["text"]["content"],
+            "<font color='orange'>【TODO】</font> 修复登录"
+        );
+        assert!(!checker["text"]["content"]
+            .as_str()
+            .unwrap()
+            .contains("执行待办："));
+
+        let event = json!({
+            "operator": { "open_id": "ou_1" },
+            "context": { "open_message_id": "om_1" },
+            "action": { "form_value": { "opt_0": true } }
+        });
+        let submitted = parse_card_submit(&event, &opts).unwrap();
+        assert_eq!(submitted.selected_options, vec!["执行待办：修复登录"]);
     }
 
     #[test]

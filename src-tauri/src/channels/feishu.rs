@@ -224,9 +224,11 @@ impl MessagingChannel for FeishuSession {
         let placeholder = i18n::tr(ctx.lang, "channel.fsInputPlaceholder");
         let submit_label = i18n::tr(ctx.lang, "channel.fsSubmitButton");
         let recommended_prefix = i18n::tr(ctx.lang, "channel.feishuRecommendedPrefix");
+        let todo_text_prefix = i18n::tr(ctx.lang, "whatsNext.todoPrefix");
+        let todo_badge_prefix = i18n::tr(ctx.lang, "channel.feishuTodoPrefix");
         // 单选已选状态由会话自管（勾选器在表单外，靠 toggle 回调互斥）。
         let mut selected_single: Vec<String> = Vec::new();
-        let question_card = card::build_question_card(
+        let question_card = card::build_question_card_with_todo(
             title,
             ctx.text,
             ctx.options,
@@ -237,6 +239,8 @@ impl MessagingChannel for FeishuSession {
             placeholder,
             submit_label,
             recommended_prefix,
+            todo_text_prefix,
+            todo_badge_prefix,
         );
 
         // 1. 投放互动卡片；失败 → 回退纯文本编号方案。
@@ -292,19 +296,23 @@ impl MessagingChannel for FeishuSession {
                                 s.selected_options.clone()
                             };
                             // 终态卡片（禁用表单 + 保留勾选 + 回显补充文字 + 按钮「已提交」）。
-                            let finalized = card::build_finalized_card(&card::Finalized {
-                                title,
-                                text: ctx.text,
-                                is_markdown: ctx.is_markdown,
-                                options: ctx.options,
-                                selected: &selected_final,
-                                user_input: s.user_input.as_deref(),
-                                input_placeholder: placeholder,
-                                button_label: i18n::tr(ctx.lang, "channel.fsSubmitted"),
-                                recommended_prefix,
-                                single: ctx.single,
-                                select_only: ctx.select_only,
-                            });
+                            let finalized = card::build_finalized_card_with_todo(
+                                &card::Finalized {
+                                    title,
+                                    text: ctx.text,
+                                    is_markdown: ctx.is_markdown,
+                                    options: ctx.options,
+                                    selected: &selected_final,
+                                    user_input: s.user_input.as_deref(),
+                                    input_placeholder: placeholder,
+                                    button_label: i18n::tr(ctx.lang, "channel.fsSubmitted"),
+                                    recommended_prefix,
+                                    single: ctx.single,
+                                    select_only: ctx.select_only,
+                                },
+                                todo_text_prefix,
+                                todo_badge_prefix,
+                            );
                             // 立刻经 Router 同步回包更新卡片 → 按钮 Loading 直接变终态（无闪烁）。
                             // 不再追加 OpenAPI patch_card：那次二次渲染正是残留「快速回弹」的来源。
                             let _ = ack
@@ -334,7 +342,7 @@ impl MessagingChannel for FeishuSession {
                                         && idx < ctx.options.len()
                                     {
                                         toggle_single(&mut selected_single, &ctx.options[idx].text);
-                                        let updated = card::build_question_card(
+                                        let updated = card::build_question_card_with_todo(
                                             title,
                                             ctx.text,
                                             ctx.options,
@@ -345,6 +353,8 @@ impl MessagingChannel for FeishuSession {
                                             placeholder,
                                             submit_label,
                                             recommended_prefix,
+                                            todo_text_prefix,
+                                            todo_badge_prefix,
                                         );
                                         let _ = ack.send(Some(card::callback_update_card(updated)));
                                         continue;
@@ -398,19 +408,23 @@ impl MessagingChannel for FeishuSession {
             _ => i18n::tr(ctx.lang, "channel.fsCancelled").to_string(),
         };
         // 被抢答收尾：同样复刻钉钉禁用表单——本端未作答，故不勾选、不回显，按钮文案为「已在 X 回答」。
-        let finalized = card::build_finalized_card(&card::Finalized {
-            title,
-            text: ctx.text,
-            is_markdown: ctx.is_markdown,
-            options: ctx.options,
-            selected: &[],
-            user_input: None,
-            input_placeholder: placeholder,
-            button_label: &status,
-            recommended_prefix,
-            single: ctx.single,
-            select_only: ctx.select_only,
-        });
+        let finalized = card::build_finalized_card_with_todo(
+            &card::Finalized {
+                title,
+                text: ctx.text,
+                is_markdown: ctx.is_markdown,
+                options: ctx.options,
+                selected: &[],
+                user_input: None,
+                input_placeholder: placeholder,
+                button_label: &status,
+                recommended_prefix,
+                single: ctx.single,
+                select_only: ctx.select_only,
+            },
+            todo_text_prefix,
+            todo_badge_prefix,
+        );
         let _ = client.patch_card(&message_id, &finalized).await;
         events.clear_active(Some(&message_id), &open_id);
         None

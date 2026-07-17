@@ -115,6 +115,7 @@ export default {
     },
     todos: {
       title: "Todos",
+      optionPrefix: "Run todo: ",
       picked: "{n} selected",
       chipHint: "Select to send with your reply (removed from the list once picked up)",
       delete: "Delete",

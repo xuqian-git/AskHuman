@@ -129,6 +129,22 @@
   color: var(--text-primary);
   word-break: break-word;
 }
+.option .todo-option-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  vertical-align: top;
+  height: 18px;
+  margin: 1px 6px 1px 0;
+  padding: 0 7px;
+  border-radius: var(--radius-sm);
+  color: color-mix(in srgb, var(--accent-orange) 72%, var(--text-primary));
+  background: color-mix(in srgb, var(--accent-orange) 22%, transparent);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+}
 /* 推荐选项 Badge（大拇指图标 + 本地化「推荐」）：内联在选项文本流开头。
    这样英文等较长 badge 不再独占一列、把文本挤窄，换行后的文字可铺满整行（含 badge 下方）。
 

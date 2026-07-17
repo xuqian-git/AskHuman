@@ -21,6 +21,8 @@ pub const SUBMIT_ACTION_ID: &str = "submit_action";
 const OPT_FONT_SIZE: &str = "common_h5_text_style__font_size";
 /// 推荐徽标绿色 colorToken。
 const GREEN_COLOR: &str = "common_green1_color";
+/// Todo marker amber colorToken.
+const ORANGE_COLOR: &str = "common_orange1_color";
 
 /// 一次卡片「提交」回调的解析结果。
 pub struct CardSubmit {
@@ -33,9 +35,24 @@ pub struct CardSubmit {
 }
 
 /// 单个选项的富文本 `md`：h5 字号包裹；推荐项前置绿色含括号徽标。
-fn option_md(opt: &OptionItem, recommended_label: &str) -> String {
-    let body = format!("<font sizeToken={}>{}</font>", OPT_FONT_SIZE, opt.text);
-    if opt.recommended {
+fn option_md(
+    opt: &OptionItem,
+    recommended_label: &str,
+    todo_text_prefix: &str,
+    todo_label: &str,
+) -> String {
+    let display_text = if opt.todo_id.is_some() {
+        opt.text.strip_prefix(todo_text_prefix).unwrap_or(&opt.text)
+    } else {
+        &opt.text
+    };
+    let body = format!("<font sizeToken={}>{}</font>", OPT_FONT_SIZE, display_text);
+    if opt.todo_id.is_some() {
+        format!(
+            "<font sizeToken={} colorTokenV2={}>{}</font> {}",
+            OPT_FONT_SIZE, ORANGE_COLOR, todo_label, body
+        )
+    } else if opt.recommended {
         format!(
             "<font sizeToken={} colorTokenV2={}>{}</font> {}",
             OPT_FONT_SIZE, GREEN_COLOR, recommended_label, body
@@ -59,11 +76,40 @@ pub fn build_card_param_map(
     select_only: bool,
     recommended_label: &str,
 ) -> Value {
+    build_card_param_map_with_todo(
+        title,
+        markdown,
+        options,
+        single,
+        select_only,
+        recommended_label,
+        "",
+        "",
+    )
+}
+
+/// Build card data with an amber marker for todo options while preserving callback values.
+#[allow(clippy::too_many_arguments)]
+pub fn build_card_param_map_with_todo(
+    title: &str,
+    markdown: &str,
+    options: &[OptionItem],
+    single: bool,
+    select_only: bool,
+    recommended_label: &str,
+    todo_text_prefix: &str,
+    todo_label: &str,
+) -> Value {
     // 选项：`[{id:下标, md:富文本}]`（id 供提交回传，md 供展示）。
     let option_objs: Vec<Value> = options
         .iter()
         .enumerate()
-        .map(|(i, o)| json!({ "id": i, "md": option_md(o, recommended_label) }))
+        .map(|(i, o)| {
+            json!({
+                "id": i,
+                "md": option_md(o, recommended_label, todo_text_prefix, todo_label),
+            })
+        })
         .collect();
     json!({
         "title": title,
@@ -252,6 +298,28 @@ mod tests {
         assert!(md.contains("colorTokenV2=common_green1_color"));
         assert!(md.contains("【👍推荐】"));
         assert!(md.contains("继续"));
+    }
+
+    #[test]
+    fn todo_option_md_has_amber_marker_without_legacy_prefix() {
+        let options = vec![OptionItem::with_todo("执行待办：修复登录", "todo-1")];
+        let m = build_card_param_map_with_todo(
+            "T",
+            "Q",
+            &options,
+            false,
+            false,
+            "【👍推荐】",
+            "执行待办：",
+            "【TODO】",
+        );
+        let parsed: Value =
+            serde_json::from_str(m.get("options").unwrap().as_str().unwrap()).unwrap();
+        let md = parsed[0]["md"].as_str().unwrap();
+        assert!(md.contains("colorTokenV2=common_orange1_color"));
+        assert!(md.contains("【TODO】"));
+        assert!(md.contains("修复登录"));
+        assert!(!md.contains("执行待办："));
     }
 
     #[test]
