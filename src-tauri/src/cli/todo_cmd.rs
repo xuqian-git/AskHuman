@@ -42,10 +42,11 @@ fn add(project: &str, args: &[String], lang: Lang) -> ! {
         .cloned()
         .collect::<Vec<_>>()
         .join(" ");
-    let added = if auto {
-        crate::todos::add_auto(project, &text)
-    } else {
-        crate::todos::add(project, &text)
+    let agent = crate::agents::detect::detect_invoking_agent();
+    let added = match agent {
+        Some(agent) => crate::todos::add_from_agent(project, &text, auto, agent),
+        None if auto => crate::todos::add_auto(project, &text),
+        None => crate::todos::add(project, &text),
     };
     let Some(_entry) = added else {
         eprintln!(

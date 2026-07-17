@@ -46,6 +46,13 @@ function basename(key: string): string {
   return parts[parts.length - 1] || key;
 }
 
+function agentLabel(kind?: string | null): string {
+  if (!kind) return "";
+  const key = `agents.kind.${kind}`;
+  const label = t(key);
+  return label === key ? kind : label;
+}
+
 async function reloadProjects(): Promise<void> {
   const list = await todosProjects();
   // 预选项目不在候选中（如 daemon 刚退、agent 项目未入 workspace 索引）→ 兜底追加，保持选中稳定。
@@ -351,7 +358,12 @@ onBeforeUnmount(() => {
               <circle cx="7" cy="11" r="1.1" fill="currentColor" />
             </svg>
           </span>
-          <span class="td-text" :title="absoluteTime(e.createdAtMs)">{{ e.text }}</span>
+          <div class="td-content" :title="absoluteTime(e.createdAtMs)">
+            <span class="td-text">{{ e.text }}</span>
+            <span v-if="agentLabel(e.agentKind)" class="td-source">
+              {{ t("todosWin.addedBy", { agent: agentLabel(e.agentKind) }) }}
+            </span>
+          </div>
           <button
             type="button"
             class="td-auto"
@@ -417,7 +429,12 @@ onBeforeUnmount(() => {
         </div>
         <ul v-if="histOpen" class="td-list td-hist-list">
           <li v-for="h in history" :key="h.id" class="td-row td-hist-row">
-            <span class="td-text" :title="absoluteTime(h.doneAtMs)">{{ h.text }}</span>
+            <div class="td-content" :title="absoluteTime(h.doneAtMs)">
+              <span class="td-text">{{ h.text }}</span>
+              <span v-if="agentLabel(h.agentKind)" class="td-source">
+                {{ t("todosWin.addedBy", { agent: agentLabel(h.agentKind) }) }}
+              </span>
+            </div>
             <span class="td-hist-time">{{ shortTime(h.doneAtMs) }}</span>
             <button
               type="button"
@@ -636,13 +653,23 @@ onBeforeUnmount(() => {
   width: 10px;
   height: 14px;
 }
-.td-text {
+.td-content {
   flex: 1 1 auto;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.td-text {
   font-size: 13px;
   line-height: 1.45;
   white-space: pre-wrap;
   word-break: break-word;
+}
+.td-source {
+  color: var(--text-muted, #8e8e93);
+  font-size: 10px;
+  line-height: 1.25;
 }
 /* 自动执行 ⚡ 切换：未开启时随行 hover 淡入；开启后常显琥珀色实心。 */
 .td-auto {

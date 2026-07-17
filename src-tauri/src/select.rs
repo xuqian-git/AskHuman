@@ -549,12 +549,14 @@ mod tests {
                 id: "id-a".into(),
                 text: "修复登录".into(),
                 created_at_ms: 1,
+                agent_kind: None,
                 auto: false,
             },
             crate::todos::TodoEntry {
                 id: "id-b".into(),
                 text: "写文档".into(),
                 created_at_ms: 2,
+                agent_kind: None,
                 auto: false,
             },
         ];
@@ -576,12 +578,14 @@ mod tests {
                 id: "id-a".into(),
                 text: "修复登录".into(),
                 created_at_ms: 1,
+                agent_kind: None,
                 auto: true,
             },
             crate::todos::TodoEntry {
                 id: "id-b".into(),
                 text: "写文档".into(),
                 created_at_ms: 2,
+                agent_kind: None,
                 auto: false,
             },
         ];

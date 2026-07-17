@@ -417,12 +417,14 @@ mod tests {
                 id: "id-1".into(),
                 text: "修复登录 bug".into(),
                 created_at_ms: 1,
+                agent_kind: None,
                 auto: false,
             },
             crate::todos::TodoEntry {
                 id: "id-2".into(),
                 text: "写发布说明".into(),
                 created_at_ms: 2,
+                agent_kind: None,
                 auto: false,
             },
         ]
@@ -621,6 +623,7 @@ mod tests {
                 id: format!("id-{i}"),
                 text: format!("task {i}"),
                 created_at_ms: i as u64,
+                agent_kind: None,
                 auto: false,
             })
             .collect();

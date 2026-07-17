@@ -585,6 +585,7 @@ mod tests {
             id: format!("todo-{index}"),
             text: format!("todo {index}"),
             created_at_ms: index as u64,
+            agent_kind: None,
             auto: false,
         }
     }

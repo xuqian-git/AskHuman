@@ -573,6 +573,7 @@ export default {
     clearOk: "清空",
     historyTitle: "历史",
     restore: "恢复为待办",
+    addedBy: "来自 {agent}",
     autoOn: "设为自动执行（whats-next 时不提问直接派发）",
     autoOff: "取消自动执行",
     autoNewHint: "开启后，Agent 在完成前序任务后，将自动执行该待办。",

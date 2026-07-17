@@ -1754,6 +1754,7 @@ mod tests {
                 id: "t1".into(),
                 text: "one".into(),
                 created_at_ms: 1,
+                agent_kind: None,
                 auto: false,
             }],
         )]);

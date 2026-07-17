@@ -19,6 +19,9 @@ pub struct TodoEntry {
     pub text: String,
     #[serde(default)]
     pub created_at_ms: u64,
+    /// Agent family that invoked CLI `todo add`; absent for human/GUI/IM additions and old data.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_kind: Option<String>,
     /// 自动执行（第 17 轮定案）：whats-next 时不提问、直接把最靠前的自动待办作为下一个任务返回。
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub auto: bool,
@@ -33,6 +36,9 @@ pub struct DoneTodoEntry {
     pub text: String,
     #[serde(default)]
     pub created_at_ms: u64,
+    /// Preserved from the pending entry so execution history retains its origin.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_kind: Option<String>,
     #[serde(default)]
     pub done_at_ms: u64,
 }
@@ -158,6 +164,23 @@ pub fn add_auto(project: &str, text: &str) -> Option<TodoEntry> {
     add_auto_at(&todos_file(), &todos_lock(), project, text)
 }
 
+/// Append an entry created by a recognized Agent CLI invocation.
+pub fn add_from_agent(
+    project: &str,
+    text: &str,
+    auto: bool,
+    agent: crate::agents::AgentKind,
+) -> Option<TodoEntry> {
+    add_impl(
+        &todos_file(),
+        &todos_lock(),
+        project,
+        text,
+        auto,
+        Some(agent.as_str()),
+    )
+}
+
 /// Toggle the auto-run flag of one entry (round 17). Returns the new flag, `None` if missing.
 pub fn set_auto(project: &str, id: &str, auto: bool) -> Option<bool> {
     set_auto_at(&todos_file(), &todos_lock(), project, id, auto)
@@ -267,14 +290,21 @@ pub fn list_at(path: &Path, project: &str) -> Vec<TodoEntry> {
 }
 
 pub fn add_at(path: &Path, lock: &Path, project: &str, text: &str) -> Option<TodoEntry> {
-    add_impl(path, lock, project, text, false)
+    add_impl(path, lock, project, text, false, None)
 }
 
 pub fn add_auto_at(path: &Path, lock: &Path, project: &str, text: &str) -> Option<TodoEntry> {
-    add_impl(path, lock, project, text, true)
+    add_impl(path, lock, project, text, true, None)
 }
 
-fn add_impl(path: &Path, lock: &Path, project: &str, text: &str, auto: bool) -> Option<TodoEntry> {
+fn add_impl(
+    path: &Path,
+    lock: &Path,
+    project: &str,
+    text: &str,
+    auto: bool,
+    agent_kind: Option<&str>,
+) -> Option<TodoEntry> {
     let (project, text) = normalized(project, text)?;
     let _guard = lock_at(lock);
     let mut data = load_at(path);
@@ -282,6 +312,7 @@ fn add_impl(path: &Path, lock: &Path, project: &str, text: &str, auto: bool) -> 
         id: uuid::Uuid::new_v4().to_string(),
         text,
         created_at_ms: now_ms(),
+        agent_kind: agent_kind.map(str::to_string),
         auto,
     };
     data.projects
@@ -409,6 +440,7 @@ pub fn take_at(
                     id: e.id.clone(),
                     text: e.text.clone(),
                     created_at_ms: e.created_at_ms,
+                    agent_kind: e.agent_kind.clone(),
                     done_at_ms: done_at,
                 });
             }
@@ -449,6 +481,7 @@ pub fn restore_at(path: &Path, lock: &Path, project: &str, id: &str) -> bool {
             id: done.id,
             text: done.text,
             created_at_ms: done.created_at_ms,
+            agent_kind: done.agent_kind,
             // 恢复为普通待办：带 auto 恢复会立刻重新触发自动链，违背「找回来看看」的意图。
             auto: false,
         });
@@ -498,6 +531,44 @@ mod tests {
         assert!(entries[0].created_at_ms > 0);
         // Other projects unaffected.
         assert!(list_at(&t.file(), "/q").is_empty());
+    }
+
+    #[test]
+    fn agent_origin_round_trips_through_history_and_restore() {
+        let t = TempStore::new();
+        let agent = add_impl(
+            &t.file(),
+            &t.lock(),
+            "/p",
+            "agent task",
+            false,
+            Some("codex"),
+        )
+        .unwrap();
+        let human = add_at(&t.file(), &t.lock(), "/p", "human task").unwrap();
+        assert_eq!(agent.agent_kind.as_deref(), Some("codex"));
+        assert_eq!(human.agent_kind, None);
+
+        let raw = std::fs::read_to_string(t.file()).unwrap();
+        assert_eq!(raw.matches("agentKind").count(), 1);
+        take_at(
+            &t.file(),
+            &t.lock(),
+            "/p",
+            std::slice::from_ref(&agent.id),
+            20,
+        );
+        assert_eq!(
+            history_at(&t.file(), "/p")[0].agent_kind.as_deref(),
+            Some("codex")
+        );
+
+        assert!(restore_at(&t.file(), &t.lock(), "/p", &agent.id));
+        let restored = list_at(&t.file(), "/p")
+            .into_iter()
+            .find(|entry| entry.id == agent.id)
+            .unwrap();
+        assert_eq!(restored.agent_kind.as_deref(), Some("codex"));
     }
 
     #[test]

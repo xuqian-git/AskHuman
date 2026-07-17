@@ -596,6 +596,7 @@ export default {
     clearOk: "Clear",
     historyTitle: "History",
     restore: "Restore to todos",
+    addedBy: "Added by {agent}",
     autoOn: "Mark as auto-run (dispatched directly at whats-next, no card)",
     autoOff: "Unmark auto-run",
     autoNewHint:

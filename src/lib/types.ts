@@ -186,6 +186,8 @@ export interface TodoEntry {
   id: string;
   text: string;
   createdAtMs: number;
+  /** Agent family that added the todo through the CLI; absent for human-created and legacy rows. */
+  agentKind?: string | null;
   /** 自动执行：whats-next 时不提问直接派发（后端 auto=false 时省略该字段）。 */
   auto?: boolean;
 }
@@ -195,6 +197,8 @@ export interface TodoDoneEntry {
   id: string;
   text: string;
   createdAtMs: number;
+  /** Preserved Agent origin from the pending todo. */
+  agentKind?: string | null;
   doneAtMs: number;
 }
 

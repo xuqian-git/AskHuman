@@ -56,6 +56,13 @@ pub fn detect_running_agent() -> Option<AgentKind> {
     detect_running_agent_from(&current_env())
 }
 
+/// Identify the Agent that directly invoked a short-lived CLI command. Environment markers are
+/// fast and precise; the process-tree fallback covers MCP launchers that clear Agent variables.
+/// Unlike the latency-sensitive ask path, metadata-only commands can afford this synchronous walk.
+pub fn detect_invoking_agent() -> Option<AgentKind> {
+    detect_running_agent().or_else(|| walk_any_agent_from_self().map(|(kind, _)| kind))
+}
+
 /// 各家会话 ID 的 env 变量名（shell 工具子进程注入；hook 子进程通常无，靠 stdin）。
 pub fn session_id_env_var(kind: AgentKind) -> &'static str {
     match kind {

@@ -44,17 +44,18 @@ Interject 是「打断进行中」的纠偏语义，不适合），希望：
 
 - 归属：**项目级**（`project.rs` 的 git 根路径 key，回退 cwd）。同项目的新会话 / 新
   agent / 多 agent 共享一份队列；不随 session 结束清理，长期保留直到出队或删除。
-- 条目：`{ id: uuid, text: String, created_at_ms, auto: bool }`。纯文本，首期不支持附件。
+- 条目：`{ id: uuid, text: String, created_at_ms, auto: bool, agent_kind?: String }`。纯文本，首期不支持附件。
   `auto`＝**自动执行**标记（第 17 轮定案，见 D2；`false` 不落盘，旧文件兼容）；从历史
-  恢复的条目恒为 `auto: false`。
+  恢复的条目恒为 `auto: false`。`agent_kind` 只在识别到 Agent 调用 CLI `todo add` 时记录
+  家族（`claude / codex / cursor / grok`）；人工、GUI、IM 新增和旧数据均为空。
 - 顺序：FIFO 追加；顺序可在 GUI 待办窗口拖拽调整（第 14 轮定案，见 D9），头部条目在
   选项类展示点优先出现。
 - 存储（第 9 轮定案，实现简化）：`~/.askhuman/state/todos.json` 即**唯一数据源**，
   所有进程直读直写；写操作（读-改-写）持 flock 串行化（与 `history.jsonl` 跨进程写锁
   同模式；Windows 无锁 best-effort，与 history 现状一致）。**不做** daemon 内存运行态
   ——todo 无热路径（whats-next 每轮一次、增删查是人操作频率），双层结构无收益。
-  文件形态：`{ "projects": { "<project_key>": [ {id,text,createdAtMs}, … ] },
-  "history": { "<project_key>": [ {id,text,createdAtMs,doneAtMs}, … ] } }`，
+  文件形态：`{ "projects": { "<project_key>": [ {id,text,createdAtMs,agentKind?}, … ] },
+  "history": { "<project_key>": [ {id,text,createdAtMs,agentKind?,doneAtMs}, … ] } }`，
   空项目键剪除；原子写（tmp + rename）。
 - **执行历史**（第 16 轮定案）：**仅「执行出队」**（whats-next / Stop 卡 / 弹窗点选 →
   `take`）进入 `history`（时间正序追加，展示倒序）；手动删除、清空**不记**。每项目按
@@ -207,6 +208,8 @@ AskHuman todo clear                # 清空本项目（需交互确认，或 --y
 
 - Unix 经 daemon（连接或拉起，daemon 内存为准）；非 Unix 直接文件 + 锁。
 - 输出人类可读；后续需要时再加 `--output json`（首期不做）。
+- `todo add` 复用提问调用方识别：先读 Agent 环境变量，无法识别时 Unix 沿父进程树兜底；
+  识别成功则把 Agent 家族写入待办来源。来源不改变 CLI 输出，人工调用保持无来源。
 - `--agent-help` 用两行简述项目待办：它用于提醒用户操作，或记录用户要求稍后执行的任务，
   不是 Agent 的内部工作计划；用户要求添加或明确延后具体任务时用 `todo add` 添加。另给出软建议：
   写成一个可执行的句子，尽量不超过 **100 个字符**；不做硬截断，避免丢失必要上下文。
@@ -267,6 +270,8 @@ AskHuman todo clear                # 清空本项目（需交互确认，或 --y
   提供调序，新增仍追加到底部）、**自动执行开关**（第 17 轮定案：新增行带「设为自动」
   开关，已有条目行内 ⚡ 徽标按钮即点即切换；新增行开关使用零延迟自绘提示，固定说明“开启后，
   Agent 在完成前序任务后，将自动执行该待办。”，点击切换后驻留 0.5 秒，不使用系统 tooltip）；
+  Agent 新增的条目在正文下方另起一行显示「来自 {Agent}」，执行历史同样保留并显示，
+  恢复为待办后来源继续保留；无来源条目不占这一行；
   实时同步＝宿主进程监听 `todos.json`
   文件变化（复用 `config_watch.rs` 的 notify 模式，第 9 轮定案）——daemon 未运行时
   窗口照样可用。
@@ -312,6 +317,7 @@ AskHuman todo clear                # 清空本项目（需交互确认，或 --y
 - Stop 卡：待办 chip 前置、四分支提交映射（含「结束丢弃文字」维持现状）、
   选待办出队、marker 抑制下不弹卡不出队；既有 Stop 确认测试不回归。
 - 竞态：双卡同条目先后提交、提交前删除。
+- 来源：Agent CLI 新增写入家族、人工新增不写字段、旧 JSON 无字段兼容、执行历史与恢复保留来源。
 
 ## 5. 反馈意见记录
 
@@ -343,3 +349,5 @@ AskHuman todo clear                # 清空本项目（需交互确认，或 --y
   建议的下一任务，仅确有建议时才传。卡片顺序为建议、待办、结束，总计最多 10 项；建议
   超限静默截取。选中建议保持普通 Ask 的 `[selected_options]`（补充文字仍为 `[user_input]`）；
   自动待办继续优先并直接接管。
+- （2026-07-17 来源标记）Agent 经 CLI 添加待办时复用提问的调用方识别，只记录 Agent 家族；
+  GUI 待办行正文下方显示「来自 Codex」式来源，执行历史也保留并显示，恢复后继续保留。
