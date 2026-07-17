@@ -405,7 +405,6 @@ export default {
       slackUserId: "User ID",
       slackDetectHint: "请用目标 Slack 账号私聊机器人发送：{code}（120 秒内有效）",
       slackDetected: "已识别并填入 User ID：{userId}",
-      moreSoon: "更多通信 Channel 敬请期待",
     },
     history: {
       title: "回复历史",

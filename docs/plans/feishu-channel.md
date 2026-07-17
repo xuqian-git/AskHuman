@@ -179,7 +179,7 @@ AskHuman "..." -q ... -o ...       ▼
 - 仿钉钉卡片新增「飞书」卡片：`enabled` 开关 + 字段 AppId / AppSecret(password) / OpenId（旁置「自动识别」按钮，沿用钉钉 detect 两段式：prepare 取码 → 展示「请私聊机器人发送：XXXX」→ wait 回填）/ BaseUrl（默认 `https://open.feishu.cn`，占位提示可填 Lark 国际版）。
 - 「测试连接」按钮 → `feishu_test`，复用现有 `result ok/err` 展示。
 - 复用现有 detect/test 的 loading/错误状态写法（`feishuTesting`/`feishuDetecting`/`feishuDetectCode`/`feishuMessage`/`feishuError`）。
-- 放在钉钉卡片之后、`moreSoon` 之前。
+- 当前渠道设置中，飞书作为第一个外部 IM 渠道展示，并带“推荐”标记。
 
 ---
 

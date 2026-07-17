@@ -184,7 +184,7 @@ AskHuman "..." -q ... -o ...       ▼
 - 仿飞书卡片新增「Slack」卡片：`enabled` 开关 + 字段 Bot Token(password) / App Token(password) / User ID（旁置「自动识别」按钮，沿用两段式：prepare 取码 → 展示「请私聊机器人发送：XXXX」→ wait 回填）。
 - 「测试连接」按钮 → `slack_test`，复用现有 `result ok/err` 展示。
 - 复用现有 detect/test 的 loading/错误状态写法（`slackTesting`/`slackDetecting`/`slackDetectCode`/`slackMessage`/`slackError`）。
-- 放在飞书卡片之后、`moreSoon` 之前。
+- 位于其他已支持的外部 IM 渠道之后；页面不保留“更多渠道敬请期待”占位卡。
 - `src/i18n/zh.ts` / `en.ts` 设置页键：`settings.channels.slackTitle` / `botToken` / `appToken` / `userId`（含占位说明）等；detect/test 复用现有 `detecting`/`autoDetect`/`detectHint`/`detected`/`testing`/`testConnection`。
 
 ---

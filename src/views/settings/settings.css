@@ -369,7 +369,6 @@
 .channel-card-telegram { order: 20; }
 .channel-card-dingtalk { order: 30; }
 .channel-card-slack { order: 40; }
-.channel-card-more { order: 50; }
 .channel-recommended-badge {
   display: inline-flex;
   align-items: center;

@@ -652,9 +652,4 @@ const config = computed(() => ctx.config.value!);
     </template>
   </div>
 
-  <div class="card channel-card channel-card-more">
-    <p class="card-desc" style="margin: 0">
-      {{ t("settings.channels.moreSoon") }}
-    </p>
-  </div>
 </template>

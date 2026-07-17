@@ -421,7 +421,6 @@ export default {
       slackDetectHint:
         "Use the target Slack account to DM the bot with: {code} (valid for 120s)",
       slackDetected: "Detected and filled User ID: {userId}",
-      moreSoon: "More channels coming soon",
     },
     history: {
       title: "Reply history",
