@@ -111,6 +111,7 @@ async function reloadAll(): Promise<void> {
   } catch (err) {
     console.warn("todos reload failed", err);
   } finally {
+    // Always clear the first-load spinner, even when a command rejects or times out.
     loaded.value = true;
   }
 }

@@ -301,9 +301,15 @@ pub async fn request_agents_snapshot() -> Option<serde_json::Value> {
 }
 
 /// 同上，但 daemon 未运行时**不拉起**（待办窗口项目候选用，spec todo-whats-next D9）：
-/// 连不上直接返回 None，窗口照样可用。
+/// 连不上 / 握手非 Ok / 超时直接返回 None，窗口照样可用。
+///
+/// Bounded by a short timeout so a wedged daemon or non-Ok HelloAck cannot keep the
+/// Todos window spinner spinning forever (subscribe otherwise waits on AgentsState).
 pub async fn agents_snapshot_if_running() -> Option<serde_json::Value> {
-    agents_snapshot_once().await
+    match tokio::time::timeout(Duration::from_millis(800), agents_snapshot_once()).await {
+        Ok(v) => v,
+        Err(_) => None,
+    }
 }
 
 async fn agents_snapshot_once() -> Option<serde_json::Value> {
@@ -311,10 +317,15 @@ async fn agents_snapshot_once() -> Option<serde_json::Value> {
     ipc::write_msg(&mut writer, &ClientMsg::Hello(hello()))
         .await
         .ok()?;
-    // 等握手 Ok（忽略期间其它消息）。
+    // Wait for HelloAck; any non-Ok status (Draining / Restarting) aborts — do not spin.
     loop {
         match ipc::read_msg::<_, ServerMsg>(&mut reader).await {
-            Ok(Some(ServerMsg::HelloAck(ack))) if ack.status == HelloStatus::Ok => break,
+            Ok(Some(ServerMsg::HelloAck(ack))) => {
+                if ack.status == HelloStatus::Ok {
+                    break;
+                }
+                return None;
+            }
             Ok(Some(_)) => continue,
             _ => return None,
         }
