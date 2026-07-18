@@ -37,6 +37,8 @@ pub struct PopupInit {
     speech_language: String,
     /// 语音输入快捷键（规范串如 `cmd+d`；空串=关闭）。来自内存态配置，无钥匙串。
     speech_shortcut: String,
+    /// 提交快捷键：`cmdEnter`（⌘/Ctrl+Enter）或 `enter`（裸 Enter）。
+    popup_submit_key: String,
     /// 实验：多问题弹窗是否纵向同时显示所有问题（默认关 = 旧版一次一题）。
     vertical_questions: bool,
     /// 性能埋点是否开启（helper 进程收到了 `ASKHUMAN_PERF_ID`）；前端据此决定是否上报 perf 标记。
@@ -155,6 +157,7 @@ pub fn popup_init(app: AppHandle, state: State<AppState>) -> PopupInit {
         language,
         speech_language: cfg.general.speech_language.clone(),
         speech_shortcut: cfg.general.speech_shortcut.clone(),
+        popup_submit_key: cfg.general.popup_submit_key.as_str().to_string(),
         vertical_questions: cfg.experimental.vertical_questions,
         perf: !crate::perf::effective_id().is_empty(),
         perf_autodismiss: crate::perf::autodismiss(),

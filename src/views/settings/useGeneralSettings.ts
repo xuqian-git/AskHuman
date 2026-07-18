@@ -26,6 +26,7 @@ import type {
   MenuBarIconMode,
   PopupAnimation,
   PopupSoundSupport,
+  PopupSubmitKey,
   ThemeMode,
   UiLanguage,
   WindowEffect,
@@ -55,6 +56,12 @@ export function useGeneralSettings(core: SettingsCore) {
   async function changeAnimation(anim: PopupAnimation) {
     if (!config.value) return;
     config.value.general.appearAnimation = anim;
+    await persist();
+  }
+
+  async function changeSubmitKey(mode: PopupSubmitKey) {
+    if (!config.value) return;
+    config.value.general.popupSubmitKey = mode;
     await persist();
   }
 
@@ -257,6 +264,7 @@ export function useGeneralSettings(core: SettingsCore) {
     changeTheme,
     changeLanguage,
     changeAnimation,
+    changeSubmitKey,
     changeMenuBarIcon,
     changeDaemonLifecycle,
     soundSupport,

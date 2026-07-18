@@ -207,6 +207,11 @@ export default {
     popupBehavior: {
       title: "Popup behavior",
       alwaysOnTop: "Always on top",
+      submitKey: "Submit shortcut",
+      submitKeyCmdEnter: "⌘↵ submit",
+      submitKeyEnter: "↵ submit",
+      submitKeyCmdEnterHint: "⌘/Ctrl+Enter submits; Enter inserts a newline",
+      submitKeyEnterHint: "Enter submits; any modifier+Enter inserts a newline",
       prewarm: "Pre-warm popup",
       prewarmHint:
         "Keep one popup ready in the background so it appears faster. Uses a little memory.",

@@ -15,6 +15,7 @@ const {
   persist,
   changeTheme,
   changeLanguage,
+  changeSubmitKey,
   glassSupported,
   effectiveWindowEffect,
   changeWindowEffect,
@@ -117,6 +118,34 @@ const config = computed(() => ctx.config.value!);
         <span class="track"></span>
       </label>
     </div>
+    <hr class="divider" />
+    <div class="row">
+      <span class="label">{{ t("settings.popupBehavior.submitKey") }}</span>
+      <span class="spacer"></span>
+      <div class="segmented">
+        <button
+          type="button"
+          :class="{ active: (config.general.popupSubmitKey ?? 'cmdEnter') === 'cmdEnter' }"
+          @click="changeSubmitKey('cmdEnter')"
+        >
+          {{ t("settings.popupBehavior.submitKeyCmdEnter") }}
+        </button>
+        <button
+          type="button"
+          :class="{ active: config.general.popupSubmitKey === 'enter' }"
+          @click="changeSubmitKey('enter')"
+        >
+          {{ t("settings.popupBehavior.submitKeyEnter") }}
+        </button>
+      </div>
+    </div>
+    <p class="card-desc">
+      {{
+        (config.general.popupSubmitKey ?? "cmdEnter") === "enter"
+          ? t("settings.popupBehavior.submitKeyEnterHint")
+          : t("settings.popupBehavior.submitKeyCmdEnterHint")
+      }}
+    </p>
     <hr class="divider" />
     <div class="row">
       <span class="label">{{ t("settings.popupBehavior.prewarm") }}</span>

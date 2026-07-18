@@ -20,6 +20,7 @@ const {
   total,
   onLastQuestion,
   submitShowsCmdEnter,
+  submitKeyLabel,
   submitPrimary,
   nextPrimary,
   lastSeen,
@@ -75,7 +76,7 @@ const {
       @click="goNext"
     >
       {{ t("popup.next") }}
-      <kbd v-if="!onLastQuestion && !submitShowsCmdEnter" class="sc">⌘↵</kbd>
+      <kbd v-if="!onLastQuestion && !submitShowsCmdEnter" class="sc">{{ submitKeyLabel }}</kbd>
     </button>
     <button
       v-if="verticalMode ? lastSeen : allViewed"
@@ -86,7 +87,7 @@ const {
       @click="submit"
     >
       {{ t("common.submit") }}
-      <kbd v-if="submitShowsCmdEnter" class="sc">⌘↵</kbd>
+      <kbd v-if="submitShowsCmdEnter" class="sc">{{ submitKeyLabel }}</kbd>
     </button>
   </div>
 
@@ -102,7 +103,7 @@ const {
       :disabled="submitting || !canSubmit"
       @click="submit"
     >
-      {{ t("popup.send") }} <kbd class="sc">⌘↵</kbd>
+      {{ t("popup.send") }} <kbd class="sc">{{ submitKeyLabel }}</kbd>
     </button>
   </div>
 
@@ -118,7 +119,7 @@ const {
       @click="submitConfirm"
     >
       {{ confirmRequest?.presentation.submitLabel ?? t("common.submit") }}
-      <kbd class="sc">⌘↵</kbd>
+      <kbd class="sc">{{ submitKeyLabel }}</kbd>
     </button>
   </div>
 </template>

@@ -199,6 +199,11 @@ export default {
     popupBehavior: {
       title: "弹窗行为",
       alwaysOnTop: "窗口置顶",
+      submitKey: "提交快捷键",
+      submitKeyCmdEnter: "⌘↵ 提交",
+      submitKeyEnter: "↵ 提交",
+      submitKeyCmdEnterHint: "⌘/Ctrl+Enter 提交；Enter 换行",
+      submitKeyEnterHint: "Enter 提交；任意修饰键+Enter 换行",
       prewarm: "弹窗预热",
       prewarmHint: "在后台常驻一个待命弹窗，让它弹出更快。会占用少量内存。",
       windowEffect: "窗口材质",

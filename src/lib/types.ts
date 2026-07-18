@@ -270,6 +270,8 @@ export interface PopupInit {
   speechLanguage?: string;
   /** 语音输入快捷键（规范串如 cmd+d；空串=关闭）。 */
   speechShortcut?: string;
+  /** 提交快捷键：cmdEnter（默认）或 enter。 */
+  popupSubmitKey?: PopupSubmitKey;
   /** 实验：多问题弹窗纵向同时显示所有问题（默认关 = 旧版一次一题）。 */
   verticalQuestions?: boolean;
   /** 性能埋点是否开启（helper 收到 ASKHUMAN_PERF_ID）；前端据此决定是否上报 perf 标记。 */
@@ -391,6 +393,9 @@ export interface InterjectInit {
 
 export type UiLanguage = "auto" | "en" | "zh";
 
+/** Popup/Confirm submit key mode (mirrors Rust `PopupSubmitKey`). */
+export type PopupSubmitKey = "cmdEnter" | "enter";
+
 export interface GeneralConfig {
   theme: ThemeMode;
   /** 界面语言：auto（跟随系统）/ en / zh。回退英文。 */
@@ -402,6 +407,12 @@ export interface GeneralConfig {
   speechLanguage: string;
   /** 语音输入快捷键（弹窗内）。规范串如 "cmd+d"；空串表示关闭。 */
   speechShortcut: string;
+  /**
+   * Popup/Confirm submit shortcut:
+   * - `cmdEnter`: ⌘/Ctrl+Enter submits (default); bare Enter newlines
+   * - `enter`: bare Enter submits; any modifier+Enter newlines
+   */
+  popupSubmitKey: PopupSubmitKey;
   /** 回复历史保留条数上限。默认 200；0 = 停止新增记录（但保留旧记录）。 */
   historyLimit: number;
   /** 待办执行历史保留条数（每项目）。默认 20；0 = 停止新增记录（保留旧历史）。 */

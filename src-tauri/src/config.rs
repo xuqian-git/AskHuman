@@ -119,6 +119,26 @@ impl WindowEffect {
     }
 }
 
+/// Popup / Confirm submit keyboard shortcut mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum PopupSubmitKey {
+    /// ⌘/Ctrl+Enter submits; plain Enter and other modified Enter insert newline. Default.
+    #[default]
+    CmdEnter,
+    /// Bare Enter submits (same multi-question advance semantics); any modifier+Enter inserts newline.
+    Enter,
+}
+
+impl PopupSubmitKey {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::CmdEnter => "cmdEnter",
+            Self::Enter => "enter",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct GeneralConfig {
@@ -132,6 +152,8 @@ pub struct GeneralConfig {
     pub speech_language: String,
     /// 语音输入快捷键（弹窗内）。规范串如 "cmd+d"/"cmd+shift+d"；空串表示关闭。
     pub speech_shortcut: String,
+    /// 弹窗/Confirm 提交快捷键：`cmdEnter`（默认）或 `enter`。
+    pub popup_submit_key: PopupSubmitKey,
     /// 回复历史保留条数上限。默认 200；`0` 表示停止新增记录（但保留并仍可查看旧记录）。
     pub history_limit: u32,
     /// 待办执行历史保留条数（按项目各留 N 条，第 16 轮定案）。默认 20；`0` 同 history_limit
@@ -171,6 +193,7 @@ impl Default for GeneralConfig {
             window_effect: WindowEffect::Blur,
             speech_language: "auto".to_string(),
             speech_shortcut: "cmd+d".to_string(),
+            popup_submit_key: PopupSubmitKey::CmdEnter,
             history_limit: default_history_limit(),
             todo_history_limit: default_todo_history_limit(),
             popup_sound: String::new(),

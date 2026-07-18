@@ -109,6 +109,9 @@ export function usePopupCore() {
   const visited = ref<boolean[]>([]);
 
   const submitting = ref(false);
+  /** Submit shortcut: cmdEnter (default) or enter. From popup_init / settings-updated. */
+  const popupSubmitKey = ref<"cmdEnter" | "enter">("cmdEnter");
+  const submitWithBareEnter = computed(() => popupSubmitKey.value === "enter");
   // 每题的 textarea（函数 ref 按索引登记）；inputRef = 当前题(active) 的 textarea，
   // 供语音 / autoGrow / 聚焦复用既有逻辑（current 即 active 指针）。
   const inputRefs = ref<(HTMLTextAreaElement | null)[]>([]);
@@ -749,9 +752,13 @@ export function usePopupCore() {
       lastSeen.value &&
       nextUnansweredAfter(cmdEnterFromQ.value) < 0
   );
-  // 提交按钮挂 ⌘↵ / 为主按钮：纵向按 cmdEnterWillSubmit，旧版顺序沿用 onLastQuestion。
+  // 提交按钮挂发送快捷键角标 / 为主按钮：纵向按 cmdEnterWillSubmit，旧版顺序沿用 onLastQuestion。
   const submitShowsCmdEnter = computed(() =>
     verticalMode.value ? cmdEnterWillSubmit.value : onLastQuestion.value
+  );
+  /** Label for the submit shortcut badge (⌘↵ vs ↵). */
+  const submitKeyLabel = computed(() =>
+    submitWithBareEnter.value ? "↵" : "⌘↵"
   );
   const submitPrimary = computed(() => submitShowsCmdEnter.value);
   // 下一个是否主按钮：末题从不主；否则在「提交尚未成为主按钮」时为主（读题引导）。
@@ -1443,6 +1450,25 @@ export function usePopupCore() {
     return (e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey;
   }
 
+  /** Insert a newline at the caret of the focused textarea (enter-submit mode). */
+  function insertNewlineInFocusedTextarea(): void {
+    const el = document.activeElement;
+    if (!(el instanceof HTMLTextAreaElement)) return;
+    const start = el.selectionStart ?? el.value.length;
+    const end = el.selectionEnd ?? start;
+    const value = el.value;
+    const next = value.slice(0, start) + "\n" + value.slice(end);
+    // Prefer native input setter so Vue v-model picks up the change.
+    const proto = Object.getOwnPropertyDescriptor(
+      HTMLTextAreaElement.prototype,
+      "value"
+    );
+    proto?.set?.call(el, next);
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    const caret = start + 1;
+    el.setSelectionRange(caret, caret);
+  }
+
   // ⌘/Ctrl 按下/松开 → 切换 cmdHeld（驱动快捷键 Badge 高亮）。窗口失焦时复位，避免卡住。
   function onKeyup(e: KeyboardEvent) {
     cmdHeld.value = onlyCmdHeld(e);
@@ -1461,9 +1487,23 @@ export function usePopupCore() {
         else requestConfirmClose();
         return;
       }
-      if (mod && e.key === "Enter") {
-        e.preventDefault();
-        void submitConfirm();
+      if (e.key === "Enter") {
+        if (e.isComposing || (e as KeyboardEvent & { keyCode?: number }).keyCode === 229) {
+          return;
+        }
+        const anyMod = mod || e.shiftKey || e.altKey;
+        const isPrimarySendMod = mod && !e.shiftKey && !e.altKey;
+        const shouldSubmit = submitWithBareEnter.value ? !anyMod : isPrimarySendMod;
+        if (shouldSubmit) {
+          e.preventDefault();
+          void submitConfirm();
+          return;
+        }
+        // Non-submit Enter (bare in cmdEnter mode, or mod+Enter in enter mode): no special
+        // confirm UI for newlines — just ignore.
+        if (submitWithBareEnter.value && anyMod) {
+          e.preventDefault();
+        }
         return;
       }
       if (mod && (e.key === "w" || e.key === "W")) {
@@ -1487,18 +1527,43 @@ export function usePopupCore() {
       speech.stopListening();
       return;
     }
-    if (mod && e.key === "Enter") {
-      e.preventDefault();
-      // 纵向多题：⌘↵ 智能推进（下一未答→看完提交→否则去下一未看），永不回跳已答。
-      if (verticalMode.value) {
-        onCmdEnter();
-      } else if (isMulti.value && !onLastQuestion.value) {
-        // 旧版顺序多题：非最后一题始终前往下一题（即使提交按钮已出现），最后一题才提交。
-        goNext();
-      } else {
-        submit();
+    if (e.key === "Enter") {
+      // IME composing: never treat Enter as submit (matches todo add input).
+      if (e.isComposing || (e as KeyboardEvent & { keyCode?: number }).keyCode === 229) {
+        return;
       }
-      return;
+      const anyMod = mod || e.shiftKey || e.altKey;
+      const isPrimarySendMod = mod && !e.shiftKey && !e.altKey; // pure ⌘/Ctrl+Enter
+      const shouldSubmit = submitWithBareEnter.value
+        ? !anyMod
+        : isPrimarySendMod;
+      const shouldNewline =
+        submitWithBareEnter.value && anyMod
+          ? true
+          : !submitWithBareEnter.value && !isPrimarySendMod && anyMod
+            ? true // e.g. Shift/Option+Enter while in cmdEnter mode: keep as newline
+            : false;
+
+      if (shouldNewline) {
+        // Insert a newline into the focused textarea (any-mod+Enter in enter mode).
+        e.preventDefault();
+        insertNewlineInFocusedTextarea();
+        return;
+      }
+      if (shouldSubmit) {
+        e.preventDefault();
+        // 纵向多题：发送快捷键智能推进（下一未答→看完提交→否则去下一未看），永不回跳已答。
+        if (verticalMode.value) {
+          onCmdEnter();
+        } else if (isMulti.value && !onLastQuestion.value) {
+          // 旧版顺序多题：非最后一题始终前往下一题（即使提交按钮已出现），最后一题才提交。
+          goNext();
+        } else {
+          submit();
+        }
+        return;
+      }
+      // cmdEnter mode + bare Enter: let the browser insert a newline in the textarea.
     }
     if (mod && (e.key === "w" || e.key === "W")) {
       e.preventDefault();
@@ -1569,6 +1634,9 @@ export function usePopupCore() {
     // 语音设置改取自 popup_init（不再走 get_settings / 钥匙串）。
     speech.speechLang.value = init.speechLanguage || "auto";
     speech.speechShortcut.value = init.speechShortcut || "cmd+d";
+    if (init.popupSubmitKey === "enter" || init.popupSubmitKey === "cmdEnter") {
+      popupSubmitKey.value = init.popupSubmitKey;
+    }
     verticalEnabled.value = init.verticalQuestions ?? false;
     const req = interaction.type === "ask" ? interaction.request : null;
     request.value = req;
@@ -1733,6 +1801,7 @@ export function usePopupCore() {
       language?: string;
       speechLanguage?: string;
       speechShortcut?: string;
+      popupSubmitKey?: "cmdEnter" | "enter";
     }>("settings-updated", (e) => {
       // daemon 架构下由 Daemon 经 IPC 下发（独立 GUI Helper 进程）；单进程下由设置窗口同进程广播。
       if (typeof e.payload.theme === "string") {
@@ -1743,6 +1812,12 @@ export function usePopupCore() {
         speech.speechLang.value = e.payload.speechLanguage || "auto";
       if (typeof e.payload.speechShortcut === "string")
         speech.speechShortcut.value = e.payload.speechShortcut;
+      if (
+        e.payload.popupSubmitKey === "enter" ||
+        e.payload.popupSubmitKey === "cmdEnter"
+      ) {
+        popupSubmitKey.value = e.payload.popupSubmitKey;
+      }
     });
     // 探测语音是否可用（macOS 26+）+ 订阅 speech-* 事件。
     await speech.initSpeech();
@@ -1921,6 +1996,7 @@ export function usePopupCore() {
     canGoPrev,
     onLastQuestion,
     submitShowsCmdEnter,
+    submitKeyLabel,
     submitPrimary,
     nextPrimary,
     lastSeen,

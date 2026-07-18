@@ -111,6 +111,7 @@ export function useSettingsSearch(deps: {
       e("general", "settings.appearance.language"),
       e("general", "settings.popupBehavior.title"),
       e("general", "settings.popupBehavior.alwaysOnTop"),
+      e("general", "settings.popupBehavior.submitKey"),
       e("general", "settings.popupBehavior.prewarm", [
         "settings.popupBehavior.prewarmHint",
       ]),
