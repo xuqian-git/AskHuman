@@ -534,72 +534,72 @@ pub fn tr(lang: Lang, key: &'static str) -> &'static str {
 
         // —— 动态引导 / /help 文案（spec R3）：按开关拼装；不含「已收到」。 ——
         // `{p}` 为渠道命令前缀：Slack 客户端拦截一切 `/` 输入，故 Slack 提示 `!` 前缀，其余渠道 `/`。
-        // Title explains that parentheses are bare-text phrases (spec im-command-phrases).
-        // Per-line parentheses hold phrases only; Chinese help uses Chinese phrases, English uses English.
+        // Title: 「」 marks bare-text phrases (avoids clashing with (), [], <> in command syntax).
+        // Chinese help → Chinese phrases only; English → English phrases only.
         "autoChannel.helpTitle" => pick(
             lang,
-            "AskHuman is running. You can use slash commands, or send the phrase in parentheses:",
-            "AskHuman 正在运行。你可以使用斜线命令，或直接发送括号中的短语：",
+            "AskHuman is running. You can use slash commands, or send the phrase in 「」:",
+            "AskHuman 正在运行。你可以使用斜线命令，或直接发送「」中的短语：",
         ),
         "autoChannel.helpCmdStatus" => pick(
             lang,
-            "• {p}status — list agents (working/idle) (status)\n• {p}status <n> — what agent n is doing now",
-            "• {p}status — 列出 agent（工作中/空闲）（状态）\n• {p}status <编号> — 查看该 agent 当前在做什么",
+            "• {p}status — list agents (working/idle) 「status」\n• {p}status <n> — what agent n is doing now",
+            "• {p}status — 列出 agent（工作中/空闲）「状态」\n• {p}status <编号> — 查看该 agent 当前在做什么",
         ),
         "autoChannel.helpCmdNew" => pick(
             lang,
-            "• {p}new — create a new Agent task on your computer (new session)",
-            "• {p}new — 在电脑上创建新的 Agent 任务（新建会话）",
+            "• {p}new — create a new Agent task on your computer 「new」",
+            "• {p}new — 在电脑上创建新的 Agent 任务「新任务」",
         ),
         "autoChannel.helpCmdWatch" => pick(
             lang,
-            "• {p}watch <n> — follow agent n with a live status card ({p}unwatch to stop) (watch)",
-            "• {p}watch <编号> — 用一张实时状态卡关注该 agent（{p}unwatch 取消）（关注）",
+            "• {p}watch <n> — follow agent n with a live status card ({p}unwatch to stop) 「watch」",
+            "• {p}watch <编号> — 用一张实时状态卡关注该 agent（{p}unwatch 取消）「关注」",
         ),
         "autoChannel.helpCmdMsg" => pick(
             lang,
-            "• {p}msg <n> <text> — send a message to agent n (delivered at its next tool call) (message)",
-            "• {p}msg <编号> <内容> — 给该 agent 插话（其下一次工具调用时送达）（插话）",
+            "• {p}msg <n> <text> — send a message to agent n (delivered at its next tool call) 「message」",
+            "• {p}msg <编号> <内容> — 给该 agent 插话（其下一次工具调用时送达）「插话」",
         ),
         "autoChannel.helpCmdDiff" => pick(
             lang,
-            "• {p}diff [n] — unstaged git diff for agent n (attachment) (diff)",
-            "• {p}diff [编号] — 导出该 agent 工作区未暂存 diff（附件）（查看变更）",
+            "• {p}diff [n] — unstaged git diff for agent n (attachment) 「diff」",
+            "• {p}diff [编号] — 导出该 agent 工作区未暂存 diff（附件）「查看变更」",
         ),
         "autoChannel.helpCmdStage" => pick(
             lang,
-            "• {p}stage [n] — stage unstaged changes for agent n (confirm first) (stage)",
-            "• {p}stage [编号] — 确认后暂存该 agent 未 stage 的改动（暂存）",
+            "• {p}stage [n] — stage unstaged changes for agent n (confirm first) 「stage」",
+            "• {p}stage [编号] — 确认后暂存该 agent 未 stage 的改动「暂存」",
         ),
         "autoChannel.helpCmdTranscript" => pick(
             lang,
-            "• {p}transcript [n] — full session transcript for agent n (attachment) (transcript)",
-            "• {p}transcript [编号] — 导出该 agent 完整会话记录（附件）（导出会话）",
+            "• {p}transcript [n] — full session transcript for agent n (attachment) 「transcript」",
+            "• {p}transcript [编号] — 导出该 agent 完整会话记录（附件）「导出会话」",
         ),
         "autoChannel.helpCmdTodo" => pick(
             lang,
-            "• {p}todo [text] — choose a project to view todos or add one (todo)",
-            "• {p}todo [内容] — 选择项目查看待办或新增一条（待办）",
+            "• {p}todo [text] — choose a project to view todos or add one 「todo」",
+            "• {p}todo [内容] — 选择项目查看待办或新增一条「待办」",
         ),
         "autoChannel.helpCmdTodoRm" => pick(
             lang,
-            "• {p}todo-rm — choose a project and delete todos (delete todo)",
-            "• {p}todo-rm — 选择项目并删除待办（删待办）",
+            "• {p}todo-rm — choose a project and delete todos 「delete todo」",
+            "• {p}todo-rm — 选择项目并删除待办「删待办」",
         ),
         "autoChannel.helpCmdTodoAuto" => pick(
             lang,
-            "• {p}todo-auto [text] — choose a project to toggle or add auto-run todos (auto todo)",
-            "• {p}todo-auto [内容] — 选择项目切换或新增自动待办（自动待办）",
+            "• {p}todo-auto [text] — choose a project to toggle or add auto-run todos 「auto todo」",
+            "• {p}todo-auto [内容] — 选择项目切换或新增自动待办「自动待办」",
         ),
         "autoChannel.helpCmdHelp" => pick(
             lang,
-            "• {p}help — show this help (help)",
-            "• {p}help — 显示此帮助（帮助）",
+            "• {p}help — show this help 「help」",
+            "• {p}help — 显示此帮助「帮助」",
         ),
         "autoChannel.helpCmdHere" => pick(
             lang,
-            "• {p}here — route questions to this channel (here)",
-            "• {p}here — 把提问切到此渠道接收（这里）",
+            "• {p}here — route questions to this channel 「here」",
+            "• {p}here — 把提问切到此渠道接收「这里」",
         ),
         // 有在途提问时的作答指引。
         "autoChannel.helpAnswering" => pick(
