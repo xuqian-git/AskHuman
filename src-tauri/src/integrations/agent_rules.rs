@@ -220,7 +220,13 @@ pub fn is_installed(agent: AgentTarget) -> bool {
 /// 已安装但磁盘上的提示词正文与最新内置版本不一致 → 需更新（默认按 CLI 变体，保持现状语义）。
 /// Cursor 旧格式（头标记、无区块）一律视为需更新（点更新即迁移为新格式）。
 pub fn needs_update(agent: AgentTarget) -> bool {
-    needs_update_variant(agent, Variant::Cli)
+    // Compare against the variant matching the current integration mode; a fixed CLI
+    // comparison would permanently flag MCP-mode installs as outdated.
+    let variant = match crate::integrations::agent_mode::current(agent) {
+        crate::integrations::agent_mode::Mode::Mcp => Variant::Mcp,
+        _ => Variant::Cli,
+    };
+    needs_update_variant(agent, variant)
 }
 
 /// 与指定变体的最新内置正文比对，判断是否需更新。
