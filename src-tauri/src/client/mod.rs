@@ -306,10 +306,9 @@ pub async fn request_agents_snapshot() -> Option<serde_json::Value> {
 /// Bounded by a short timeout so a wedged daemon or non-Ok HelloAck cannot keep the
 /// Todos window spinner spinning forever (subscribe otherwise waits on AgentsState).
 pub async fn agents_snapshot_if_running() -> Option<serde_json::Value> {
-    match tokio::time::timeout(Duration::from_millis(800), agents_snapshot_once()).await {
-        Ok(v) => v,
-        Err(_) => None,
-    }
+    tokio::time::timeout(Duration::from_millis(800), agents_snapshot_once())
+        .await
+        .unwrap_or_default()
 }
 
 async fn agents_snapshot_once() -> Option<serde_json::Value> {
