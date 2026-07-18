@@ -108,7 +108,175 @@ pub enum Parsed {
     Text,
 }
 
-/// 解析入站文本：`trim` 后**以 `/` 或 `!` 开头**才进命令分派，取首个 token（大小写不敏感）匹配。
+/// 无斜线前缀时的整句短语 → 无参命令（spec `docs/specs/im-command-phrases.md`）。
+/// 键已是 [`crate::textnorm::normalize_key`] 结果；表构建时要求键唯一。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PhraseKind {
+    New,
+    Here,
+    Help,
+    Status,
+    Watch,
+    Unwatch,
+    Msg,
+    Diff,
+    Stage,
+    Transcript,
+    Todo,
+    TodoRm,
+    TodoAuto,
+}
+
+/// (normalized key, command). Includes slash command names, Chinese token aliases, and
+/// longer voice-friendly phrases. No-arg forms only.
+const COMMAND_PHRASES: &[(&str, PhraseKind)] = &[
+    // /new
+    ("new", PhraseKind::New),
+    ("新建", PhraseKind::New),
+    ("新建会话", PhraseKind::New),
+    ("新建任务", PhraseKind::New),
+    ("新任务", PhraseKind::New),
+    ("开新任务", PhraseKind::New),
+    ("开始新任务", PhraseKind::New),
+    ("新建agent", PhraseKind::New),
+    ("新建代理", PhraseKind::New),
+    ("开启新任务", PhraseKind::New),
+    ("newsession", PhraseKind::New),
+    ("newtask", PhraseKind::New),
+    ("newagent", PhraseKind::New),
+    ("startnewtask", PhraseKind::New),
+    ("createnewsession", PhraseKind::New),
+    ("createnewtask", PhraseKind::New),
+    ("startanewtask", PhraseKind::New),
+    // /here
+    ("here", PhraseKind::Here),
+    ("这里", PhraseKind::Here),
+    ("就在这里", PhraseKind::Here),
+    ("用这里", PhraseKind::Here),
+    ("切换到这里", PhraseKind::Here),
+    ("在这里回复", PhraseKind::Here),
+    ("righthere", PhraseKind::Here),
+    ("usethis", PhraseKind::Here),
+    ("usethischannel", PhraseKind::Here),
+    ("replyhere", PhraseKind::Here),
+    // /help
+    ("help", PhraseKind::Help),
+    ("帮助", PhraseKind::Help),
+    ("怎么用", PhraseKind::Help),
+    ("有哪些命令", PhraseKind::Help),
+    ("命令列表", PhraseKind::Help),
+    ("使用帮助", PhraseKind::Help),
+    ("commands", PhraseKind::Help),
+    ("whatcanido", PhraseKind::Help),
+    ("showhelp", PhraseKind::Help),
+    ("listcommands", PhraseKind::Help),
+    // /status
+    ("status", PhraseKind::Status),
+    ("状态", PhraseKind::Status),
+    ("当前状态", PhraseKind::Status),
+    ("agent状态", PhraseKind::Status),
+    ("看看状态", PhraseKind::Status),
+    ("查看状态", PhraseKind::Status),
+    ("agentstatus", PhraseKind::Status),
+    ("showstatus", PhraseKind::Status),
+    ("listagents", PhraseKind::Status),
+    // /watch
+    ("watch", PhraseKind::Watch),
+    ("关注", PhraseKind::Watch),
+    ("开始关注", PhraseKind::Watch),
+    ("startwatch", PhraseKind::Watch),
+    // /unwatch
+    ("unwatch", PhraseKind::Unwatch),
+    ("取消关注", PhraseKind::Unwatch),
+    ("停止关注", PhraseKind::Unwatch),
+    ("stopwatch", PhraseKind::Unwatch),
+    ("endwatch", PhraseKind::Unwatch),
+    // /msg
+    ("msg", PhraseKind::Msg),
+    ("插话", PhraseKind::Msg),
+    ("发消息", PhraseKind::Msg),
+    ("给agent发消息", PhraseKind::Msg),
+    ("发送消息", PhraseKind::Msg),
+    ("message", PhraseKind::Msg),
+    ("sendmessage", PhraseKind::Msg),
+    ("interject", PhraseKind::Msg),
+    // /diff
+    ("diff", PhraseKind::Diff),
+    ("查看diff", PhraseKind::Diff),
+    ("看diff", PhraseKind::Diff),
+    ("变更", PhraseKind::Diff),
+    ("查看变更", PhraseKind::Diff),
+    ("showdiff", PhraseKind::Diff),
+    ("viewdiff", PhraseKind::Diff),
+    // /stage
+    ("stage", PhraseKind::Stage),
+    ("暂存", PhraseKind::Stage),
+    ("全部暂存", PhraseKind::Stage),
+    ("stageall", PhraseKind::Stage),
+    ("gitadd", PhraseKind::Stage),
+    // /transcript
+    ("transcript", PhraseKind::Transcript),
+    ("导出会话", PhraseKind::Transcript),
+    ("导出记录", PhraseKind::Transcript),
+    ("会话记录", PhraseKind::Transcript),
+    ("exporttranscript", PhraseKind::Transcript),
+    ("exportsession", PhraseKind::Transcript),
+    // /todo
+    ("todo", PhraseKind::Todo),
+    ("待办", PhraseKind::Todo),
+    ("待办列表", PhraseKind::Todo),
+    ("查看待办", PhraseKind::Todo),
+    ("打开待办", PhraseKind::Todo),
+    ("todos", PhraseKind::Todo),
+    ("todolist", PhraseKind::Todo),
+    ("showtodos", PhraseKind::Todo),
+    // /todo-rm
+    ("todorm", PhraseKind::TodoRm),
+    ("删待办", PhraseKind::TodoRm),
+    ("删除待办", PhraseKind::TodoRm),
+    ("deletetodo", PhraseKind::TodoRm),
+    ("removetodo", PhraseKind::TodoRm),
+    // /todo-auto
+    ("todoauto", PhraseKind::TodoAuto),
+    ("自动待办", PhraseKind::TodoAuto),
+    ("autotodo", PhraseKind::TodoAuto),
+];
+
+fn phrase_kind_to_command(kind: PhraseKind) -> Command {
+    match kind {
+        PhraseKind::New => Command::New { has_args: false },
+        PhraseKind::Here => Command::Here,
+        PhraseKind::Help => Command::Help,
+        PhraseKind::Status => Command::Status(None),
+        PhraseKind::Watch => Command::Watch(None),
+        PhraseKind::Unwatch => Command::Unwatch(WatchSel::Auto),
+        PhraseKind::Msg => Command::Msg(None, None),
+        PhraseKind::Diff => Command::Diff(None),
+        PhraseKind::Stage => Command::Stage(None),
+        PhraseKind::Transcript => Command::Transcript(None),
+        PhraseKind::Todo => Command::Todo(None, None),
+        PhraseKind::TodoRm => Command::TodoRm(None),
+        PhraseKind::TodoAuto => Command::TodoAuto(None, None),
+    }
+}
+
+/// Match a bare (no `/`/`!`) inbound message against the command phrase table.
+fn match_command_phrase(text: &str) -> Option<Command> {
+    let key = crate::textnorm::normalize_key(text);
+    if key.is_empty() {
+        return None;
+    }
+    COMMAND_PHRASES
+        .iter()
+        .find(|(k, _)| *k == key)
+        .map(|(_, kind)| phrase_kind_to_command(*kind))
+}
+
+/// 解析入站文本。
+///
+/// 1. **`/` 或 `!` 前缀**：现有 slash 命令分派（见下）。
+/// 2. **无前缀整句短语**：规范化后命中词表 → 无参命令（spec im-command-phrases；与 slash 同优先于作答）。
+/// 3. 否则 → `Text`。
 ///
 /// `!` 是备用前缀（B 案，四渠道通用）：Slack 客户端把**一切** `/` 开头的输入拦截为
 /// slash command 在本地解析，未注册的名字根本发不出来——`!status`/`!watch 3` 是普通消息，畅通。
@@ -118,6 +286,16 @@ pub enum Parsed {
 /// `/status <编号>`：第二个 token 是纯数字则解析为编号（`Some`），缺省 / 非数字则 `None`（全局列表）。
 pub fn classify(text: &str) -> Parsed {
     let trimmed = text.trim();
+    if trimmed.starts_with('/') || trimmed.starts_with('!') {
+        return classify_prefixed(trimmed);
+    }
+    if let Some(cmd) = match_command_phrase(trimmed) {
+        return Parsed::Command(cmd);
+    }
+    Parsed::Text
+}
+
+fn classify_prefixed(trimmed: &str) -> Parsed {
     let (bare, bang) = match trimmed.strip_prefix('/') {
         Some(rest) => (rest, false),
         None => match trimmed.strip_prefix('!') {
@@ -797,6 +975,75 @@ mod tests {
         assert_eq!(classify("/帮助"), Parsed::Command(Command::Help));
         assert_eq!(classify("/?"), Parsed::Command(Command::Help));
         assert_eq!(classify("/？"), Parsed::Command(Command::Help));
+    }
+
+    #[test]
+    fn command_phrase_keys_are_unique() {
+        let mut seen = std::collections::HashSet::new();
+        for (key, _) in COMMAND_PHRASES {
+            assert!(
+                seen.insert(*key),
+                "duplicate command phrase key: {key}"
+            );
+        }
+    }
+
+    #[test]
+    fn classify_bare_phrases_map_to_no_arg_commands() {
+        assert_eq!(
+            classify("新建会话"),
+            Parsed::Command(Command::New { has_args: false })
+        );
+        assert_eq!(
+            classify("新建"),
+            Parsed::Command(Command::New { has_args: false })
+        );
+        assert_eq!(
+            classify("新建 会话！"),
+            Parsed::Command(Command::New { has_args: false })
+        );
+        assert_eq!(
+            classify("new"),
+            Parsed::Command(Command::New { has_args: false })
+        );
+        assert_eq!(classify("状态"), Parsed::Command(Command::Status(None)));
+        assert_eq!(classify("status"), Parsed::Command(Command::Status(None)));
+        assert_eq!(classify("插话"), Parsed::Command(Command::Msg(None, None)));
+        assert_eq!(classify("发消息"), Parsed::Command(Command::Msg(None, None)));
+        assert_eq!(classify("待办"), Parsed::Command(Command::Todo(None, None)));
+        assert_eq!(classify("todo"), Parsed::Command(Command::Todo(None, None)));
+        assert_eq!(classify("删待办"), Parsed::Command(Command::TodoRm(None)));
+        assert_eq!(
+            classify("自动待办"),
+            Parsed::Command(Command::TodoAuto(None, None))
+        );
+        assert_eq!(classify("关注"), Parsed::Command(Command::Watch(None)));
+        assert_eq!(
+            classify("取消关注"),
+            Parsed::Command(Command::Unwatch(WatchSel::Auto))
+        );
+        assert_eq!(classify("这里"), Parsed::Command(Command::Here));
+        assert_eq!(classify("帮助"), Parsed::Command(Command::Help));
+        assert_eq!(classify("diff"), Parsed::Command(Command::Diff(None)));
+        assert_eq!(classify("暂存"), Parsed::Command(Command::Stage(None)));
+        assert_eq!(
+            classify("导出会话"),
+            Parsed::Command(Command::Transcript(None))
+        );
+    }
+
+    #[test]
+    fn classify_phrase_does_not_match_partial_or_prefixed() {
+        // Longer free text stays Text.
+        assert_eq!(classify("请帮我新建会话"), Parsed::Text);
+        assert_eq!(classify("新建会话吧"), Parsed::Text);
+        // Slash path still wins and can carry args.
+        assert_eq!(
+            classify("/new do work"),
+            Parsed::Command(Command::New { has_args: true })
+        );
+        // Unknown bang stays free text.
+        assert_eq!(classify("!important"), Parsed::Text);
     }
 
     #[test]

@@ -54,6 +54,7 @@ mod sound;
 #[cfg(target_os = "macos")]
 mod speech;
 mod telegram;
+mod textnorm;
 mod todos;
 mod uistate;
 mod update;

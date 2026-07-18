@@ -457,13 +457,9 @@ fn try_whats_next_auto(project: &str, message: &crate::models::MessagePrompt, la
 /// Total whats-next option limit, including suggestions, todos, and the final end option.
 const WHATS_NEXT_MAX_OPTIONS: usize = 10;
 
-/// Normalize agent suggestion text for end-option detection: drop all whitespace and
-/// punctuation/symbols, lowercase letters. Compared as a whole string only (no substring).
+/// Normalize agent suggestion text for end-option detection (see [`crate::textnorm`]).
 fn normalize_whats_next_option_key(text: &str) -> String {
-    text.chars()
-        .filter(|c| c.is_alphanumeric())
-        .flat_map(|c| c.to_lowercase())
-        .collect()
+    crate::textnorm::normalize_key(text)
 }
 
 /// Agent-supplied end-ish labels (normalized keys). Built-in i18n end strings are always
