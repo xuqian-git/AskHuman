@@ -69,7 +69,7 @@
 }
 
 /* 预定义选项：可多选的胶囊。与输入框同款外观（偏白底 + 控件细边框 + 微阴影），
-   选中态边框变 accent 色。 */
+   选中态边框仍用 hairline（避免加粗导致布局跳动），颜色更贴近底色、少 accent。 */
 .option {
   display: flex;
   align-items: flex-start;
@@ -84,10 +84,13 @@
 .option:hover {
   background: var(--control-hover-bg);
 }
-/* 选中态：保持与常态同一「偏白面 + 细框 + 微阴影」风格，只做 accent 染色，
-   不切换成纯线框半透明风。 */
+/* 选中态：底色轻染；边框与选中底接近（弱 accent），主要靠底色差辨认而非高对比描边。 */
 .option.selected {
-  border-color: color-mix(in srgb, var(--accent) 55%, var(--control-border));
+  border-color: color-mix(
+    in srgb,
+    var(--accent) 22%,
+    color-mix(in srgb, var(--control-bg) 70%, var(--control-border))
+  );
   background: color-mix(in srgb, var(--accent) 10%, var(--control-bg));
 }
 .option .check {
