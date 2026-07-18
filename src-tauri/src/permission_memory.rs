@@ -1487,11 +1487,12 @@ fn scan_rollout_line(
     scan: &mut RolloutScan,
 ) {
     // Cheap substring filters before any JSON parsing. When probing an owner command
-    // every function_call line must be parsed (its command may be JSON-escaped in raw
+    // every tool-call line must be parsed (its command may be JSON-escaped in raw
     // text, so a substring test on the command itself would be unreliable).
     let interesting = (line.contains("\"turn_context\"") && line.contains(turn_id))
         || line.contains("request_permissions")
-        || (owner_command.is_some() && line.contains("function_call"));
+        || (owner_command.is_some()
+            && (line.contains("function_call") || line.contains("custom_tool_call")));
     if !interesting {
         return;
     }
@@ -1504,23 +1505,27 @@ fn scan_rollout_line(
     };
     let item_type = value.get("type").and_then(Value::as_str).unwrap_or("");
     let payload = value.get("payload").unwrap_or(&Value::Null);
-    match item_type {
-        "turn_context" => {
-            if payload.get("turn_id").and_then(Value::as_str) == Some(turn_id) {
-                // Keep the last matching turn context (mid-turn updates override).
-                scan.turn_context = Some(payload.clone());
-            }
+    if item_type != "turn_context" && item_type != "response_item" {
+        // Some other line mentioning request_permissions (e.g. event_msg): only
+        // model tool-call items grant turn-level strict review, ignore the rest.
+        return;
+    }
+    if item_type == "turn_context" {
+        if payload.get("turn_id").and_then(Value::as_str) == Some(turn_id) {
+            // Keep the last matching turn context (mid-turn updates override).
+            scan.turn_context = Some(payload.clone());
         }
-        "response_item" => {
-            if payload.get("type").and_then(Value::as_str) != Some("function_call") {
-                return;
-            }
-            let call_turn = payload
-                .get("internal_chat_message_metadata_passthrough")
-                .and_then(|metadata| metadata.get("turn_id"))
-                .and_then(Value::as_str);
-            // Missing turn metadata is treated conservatively as current-turn (D43/D44).
-            let current_turn = call_turn.is_none() || call_turn == Some(turn_id);
+        return;
+    }
+    let payload_type = payload.get("type").and_then(Value::as_str).unwrap_or("");
+    let call_turn = payload
+        .get("internal_chat_message_metadata_passthrough")
+        .and_then(|metadata| metadata.get("turn_id"))
+        .and_then(Value::as_str);
+    // Missing turn metadata is treated conservatively as current-turn (D43/D44).
+    let current_turn = call_turn.is_none() || call_turn == Some(turn_id);
+    match payload_type {
+        "function_call" => {
             if payload.get("name").and_then(Value::as_str) == Some("request_permissions") {
                 if current_turn {
                     scan.request_permissions_risk = true;
@@ -1539,39 +1544,243 @@ fn scan_rollout_line(
             else {
                 return;
             };
-            let command = arguments
-                .get("command")
-                .and_then(Value::as_str)
-                .or_else(|| arguments.get("cmd").and_then(Value::as_str));
-            if command == Some(probe) {
-                let prefix_rule = arguments.get("prefix_rule").and_then(|value| {
-                    let tokens = value.as_array()?;
-                    tokens
-                        .iter()
-                        .map(|token| token.as_str().map(str::to_string))
-                        .collect::<Option<Vec<String>>>()
-                });
-                scan.owner_calls.push(OwnerCall {
-                    justification: arguments
-                        .get("justification")
-                        .and_then(Value::as_str)
-                        .map(str::to_string),
-                    prefix_rule,
-                    // Present-but-non-string values map to a sentinel so they count as a
-                    // sandbox override (conservative) instead of the absent default.
-                    sandbox_permissions: arguments.get("sandbox_permissions").map(|value| {
-                        value
-                            .as_str()
-                            .map(str::to_string)
-                            .unwrap_or_else(|| "<non-string>".to_string())
-                    }),
-                });
+            if let Some(call) = owner_call_from_arguments(&arguments, probe) {
+                scan.owner_calls.push(call);
             }
         }
-        _ => {
-            // Some other line mentioning request_permissions (e.g. event_msg): only
-            // function_call items grant turn-level strict review, ignore the rest.
+        "custom_tool_call" => {
+            // code_mode: the model drives tools from a JS cell; arguments live in the
+            // source text. A request_permissions mention anywhere in the cell counts as
+            // turn-level strict review risk (substring-coarse, fails toward basic).
+            let input = payload.get("input").and_then(Value::as_str).unwrap_or("");
+            if current_turn && input.contains("request_permissions") {
+                scan.request_permissions_risk = true;
+            }
+            let (Some(probe), true) = (owner_command, current_turn) else {
+                return;
+            };
+            if payload.get("name").and_then(Value::as_str) != Some("exec") {
+                return;
+            }
+            let Some(arguments) = exec_command_object(input) else {
+                return;
+            };
+            if let Some(call) = owner_call_from_arguments(&Value::Object(arguments), probe) {
+                scan.owner_calls.push(call);
+            }
         }
+        _ => {}
+    }
+}
+
+/// Owner-call fields when `arguments` carries the probed command as `command` (shell
+/// runtimes) or `cmd` (unified exec); `None` when this call is not the owner.
+fn owner_call_from_arguments(arguments: &Value, probe: &str) -> Option<OwnerCall> {
+    let command = arguments
+        .get("command")
+        .and_then(Value::as_str)
+        .or_else(|| arguments.get("cmd").and_then(Value::as_str));
+    if command != Some(probe) {
+        return None;
+    }
+    let prefix_rule = arguments.get("prefix_rule").and_then(|value| {
+        let tokens = value.as_array()?;
+        tokens
+            .iter()
+            .map(|token| token.as_str().map(str::to_string))
+            .collect::<Option<Vec<String>>>()
+    });
+    Some(OwnerCall {
+        justification: arguments
+            .get("justification")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        prefix_rule,
+        // Present-but-non-string values map to a sentinel so they count as a
+        // sandbox override (conservative) instead of the absent default.
+        sandbox_permissions: arguments.get("sandbox_permissions").map(|value| {
+            value
+                .as_str()
+                .map(str::to_string)
+                .unwrap_or_else(|| "<non-string>".to_string())
+        }),
+    })
+}
+
+/// Strict extraction of the single `tools.exec_command({...})` argument object from a
+/// code_mode JS cell. Anything ambiguous — multiple calls, non-double-quoted strings,
+/// unsupported syntax — yields `None`, leaving the request without a provable owner
+/// (fail closed to the basic popup).
+fn exec_command_object(source: &str) -> Option<serde_json::Map<String, Value>> {
+    const NEEDLE: &str = "tools.exec_command(";
+    let start = source.find(NEEDLE)?;
+    let rest = &source[start + NEEDLE.len()..];
+    if rest.contains(NEEDLE) {
+        return None;
+    }
+    let mut parser = JsObjectParser {
+        bytes: rest.as_bytes(),
+        pos: 0,
+    };
+    parser.skip_ws();
+    let object = parser.parse_object(0)?;
+    parser.skip_ws();
+    if parser.eat(b',') {
+        parser.skip_ws();
+    }
+    if !parser.eat(b')') {
+        return None;
+    }
+    Some(object)
+}
+
+/// Minimal recognizer for JS object literals restricted to JSON-expressible content:
+/// identifier or double-quoted keys, double-quoted strings with JSON escapes, numbers,
+/// booleans, null, arrays, and shallow nested objects. Single quotes, template strings,
+/// expressions, and comments all fail the parse.
+struct JsObjectParser<'a> {
+    bytes: &'a [u8],
+    pos: usize,
+}
+
+impl JsObjectParser<'_> {
+    fn peek(&self) -> Option<u8> {
+        self.bytes.get(self.pos).copied()
+    }
+
+    fn eat(&mut self, byte: u8) -> bool {
+        if self.peek() == Some(byte) {
+            self.pos += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn skip_ws(&mut self) {
+        while matches!(self.peek(), Some(b' ' | b'\t' | b'\r' | b'\n')) {
+            self.pos += 1;
+        }
+    }
+
+    fn parse_object(&mut self, depth: usize) -> Option<serde_json::Map<String, Value>> {
+        if depth > 4 || !self.eat(b'{') {
+            return None;
+        }
+        let mut object = serde_json::Map::new();
+        loop {
+            self.skip_ws();
+            if self.eat(b'}') {
+                return Some(object);
+            }
+            let key = if self.peek() == Some(b'"') {
+                self.parse_string()?
+            } else {
+                self.parse_ident()?
+            };
+            self.skip_ws();
+            if !self.eat(b':') {
+                return None;
+            }
+            self.skip_ws();
+            let value = self.parse_value(depth)?;
+            object.insert(key, value);
+            self.skip_ws();
+            if self.eat(b',') {
+                continue;
+            }
+            if self.eat(b'}') {
+                return Some(object);
+            }
+            return None;
+        }
+    }
+
+    fn parse_value(&mut self, depth: usize) -> Option<Value> {
+        match self.peek()? {
+            b'"' => Some(Value::String(self.parse_string()?)),
+            b'{' => Some(Value::Object(self.parse_object(depth + 1)?)),
+            b'[' => {
+                self.pos += 1;
+                let mut items = Vec::new();
+                loop {
+                    self.skip_ws();
+                    if self.eat(b']') {
+                        return Some(Value::Array(items));
+                    }
+                    items.push(self.parse_value(depth + 1)?);
+                    self.skip_ws();
+                    if self.eat(b',') {
+                        continue;
+                    }
+                    if self.eat(b']') {
+                        return Some(Value::Array(items));
+                    }
+                    return None;
+                }
+            }
+            b'0'..=b'9' | b'-' => {
+                let start = self.pos;
+                while matches!(
+                    self.peek(),
+                    Some(b'0'..=b'9' | b'.' | b'e' | b'E' | b'+' | b'-')
+                ) {
+                    self.pos += 1;
+                }
+                let text = std::str::from_utf8(&self.bytes[start..self.pos]).ok()?;
+                serde_json::from_str::<Value>(text)
+                    .ok()
+                    .filter(Value::is_number)
+            }
+            _ => match self.parse_ident()?.as_str() {
+                "true" => Some(Value::Bool(true)),
+                "false" => Some(Value::Bool(false)),
+                "null" => Some(Value::Null),
+                _ => None,
+            },
+        }
+    }
+
+    /// JSON-compatible double-quoted string (JS escapes beyond JSON's set fail).
+    fn parse_string(&mut self) -> Option<String> {
+        let start = self.pos;
+        if !self.eat(b'"') {
+            return None;
+        }
+        loop {
+            match self.peek()? {
+                b'\\' => {
+                    self.pos += 2;
+                    if self.pos > self.bytes.len() {
+                        return None;
+                    }
+                }
+                b'"' => {
+                    self.pos += 1;
+                    break;
+                }
+                b'\n' => return None,
+                _ => self.pos += 1,
+            }
+        }
+        let raw = std::str::from_utf8(&self.bytes[start..self.pos]).ok()?;
+        match serde_json::from_str::<Value>(raw) {
+            Ok(Value::String(text)) => Some(text),
+            _ => None,
+        }
+    }
+
+    fn parse_ident(&mut self) -> Option<String> {
+        let start = self.pos;
+        while matches!(self.peek(), Some(byte) if byte.is_ascii_alphanumeric() || byte == b'_') {
+            self.pos += 1;
+        }
+        if self.pos == start {
+            return None;
+        }
+        std::str::from_utf8(&self.bytes[start..self.pos])
+            .ok()
+            .map(str::to_string)
     }
 }
 
@@ -2832,6 +3041,116 @@ mod tests {
             Some(crate::permission_rules::NativeWrite::PrefixRule { ref prefix, ref rules_path })
                 if prefix == &["cargo".to_string(), "build".into()]
                     && rules_path.ends_with("/rules/default.rules")
+        ));
+    }
+
+    #[test]
+    fn exec_command_object_extracts_strictly() {
+        // Real code_mode cell shape: newlines, bare keys, arrays, trailing statements.
+        let source = "const r = await tools.exec_command({\n  cmd: \"curl -sS https://example.com\",\n  workdir: \"/w\",\n  yield_time_ms: 10000,\n  sandbox_permissions: \"require_escalated\",\n  justification: \"why not\",\n  prefix_rule: [\"curl\", \"-sS\"],\n});\ntext(JSON.stringify(r));\n";
+        let object = exec_command_object(source).unwrap();
+        assert_eq!(
+            object.get("cmd").and_then(Value::as_str),
+            Some("curl -sS https://example.com")
+        );
+        assert_eq!(object.get("prefix_rule"), Some(&json!(["curl", "-sS"])),);
+        assert_eq!(
+            object.get("justification").and_then(Value::as_str),
+            Some("why not")
+        );
+        // Quoted keys, escapes, and nested objects parse; JSON semantics preserved.
+        let object = exec_command_object(
+            "tools.exec_command({\"cmd\": \"echo \\\"hi\\\"\", env: { A: \"1\" }, ok: true })",
+        )
+        .unwrap();
+        assert_eq!(
+            object.get("cmd").and_then(Value::as_str),
+            Some("echo \"hi\"")
+        );
+
+        // Ambiguity and non-JSON syntax fail closed.
+        for bad in [
+            // Two calls in one cell.
+            "tools.exec_command({cmd: \"a\"}); tools.exec_command({cmd: \"b\"});",
+            // Single-quoted / template strings.
+            "tools.exec_command({cmd: 'a'})",
+            "tools.exec_command({cmd: `a`})",
+            // Expressions as values.
+            "tools.exec_command({cmd: someVar})",
+            "tools.exec_command({cmd: \"a\" + \"b\"})",
+            // Comment smuggling and unterminated objects.
+            "tools.exec_command({cmd: \"a\" /* x */})",
+            "tools.exec_command({cmd: \"a\"",
+            // No call at all.
+            "tools.write_stdin({chars: \"x\"})",
+        ] {
+            assert!(exec_command_object(bad).is_none(), "should reject: {bad}");
+        }
+    }
+
+    fn exec_cell_call(turn: &str, js: &str) -> Value {
+        json!({
+            "timestamp": "t",
+            "type": "response_item",
+            "payload": {
+                "type": "custom_tool_call",
+                "id": "ctc_1",
+                "status": "completed",
+                "call_id": "c1",
+                "name": "exec",
+                "input": js,
+                "internal_chat_message_metadata_passthrough": { "turn_id": turn }
+            }
+        })
+    }
+
+    #[test]
+    fn code_mode_exec_cell_provides_owner_call() {
+        // The unified-exec code_mode shape observed in real rollouts: the owner call is
+        // a custom_tool_call("exec") whose JS drives tools.exec_command.
+        let js = "const r = await tools.exec_command({\n  cmd: \"cargo build\",\n  workdir: \"/w\",\n  sandbox_permissions: \"require_escalated\",\n  justification: \"need cargo\",\n  prefix_rule: [\"cargo\"]\n});\ntext(JSON.stringify(r));\n";
+        let rollout = write_rollout(&[
+            shell_turn_context("turn-1", json!("on-request"), "restricted"),
+            exec_cell_call("turn-1", js),
+        ]);
+        let input = shell_input(rollout.path(), "cargo build");
+        let runner = |probe: &ShellProbe| {
+            assert_eq!(
+                probe.prefix_rule.as_deref(),
+                Some(&["cargo".to_string()][..])
+            );
+            assert!(probe.sandbox_override, "require_escalated is an override");
+            Some(worker_output(&[&["cargo", "build"]]))
+        };
+        assert!(matches!(
+            analyze_codex_with(&input, false, &runner),
+            Analysis::Enhanced { .. }
+        ));
+
+        // A cell whose cmd differs is not the owner: no memory surface.
+        let rollout = write_rollout(&[
+            shell_turn_context("turn-1", json!("on-request"), "restricted"),
+            exec_cell_call("turn-1", "tools.exec_command({cmd: \"other\"})"),
+        ]);
+        let input = shell_input(rollout.path(), "cargo build");
+        let runner = |_probe: &ShellProbe| Some(worker_output(&[&["cargo", "build"]]));
+        assert!(matches!(
+            analyze_codex_with(&input, false, &runner),
+            Analysis::Basic
+        ));
+
+        // request_permissions mentioned inside a current-turn cell: strict-review risk.
+        let rollout = write_rollout(&[
+            shell_turn_context("turn-1", json!("on-request"), "restricted"),
+            exec_cell_call(
+                "turn-1",
+                "await tools.request_permissions({}); tools.exec_command({cmd: \"cargo build\"})",
+            ),
+        ]);
+        let input = shell_input(rollout.path(), "cargo build");
+        assert!(matches!(
+            analyze_codex_with(&input, false, &runner),
+            Analysis::Basic
         ));
     }
 

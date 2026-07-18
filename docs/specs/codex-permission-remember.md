@@ -78,7 +78,7 @@ AskHuman 处理时可能反复弹窗。
 | D41 | 没有原生写入通道的 MCP server（插件定义 + codex_apps 连接器）的“始终允许”用 AskHuman 跨会话 shadow 兜底：与会话规则同一 rule store 的全局 namespace（不含 session_id），键 = 完整 hook tool_name 字符串；沿用 D15 语义（命中自动放行时刷新 `last_used_at`，连续 30 天无命中即清理）；auto-allow 仍受 guardian / retry 防护（D29/D36）；管理面板增设“跨会话授权”分组单独查看与重置。仅做兜底：能写原生配置的类型（用户层/项目层 MCP、Shell、network）一律写原生（D7 优先），不提供 shadow 永久。该“始终允许”只在 AskHuman Hook 生效期间起作用，弹窗文案须与写原生配置的“始终允许”可区分（§7 问题 5） |
 | D42 | Shell retry 不做识别、改由 auto-allow 收紧保证安全（§6.1.2）：非 guardian 会话里原生每个 shell 调用至多问一次（首段审批后 `already_approved` 使沙箱失败重试自动豁免再审），Hook 收到的普通 Shell 请求不存在“同一调用的第二次询问”；永久 auto-allow 收紧为“每个拆分段都被显式规则 Allow 命中”（即 Codex 自身 bypass_sandbox 的判定条件，满足时 reload 过的原生会直接免沙箱放行、不会出现 retry 询问），heuristics 永不作为 auto-allow 依据、只用于选项派生与 dangerous 门槛；会话规则 auto-allow 与原生 ApprovedForSession 缓存行为天然镜像（缓存命中同样静默批准并豁免 retry），无需额外识别 |
 | D43 | turn 级 `strict_auto_review` 的保守识别（补上 D36 缺口）：`request_permissions` 是模型的普通 function tool、其 FunctionCall 照常落 rollout；当前 turn 的 rollout 中出现任何 `request_permissions` FunctionCall 即视为该 turn 可能已开启 strict_auto_review，turn 剩余时间禁用 auto-allow 与记忆选项、回基础弹窗（fail closed，不解析授权结果，宁可多弹不可绕过 guardian） |
-| D44 | FunctionCall 关联判据：turn_id + 命令原文精确匹配；同 turn 多条相同命令的 FunctionCall 若 justification / prefix_rule / sandbox_permissions 完全一致则取共同值（歧义无害），任何一项不一致即放弃候选派生与 auto-allow、保留基础弹窗 |
+| D44 | owner 调用关联判据：turn_id + 命令原文精确匹配；同 turn 多条相同命令的 owner 调用若 justification / prefix_rule / sandbox_permissions 完全一致则取共同值（歧义无害），任何一项不一致即放弃候选派生与 auto-allow、保留基础弹窗。owner 调用有两种落盘形态（2026-07-18 实测补充）：① 传统 `function_call`（`arguments` 为 JSON 字符串，命令键 `command` 或 `cmd`）；② code_mode / unified exec 的 `custom_tool_call`（`name="exec"`，参数埋在 JS 源码 `tools.exec_command({...})` 里，用严格识别器抽取——单次调用、仅接受双引号 JSON 兼容字面量与浅层嵌套，任何歧义即无 owner、回基础弹窗；cell 源码中出现 `request_permissions` 子串按 D43 视为 strict_auto_review 风险） |
 | D45 | worker 预算与 amendment 复验：隔离 worker 单次判断总预算 2 秒（`codex execpolicy check` 子调用 500ms 级），超时 / 崩溃返回 reason code 并回基础弹窗；永久规则写入前，把拟写入行放进 AskHuman 自己 runtime 目录（0600 权限）的临时规则文件，用装机二进制复验“目标命令确实 Allow 且规则可解析”，复验失败不写入并按 D25 报告 |
 | D46 | 文件路径持久 identity（回答 §7 原问题 2）：与原生 apply_patch 审批键同构——词法归一的绝对路径（`~` 展开、`.`/`..` 词法折叠，同 Codex `AbsolutePathBuf` 语义：不 canonicalize、不解析 symlink、不存在的新文件同样成键）、字节精确比较（大小写敏感，即使在大小写不敏感的文件系统上，与原生 `PathUri` 相等性一致）；相对路径以 Hook `cwd` 为基准解析。精确文件 scope 纯词法匹配、不做文件系统检查（无 TOCTOU 窗口）；项目 / 磁盘聚合 scope 为 AskHuman 自有语义：规则创建时固化 project root，命中时词法前缀匹配，并对目标路径及其项目内祖先做 symlink 检查（发现 symlink 即 fail closed 回弹窗，落实 §4.2 的防逃逸要求）。remote environment：Hook 无 `environment_id`，键折叠该维度（同 D39 注记）；cwd 无法本地解析时 git 根发现失败，按 D12 回退 cwd 前缀，路径判断纯词法进行 |
 | D47 | 选项文案基线（回答 §7 原问题 5，实现期可微调措辞、不得改变语义或作用域）：文件按 §4.3；Shell 按 D38 两档 + “始终允许（写入 Codex 全局规则）”；network 按 D39；MCP 为“本对话允许此工具”/“始终允许此工具（写入 Codex 配置）”，D41 兜底型标注“始终允许（由 AskHuman 记住）”以区分；所有会话级选项统一带作用域副文本说明“本对话”含 Resume 与本对话的子代理；完全磁盘项维持危险样式（§4.3） |
@@ -668,9 +668,12 @@ codex execpolicy check --rules <path> [--rules <path> ...] [--resolve-host-execu
 - 路径来自 Hook stdin 的 `transcript_path`（可为 null → 放弃记忆增强）。JSONL，每行一个 item。
 - `TurnContextItem`：取**当前 turn**（按 Hook stdin `turn_id` 匹配）最近一条；需要字段
   `approval_policy`、`permission_profile`、`approvals_reviewer`（D36）。缺失/旧 schema → 放弃增强（D23）。
-- `FunctionCall`：按 `turn_id` + 参数中的命令原文关联（D44）；`arguments` 是 JSON 字符串，内含
-  `command`、`justification`、`prefix_rule`、`sandbox_permissions` 等模型自带字段。
-- D43 扫描：当前 turn 内 `name == "request_permissions"` 的 FunctionCall 存在即 fail closed。
+- owner 调用：按 `turn_id` + 参数中的命令原文关联（D44）。两种形态：`function_call`
+  （`arguments` 是 JSON 字符串，内含 `command`/`cmd`、`justification`、`prefix_rule`、
+  `sandbox_permissions`）；code_mode 的 `custom_tool_call`（`name="exec"`，从 `input` JS 源码
+  严格抽取唯一一次 `tools.exec_command({...})` 的参数对象，见 D44）。
+- D43 扫描：当前 turn 内 `name == "request_permissions"` 的 FunctionCall 存在即 fail closed；
+  code_mode cell 源码含 `request_permissions` 子串同样计为风险。
 - 读取只做只读顺序扫描 + 尾部窗口即可（当前 turn 的条目在文件尾部）；持续 I/O 失败按 §5.6 回基础弹窗。
 
 ### 9.5 HumanInLoop 现有挂点
