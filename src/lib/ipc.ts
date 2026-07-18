@@ -392,9 +392,13 @@ export const todosRestore = (project: string, id: string) =>
 /** 待办窗口初始化：主题 + 语言。 */
 export const todosInit = () => invoke<TodosInit>("todos_init");
 
-/** 待办窗口项目选择器候选（有待办的项目 ∪ 活跃 agent 项目 ∪ 最近 workspace）。 */
+/** 待办窗口项目选择器（本地快路径：有待办 ∪ 最近 workspace，不连 daemon）。 */
 export const todosProjects = () =>
   invoke<TodoProjectInfo[]>("todos_projects");
+
+/** 在本地列表上合并活跃 agent 项目；前端首屏后后台调用。 */
+export const todosProjectsEnriched = () =>
+  invoke<TodoProjectInfo[]>("todos_projects_enriched");
 
 /** 打开（或聚焦）项目待办窗口（经统一宿主路由，全局单窗）；`dir` 为预选项目定位目录。 */
 export const openTodos = (dir: string | null) =>

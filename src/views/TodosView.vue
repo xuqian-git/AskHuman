@@ -13,6 +13,7 @@ import {
   todosInit,
   todosList,
   todosProjects,
+  todosProjectsEnriched,
   todosRemove,
   todosReorder,
   todosRestore,
@@ -68,12 +69,11 @@ function agentLabel(kind?: string | null): string {
   return label === key ? kind : label;
 }
 
-async function reloadProjects(): Promise<void> {
-  const list = await todosProjects();
+/** Apply a project candidate list without clobbering an existing selection. */
+function applyProjects(list: TodoProjectInfo[]): void {
   // 预选项目不在候选中（如 daemon 刚退、agent 项目未入 workspace 索引）→ 兜底追加，保持选中稳定。
   if (selected.value && !list.some((p) => p.key === selected.value)) {
-    // Preselect not in candidates (daemon just stopped / agent not indexed) → keep selection stable.
-    list.push({
+    list = list.concat({
       key: selected.value,
       name: basename(selected.value),
       count: 0,
@@ -83,6 +83,30 @@ async function reloadProjects(): Promise<void> {
   projects.value = list;
   if (!selected.value) {
     selected.value = list[0]?.key ?? "";
+  }
+}
+
+/** Local fast path: todos.json + workspaces only (no daemon). */
+async function reloadProjectsLocal(): Promise<void> {
+  const list = await todosProjects();
+  applyProjects(list);
+}
+
+/**
+ * Background enrich: merge live agent projects. Safe to call after first paint;
+ * keeps current selection if still present.
+ */
+async function enrichProjectsInBackground(): Promise<void> {
+  try {
+    const list = await todosProjectsEnriched();
+    const prev = selected.value;
+    applyProjects(list);
+    // Prefer keeping the user's selection when the enriched list still has it.
+    if (prev && list.some((p) => p.key === prev)) {
+      selected.value = prev;
+    }
+  } catch (err) {
+    console.warn("todos projects enrich failed", err);
   }
 }
 
@@ -106,7 +130,8 @@ async function reloadEntries(): Promise<void> {
 
 async function reloadAll(): Promise<void> {
   try {
-    await reloadProjects();
+    // Phase 1: local lists only so the window / dropdown is interactive immediately.
+    await reloadProjectsLocal();
     await reloadEntries();
   } catch (err) {
     console.warn("todos reload failed", err);
@@ -114,6 +139,8 @@ async function reloadAll(): Promise<void> {
     // Always clear the first-load spinner, even when a command rejects or times out.
     loaded.value = true;
   }
+  // Phase 2: agent projects in the background (may take a few hundred ms).
+  void enrichProjectsInBackground();
 }
 
 async function onSelect(): Promise<void> {

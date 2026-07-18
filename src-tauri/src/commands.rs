@@ -432,16 +432,14 @@ fn gui_todo_project_sort(a: &GuiTodoProjectCandidate, b: &GuiTodoProjectCandidat
         .then_with(|| a.key.cmp(&b.key))
 }
 
-/// 项目选择器候选＝有待办的项目 ∪ 活跃 agent 项目 ∪ 最近 workspace（与 IM `/todo` 同源）。
-/// 前端用两个 optgroup 展示：`withTodos`（有待办）在前、`recent`（最近工作过，不含已在
-/// 上一组出现的 key）在后；组内排序同 IM。daemon 未运行时 agent 段为空，窗口照样可用。
-#[tauri::command]
-pub async fn todos_projects() -> Vec<TodoProjectInfo> {
+fn build_todo_project_list(
+    agents: Option<&serde_json::Value>,
+) -> Vec<TodoProjectInfo> {
     let todos = crate::todos::all();
     let mut by_key: std::collections::HashMap<String, GuiTodoProjectCandidate> =
         std::collections::HashMap::new();
 
-    // 最近 workspace 索引（隐藏项不列）。
+    // 最近 workspace 索引（隐藏项不列）——本地文件，瞬时。
     for workspace in crate::agents::workspaces::list()
         .into_iter()
         .filter(|workspace| !workspace.hidden)
@@ -479,9 +477,7 @@ pub async fn todos_projects() -> Vec<TodoProjectInfo> {
         entry.todo_count = entries.len();
     }
 
-    // 活跃 agent 的项目（cwd → git 根 key）。仅 Unix 有 daemon；未运行不拉起。
-    #[cfg(unix)]
-    if let Some(agents) = crate::client::agents_snapshot_if_running().await {
+    if let Some(agents) = agents {
         for rec in agents.as_array().map(|a| a.as_slice()).unwrap_or(&[]) {
             let rank = match rec.get("state").and_then(|v| v.as_str()) {
                 Some("working") => 0u8,
@@ -544,6 +540,24 @@ pub async fn todos_projects() -> Vec<TodoProjectInfo> {
         });
     }
     out
+}
+
+/// 项目选择器候选（本地快路径）：有待办 ∪ 最近 workspace。**不**连 daemon 拉 agent，
+/// 供前端首屏瞬时填充下拉；agent 段见 `todos_projects_enriched`。
+#[tauri::command]
+pub fn todos_projects() -> Vec<TodoProjectInfo> {
+    build_todo_project_list(None)
+}
+
+/// 项目选择器候选（含活跃 agent）：在本地列表之上合并 daemon agent 快照。
+/// 前端在首屏 `todos_projects` 之后后台调用，避免下拉打开前卡在 IPC。
+#[tauri::command]
+pub async fn todos_projects_enriched() -> Vec<TodoProjectInfo> {
+    #[cfg(unix)]
+    let agents = crate::client::agents_snapshot_if_running().await;
+    #[cfg(not(unix))]
+    let agents: Option<serde_json::Value> = None;
+    build_todo_project_list(agents.as_ref())
 }
 
 /// 打开（或聚焦）项目待办窗口（spec todo-whats-next D9）：经统一宿主路由（全局单窗）。

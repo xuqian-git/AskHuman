@@ -983,6 +983,7 @@ fn launch(state: AppState, view: View, popup_ipc: Option<PopupIpc>) -> tauri::Re
             crate::commands::todos_history_clear,
             crate::commands::todos_init,
             crate::commands::todos_projects,
+            crate::commands::todos_projects_enriched,
             crate::commands::open_todos,
         ])
         .on_window_event(|window, event| {
