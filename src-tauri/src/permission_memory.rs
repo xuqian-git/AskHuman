@@ -1309,28 +1309,27 @@ fn shell_enhancement(
         query = Some(MemoryQuery::ShellCommands {
             commands: output.segments.clone(),
         });
-        // Prefix tier: only the model's own prefix_rule, validated exactly like the
-        // permanent amendment (D38).
-        if output.amendment_from_prefix_rule {
-            if let Some(prefix) = output.amendment.clone() {
-                let prefix_text = prefix.join(" ");
-                extra_choices.push(ConfirmChoice {
-                    id: ACTION_SHELL_PREFIX.into(),
-                    label: if zh {
-                        format!("本对话允许 {prefix_text} 开头的命令")
-                    } else {
-                        format!("Allow commands starting with {prefix_text} this conversation")
-                    },
-                    description: session_note.to_string(),
-                    role: ActionRole::Default,
-                });
-                saves.push(MemorySave {
-                    action_id: ACTION_SHELL_PREFIX.into(),
-                    namespace: RuleNamespace::Session,
-                    rules: vec![RuleKey::ShellPrefix { prefix }],
-                    native: None,
-                });
-            }
+        // Prefix tier: same prefix source as the permanent amendment — the model's
+        // prefix_rule or the fallback derivation (D38 refined 2026-07-18). A prefix safe
+        // enough for the permanent default.rules is safe for the weaker session scope.
+        if let Some(prefix) = output.amendment.clone() {
+            let prefix_text = prefix.join(" ");
+            extra_choices.push(ConfirmChoice {
+                id: ACTION_SHELL_PREFIX.into(),
+                label: if zh {
+                    format!("本对话允许 {prefix_text} 开头的命令")
+                } else {
+                    format!("Allow commands starting with {prefix_text} this conversation")
+                },
+                description: session_note.to_string(),
+                role: ActionRole::Default,
+            });
+            saves.push(MemorySave {
+                action_id: ACTION_SHELL_PREFIX.into(),
+                namespace: RuleNamespace::Session,
+                rules: vec![RuleKey::ShellPrefix { prefix }],
+                native: None,
+            });
         }
     }
 
@@ -3047,7 +3046,16 @@ mod tests {
             .iter()
             .map(|choice| choice.id.as_str())
             .collect();
-        assert_eq!(ids, [ACTION_SHELL_SESSION, ACTION_SHELL_ALWAYS]);
+        // The fallback-derived amendment feeds both the session prefix tier and the
+        // permanent tier (D38 refined).
+        assert_eq!(
+            ids,
+            [
+                ACTION_SHELL_SESSION,
+                ACTION_SHELL_PREFIX,
+                ACTION_SHELL_ALWAYS
+            ]
+        );
         assert!(matches!(
             memory.query,
             Some(MemoryQuery::ShellCommands { ref commands })
