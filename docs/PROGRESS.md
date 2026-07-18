@@ -3,14 +3,22 @@
 记录需要跨会话保留的未完成 / 延期事项和明确下一步。任务 / 需求完成后删除其 section
 （历史留在 git）。
 
-## 待办：实现 Codex 权限弹窗“本会话 / 始终允许”（规格已定案）
+## 定期同步：Codex Shell 判定复刻（codex-permission-remember §6.4）
 
-规格见 `docs/specs/codex-permission-remember.md`（2026-07-18 定案，D1–D48，全部开放问题已关闭）。
-北极星：用户作答次数 ≤ 原生 Codex TUI。实现范围：会话级 shadow rules（文件 / Shell / network / MCP，
-对话树共享 + 30 天滚动清理）、永久级原生写入（Shell prefix_rule、network_rule、MCP approval_mode）+
-会话桥接、插件 / codex_apps 的跨会话 shadow 兜底（D41）、Shell 判断混合复刻（execpolicy check CLI +
-脚本拆分 / 层叠 / heuristics 复刻，版本上限门控）、guardian / strict_auto_review fail-closed（D36/D43）、
-设置页授权管理面板（D16/D17/D48）。开发完成后按规格 §6.4 在本文件登记“定期同步 Codex Shell 判定复刻”。
+权限记忆功能复刻了 Codex 的 Shell 判定逻辑（`src-tauri/src/shell_safety.rs` +
+`permission_shell.rs`），受 `VERIFIED_CODEX_VERSION_FLOOR/CEILING` 门控（当前 **0.144**，
+对拍来源 Codex commit `6bd3f5e3db`，2026-07-18）。用户装机 Codex 超出上限时 Shell 记忆
+选项自动降级（D35），因此**每次 Codex 发新 minor 版都需要对拍并抬升上限**，否则用户体验
+回落到基础弹窗。抬升前重新对拍以下上游文件（相对 codex-rs/）：
+
+- `shell-command/src/bash.rs`（`bash -lc` 脚本拆分）
+- `shell-command/src/command_safety/is_safe_command.rs`、`is_dangerous_command.rs`（heuristics）
+- `core/src/exec_policy.rs`（fallback 判定 / amendment 派生 / `BANNED_PREFIX_SUGGESTIONS`）
+- `config/src/loader/`（配置层叠与项目信任，影响 rules 文件发现与 managed 检测）
+- `codex execpolicy check` 的 CLI 契约（参数与 JSON 输出；有 ignored 集成测试
+  `permission_shell::tests::real_codex_cli_contract_when_available` 可拿真机验证）
+
+无差异则只改常量 + 记录新 commit；有差异先改 port 再抬上限。
 
 ## 待办：Cursor 全局 Rules 迁移为用户级 always-on Skill
 
