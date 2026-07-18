@@ -1186,26 +1186,25 @@ fn shell_turn_fields(context: &Value) -> Option<(String, String)> {
         Some(Value::Object(map)) if map.contains_key("granular") => "granular".to_string(),
         _ => return None,
     };
-    let sandbox_kind = if let Some(kind) = context
+    let sandbox_kind = match context
         .get("file_system_sandbox_policy")
         .and_then(|policy| policy.get("kind"))
         .and_then(Value::as_str)
     {
-        kind.to_string()
-    } else if let Some(mode) = context
-        .get("sandbox_policy")
-        .and_then(|policy| policy.get("type"))
-        .and_then(Value::as_str)
-    {
-        // Legacy sandbox_policy fallback, mirroring from_legacy_sandbox_policy_for_cwd.
-        match mode {
-            "danger-full-access" => "unrestricted".to_string(),
-            "external-sandbox" => "external-sandbox".to_string(),
-            "read-only" | "workspace-write" => "restricted".to_string(),
-            _ => return None,
+        Some(kind) => kind.to_string(),
+        None => {
+            // Legacy sandbox_policy fallback, mirroring from_legacy_sandbox_policy_for_cwd.
+            let mode = context
+                .get("sandbox_policy")
+                .and_then(|policy| policy.get("type"))
+                .and_then(Value::as_str)?;
+            match mode {
+                "danger-full-access" => "unrestricted".to_string(),
+                "external-sandbox" => "external-sandbox".to_string(),
+                "read-only" | "workspace-write" => "restricted".to_string(),
+                _ => return None,
+            }
         }
-    } else {
-        return None;
     };
     Some((approval_policy, sandbox_kind))
 }

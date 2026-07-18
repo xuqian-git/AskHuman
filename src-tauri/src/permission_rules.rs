@@ -550,7 +550,7 @@ pub fn session_summaries_at(path: &Path) -> Vec<SessionRuleSummary> {
             summary
         })
         .collect();
-    summaries.sort_by(|a, b| b.last_used_at_ms.cmp(&a.last_used_at_ms));
+    summaries.sort_by_key(|summary| std::cmp::Reverse(summary.last_used_at_ms));
     summaries
 }
 
