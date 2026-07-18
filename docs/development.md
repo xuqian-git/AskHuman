@@ -25,6 +25,16 @@ pnpm build && cargo build --release \
 cargo test --manifest-path src-tauri/Cargo.toml            # Rust unit tests
 ```
 
+### Optional local git hooks (fmt + clippy)
+
+Linux CI fails the job on `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings`. To catch that before push:
+
+```bash
+./scripts/install-git-hooks.sh
+```
+
+This only installs a `pre-commit` hook (LFS hooks are left alone). It runs when staged `src-tauri/**/*.rs` files change. Typical warm cost is a few seconds; a cold clippy can take about a minute. Bypass with `git commit --no-verify`. Local toolchain may still differ slightly from CI’s stable channel.
+
 > `--features custom-protocol` is mandatory for production builds; without it the binary runs in dev mode against the Vite dev URL and shows a blank window.
 
 Build and install locally:
