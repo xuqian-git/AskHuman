@@ -6,6 +6,8 @@
 #[cfg(unix)]
 pub mod config_watch;
 pub mod lifecycle;
+#[cfg(unix)]
+pub mod popup_focus;
 pub mod request;
 #[cfg(unix)]
 pub mod spawn;

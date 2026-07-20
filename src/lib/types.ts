@@ -280,7 +280,7 @@ export interface PopupInit {
   perf?: boolean;
   /** 性能测试：画完首帧后自动取消弹窗（仅 harness 用）。 */
   perfAutodismiss?: boolean;
-  /** 方案6：本进程是否为预热弹窗（窗口起始隐藏）。为真时前端在内容绘制完成后调 `popup_show_window` 上屏。 */
+  /** Whether this helper started as a hidden prewarmed popup before it adopted the interaction. */
   warm?: boolean;
   /** 提问创建时刻（epoch 毫秒）：弹窗据此显示相对时间（几秒/分钟/小时前），超过一天显示绝对时间。0=未知。 */
   createdAtMs?: number;

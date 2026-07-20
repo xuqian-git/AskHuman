@@ -106,6 +106,10 @@ pub struct GuiBridge {
     request_id: std::sync::Mutex<String>,
     /// 仅投递一次（发送/取消互斥，去重）。
     done: AtomicBool,
+    /// Content/native window readiness is reported exactly once.
+    ready_sent: AtomicBool,
+    /// Daemon presentation authorization is applied exactly once.
+    presented: AtomicBool,
     app: tauri::AppHandle,
 }
 
@@ -133,6 +137,47 @@ impl GuiBridge {
             tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
             app.exit(0);
         });
+    }
+
+    pub fn dismiss_from_daemon(&self) {
+        self.done.store(true, Ordering::SeqCst);
+        if let Some(window) = self.app.get_webview_window("popup") {
+            let _ = window.close();
+        } else {
+            self.send_popup_dismissed();
+        }
+    }
+
+    pub fn send_popup_ready(&self, window_number: Option<i64>) {
+        if self.ready_sent.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let _ = self.tx.send(crate::ipc::ClientMsg::PopupReady {
+            request_id: self.request_id(),
+            window_number,
+        });
+    }
+
+    pub fn send_popup_focused(&self) {
+        if !self.ready_sent.load(Ordering::SeqCst) || self.is_done() {
+            return;
+        }
+        let _ = self.tx.send(crate::ipc::ClientMsg::PopupFocused {
+            request_id: self.request_id(),
+        });
+    }
+
+    pub fn send_popup_dismissed(&self) {
+        if !self.ready_sent.load(Ordering::SeqCst) {
+            return;
+        }
+        let _ = self.tx.send(crate::ipc::ClientMsg::PopupDismissed {
+            request_id: self.request_id(),
+        });
+    }
+
+    fn begin_presentation(&self) -> bool {
+        !self.presented.swap(true, Ordering::SeqCst)
     }
 
     /// 提交作答。
@@ -182,12 +227,54 @@ impl GuiBridge {
     }
 }
 
-/// 方案6：预热弹窗领用 + 前端把本次请求内容绘制完成后，由 `popup_show_window` 命令在主线程调用本函数，
-/// 把一直隐藏待命的弹窗上屏：按**当前** config 兜底重设尺寸/置顶/出现动画/窗口材质，再 `show()` + 提示音 +
-/// 聚焦 + Dock 角标。延后到此刻 show 可杜绝「空白/旧内容闪现」（窗口隐藏到本次内容已绘制才出现）。
+fn cascade_popup_position(win: &tauri::WebviewWindow, cascade_index: u32) {
+    if cascade_index == 0 {
+        return;
+    }
+    let (Ok(position), Ok(size), Ok(scale), Ok(Some(monitor))) = (
+        win.outer_position(),
+        win.outer_size(),
+        win.scale_factor(),
+        win.current_monitor(),
+    ) else {
+        return;
+    };
+    let step = (24.0 * scale).round().max(1.0) as i32;
+    let monitor_position = monitor.position();
+    let monitor_size = monitor.size();
+    let max_x = monitor_position
+        .x
+        .saturating_add(monitor_size.width.saturating_sub(size.width) as i32);
+    let max_y = monitor_position
+        .y
+        .saturating_add(monitor_size.height.saturating_sub(size.height) as i32);
+    let slots_x = max_x.saturating_sub(position.x).max(0) / step;
+    let slots_y = max_y.saturating_sub(position.y).max(0) / step;
+    let slots = slots_x.min(slots_y);
+    let slot = if slots > 0 {
+        ((cascade_index.saturating_sub(1) % slots as u32) + 1) as i32
+    } else {
+        0
+    };
+    let _ = win.set_position(tauri::PhysicalPosition::new(
+        position.x.saturating_add(step.saturating_mul(slot)),
+        position.y.saturating_add(step.saturating_mul(slot)),
+    ));
+}
+
+/// Present a fully rendered helper window according to the daemon-owned focus decision.
+/// Foreground uses the regular Tauri activation path; background cascade must not activate NSApp.
 #[cfg(unix)]
-pub(crate) fn finalize_popup_show(app: &tauri::AppHandle) {
+pub(crate) fn finalize_popup_show(
+    app: &tauri::AppHandle,
+    presentation: crate::ipc::PopupPresentation,
+) {
     use tauri::Manager;
+    if let Some(bridge) = app.try_state::<GuiBridge>() {
+        if !bridge.begin_presentation() {
+            return;
+        }
+    }
     if let Some(warm) = app.try_state::<WarmPopup>() {
         if warm.finalized.swap(true, Ordering::SeqCst) {
             return;
@@ -220,25 +307,49 @@ pub(crate) fn finalize_popup_show(app: &tauri::AppHandle) {
         }
         // Reapply the complete current material before showing a prewarmed window.
         set_runtime_window_effect(&win, config.general.window_effect);
-        let count = if let Some(w) = app.try_state::<WarmPopup>() {
-            w.show
-                .lock()
-                .ok()
-                .and_then(|g| {
+        let count = app
+            .try_state::<WarmPopup>()
+            .and_then(|w| {
+                w.show.lock().ok().and_then(|g| {
                     g.as_ref()
                         .and_then(|s| s.interaction.ask())
                         .map(|request| request.questions.len())
                 })
-                .unwrap_or(0)
-        } else {
-            0
-        };
+            })
+            .or_else(|| {
+                app.try_state::<AppState>().and_then(|state| {
+                    state
+                        .interaction
+                        .ask()
+                        .map(|request| request.questions.len())
+                })
+            })
+            .unwrap_or(0);
         crate::macos_dock_icon::announce_questions(count);
     }
-    let _ = win.show();
+    match presentation {
+        crate::ipc::PopupPresentation::Foreground => {
+            let _ = win.show();
+            let _ = win.set_focus();
+        }
+        crate::ipc::PopupPresentation::BackgroundCascade {
+            cascade_index,
+            behind_window_number,
+        } => {
+            #[cfg(target_os = "macos")]
+            if let Ok(ns_window) = win.ns_window() {
+                crate::macos_window_order::cascade(ns_window, cascade_index);
+                crate::macos_window_order::show_behind(ns_window, behind_window_number);
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                cascade_popup_position(&win, cascade_index);
+                let _ = win.show();
+            }
+        }
+    }
     crate::perf::mark_env("gui.win_show");
     crate::sound::play(&config.general.popup_sound);
-    let _ = win.set_focus();
 }
 
 /// 无任何可用通信 Channel 时的退出码（供下游据此降级）。
@@ -1046,6 +1157,16 @@ fn launch(state: AppState, view: View, popup_ipc: Option<PopupIpc>) -> tauri::Re
                         }
                     }
                     WindowEvent::Resized(_) => persist_popup_size(window),
+                    WindowEvent::Focused(true) => {
+                        if let Some(bridge) = window.app_handle().try_state::<GuiBridge>() {
+                            bridge.send_popup_focused();
+                        }
+                    }
+                    WindowEvent::Destroyed => {
+                        if let Some(bridge) = window.app_handle().try_state::<GuiBridge>() {
+                            bridge.send_popup_dismissed();
+                        }
+                    }
                     _ => {}
                 },
                 // 设置窗口关闭时清掉 Liquid Glass 注册表条目：插件按 label 缓存玻璃视图，
@@ -1096,7 +1217,7 @@ fn launch(state: AppState, view: View, popup_ipc: Option<PopupIpc>) -> tauri::Re
                 View::Popup => {
                     // Dock 跳动 + 角标提问数（冷路径有请求；预热路径延后到 `popup_show_window` 领用时）。
                     #[cfg(target_os = "macos")]
-                    if !warm {
+                    if !warm && !is_helper {
                         let count = app
                             .state::<AppState>()
                             .interaction
@@ -1117,6 +1238,7 @@ fn launch(state: AppState, view: View, popup_ipc: Option<PopupIpc>) -> tauri::Re
                                 .center()
                                 // 先隐藏构建，设好原生出现动画后再显示，触发 macOS 窗口出现动画。
                                 .visible(false)
+                                .focused(false)
                                 .always_on_top(always_on_top)
                                 // 方案6：禁用 WebView 后台节流，使隐藏/被遮挡时 rAF/定时器照常回调。预热窗长期隐藏；
                                 // 且「内容绘制完成才 show()」依赖双 rAF，默认 Suspend 会暂停回调 → 永不上屏。
@@ -1133,7 +1255,7 @@ fn launch(state: AppState, view: View, popup_ipc: Option<PopupIpc>) -> tauri::Re
                         #[cfg(unix)]
                         watch_todos_file(win.clone());
                         // 预热路径：窗口保持隐藏待命，待 `Show` 领用、前端绘制完成后由 `popup_show_window` 上屏。
-                        if !warm {
+                        if !warm && !is_helper {
                             // macOS：隐藏构建后先设原生出现动画（样式由设置决定），再 show()。
                             #[cfg(target_os = "macos")]
                             if let Ok(ns) = win.ns_window() {
@@ -1143,10 +1265,6 @@ fn launch(state: AppState, view: View, popup_ipc: Option<PopupIpc>) -> tauri::Re
                             crate::perf::mark_env("gui.win_show");
                             // Play the configured popup sound after the window becomes visible.
                             crate::sound::play(&app.state::<AppState>().config.general.popup_sound);
-                            // GUI Helper 由 Daemon 拉起，可能不自动获焦 → 尽力前置。
-                            if is_helper {
-                                let _ = win.set_focus();
-                            }
                         }
                     }
 
@@ -1163,6 +1281,8 @@ fn launch(state: AppState, view: View, popup_ipc: Option<PopupIpc>) -> tauri::Re
                                 tx: gui_tx,
                                 request_id: std::sync::Mutex::new(request_id),
                                 done: AtomicBool::new(false),
+                                ready_sent: AtomicBool::new(false),
+                                presented: AtomicBool::new(false),
                                 app: app.handle().clone(),
                             });
                             // 方案6 预热：manage 领用槽（None=待命）；首条 `Show` 经 reader 循环填入并唤醒前端。
@@ -1208,9 +1328,30 @@ fn launch(state: AppState, view: View, popup_ipc: Option<PopupIpc>) -> tauri::Re
                                             }
                                             let _ = app_handle.emit("popup-show", ());
                                         }
+                                        Ok(Some(crate::ipc::ServerMsg::PresentPopup {
+                                            request_id,
+                                            presentation,
+                                        })) => {
+                                            let matches = app_handle
+                                                .try_state::<GuiBridge>()
+                                                .map(|bridge| bridge.request_id() == request_id)
+                                                .unwrap_or(false);
+                                            if !matches {
+                                                continue;
+                                            }
+                                            let app2 = app_handle.clone();
+                                            let _ = app_handle.run_on_main_thread(move || {
+                                                finalize_popup_show(&app2, presentation);
+                                            });
+                                        }
                                         Ok(Some(crate::ipc::ServerMsg::Cancel { .. })) => {
-                                            app_handle.exit(0);
-                                            break;
+                                            let app2 = app_handle.clone();
+                                            let _ = app_handle.run_on_main_thread(move || {
+                                                if let Some(bridge) = app2.try_state::<GuiBridge>()
+                                                {
+                                                    bridge.dismiss_from_daemon();
+                                                }
+                                            });
                                         }
                                         // 配置实时变更（A12）：转发给前端实时切主题/语言。
                                         // 复用既有 "settings-updated" 事件（前端已监听 general 配置）。

@@ -236,15 +236,29 @@ pub async fn enrich_permission_diff(
     }
 }
 
-/// 方案6：预热弹窗把本次请求内容绘制完成后，由前端调用本命令，让后端在主线程把隐藏的弹窗上屏（延后 show，
-/// 杜绝空白/旧内容闪现）。冷路径不会调用（窗口已在 setup 中显示）。
+/// Report that popup content and its hidden native window are ready. The daemon replies with the
+/// authoritative foreground/background presentation after cross-process focus arbitration.
 #[tauri::command]
 pub fn popup_show_window(app: AppHandle) {
     #[cfg(unix)]
     {
         let app2 = app.clone();
         let _ = app.run_on_main_thread(move || {
-            crate::app::finalize_popup_show(&app2);
+            let window_number = {
+                #[cfg(target_os = "macos")]
+                {
+                    app2.get_webview_window("popup")
+                        .and_then(|window| window.ns_window().ok())
+                        .and_then(crate::macos_window_order::window_number)
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    None
+                }
+            };
+            if let Some(bridge) = app2.try_state::<crate::app::GuiBridge>() {
+                bridge.send_popup_ready(window_number);
+            }
         });
     }
     #[cfg(not(unix))]

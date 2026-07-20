@@ -7,6 +7,12 @@
 - 窗口拖拽用 `data-tauri-drag-region`（导航栏、底部空白和设置 tab 栏）；置顶用前端 `@tauri-apps/api/window` 的 `setAlwaysOnTop`。
 - 文件拖入用 `onDragDropEvent` 取得原生路径；`-f` 附件拖出用 `tauri-plugin-drag` 的 `startDrag`。预览、系统图标和原生右键菜单由 `commands.rs` 中对应 command 提供。macOS Quick Look 打开后可与 Popup 并行交互：弹窗内点击和切题不关闭预览，附件高亮保留；输入焦点不会在面板关闭时被附件抢回。焦点不在输入控件时空格切换预览，提交 / 取消 / Popup 销毁主动关闭。
 
+## 并发窗口焦点与级联
+
+daemon 的 `PopupFocusArbiter` 是跨 helper 的唯一焦点所有者：最早派发的 Popup 可自动前置并取得键盘焦点，后续 Popup 立即显示但不得激活应用。它们按请求序号进入 FIFO；当前 owner 完成、取消、断连或窗口销毁后，最早存活的等待窗口接力。用户直接点击等待窗口或从托盘选择请求会显式转移 owner，原 owner 回到等待队首。
+
+冷、热 helper 都先隐藏建窗并在内容 `nextTick` 后发送 `PopupReady`，收到 daemon 的 `PresentPopup` 才上屏，从而避免 ready 次序反转焦点归属。macOS 用跨进程 `NSWindow.windowNumber`、`NSWindowBelow` 和系统 `cascadeTopLeftFromPoint:` 在前驱后方非激活级联；Linux 复用同一仲裁协议，采用非主动聚焦和 24 逻辑点级联，精确层级服从 X11/Wayland 窗口管理器。终态与 `PopupDismissed` 分离，并以连接 EOF / 750ms 超时兜底，避免旧窗口关闭期间与下一窗口争抢焦点。完整实施记录见 `docs/plans/popup-focus-arbitration.md`。
+
 ## 来源标题与上下文
 
 来源名（弹窗标题与渠道消息头共用）的解析优先级为 **自定义环境变量 `ASKHUMAN_ENV_SOURCE_NAME` > 探测到的发起 Agent 展示名（Claude Code/Codex/Cursor/Grok）> 默认「the Loop」**。后端入口为 `models::source_name_for_agent`；MCP 模式无法从 env 判断家族时先回退默认名称，再由 daemon 异步进程树解析补齐 Agent。

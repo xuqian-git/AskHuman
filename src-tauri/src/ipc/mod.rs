@@ -353,6 +353,20 @@ pub struct ShowPayload {
     pub created_at_ms: u64,
 }
 
+/// Daemon-authorized first presentation for a popup helper.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "camelCase")]
+pub enum PopupPresentation {
+    /// The current owner may activate the application and take keyboard focus.
+    Foreground,
+    /// A waiting popup is shown without activation, cascaded behind its predecessor.
+    BackgroundCascade {
+        cascade_index: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        behind_window_number: Option<i64>,
+    },
+}
+
 /// 客户端（CLI / GUI Helper）→ Daemon 的消息。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
@@ -378,6 +392,16 @@ pub enum ClientMsg {
     /// 发送，表示「已就绪、入热池待命」。daemon 据此把该连接登记进热池，来请求时直接发 `Show` 领用，
     /// 无需现 spawn 新进程。无 token（领用时才关联具体请求）。
     GuiWarmReady,
+    /// Popup content and its hidden native window are ready; daemon decides how it may appear.
+    PopupReady {
+        request_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        window_number: Option<i64>,
+    },
+    /// A visible waiting popup gained native focus through an explicit user action.
+    PopupFocused { request_id: String },
+    /// The native popup window has been destroyed and no longer blocks focus handoff.
+    PopupDismissed { request_id: String },
     /// 设置进程请求「自动识别 userId/open_id」（Q6）。握手后发送，阻塞等单个结果。
     Detect(DetectRequest),
     /// GUI Helper 回传用户作答（`action` 区分发送/取消）。
@@ -550,6 +574,11 @@ pub enum ServerMsg {
     },
     /// 下发题目（D→GUI）。
     Show(ShowPayload),
+    /// Authorize the helper's first visible presentation after `PopupReady`.
+    PresentPopup {
+        request_id: String,
+        presentation: PopupPresentation,
+    },
     /// 被其它渠道抢答，通知 GUI 收尾关窗（D→GUI）。
     Cancel {
         request_id: String,
@@ -810,6 +839,45 @@ mod tests {
             ServerMsg::UpdateState {
                 available: true,
                 pending: false,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn popup_presentation_handshake_roundtrip() {
+        let ready = ClientMsg::PopupReady {
+            request_id: "r1".into(),
+            window_number: Some(42),
+        };
+        let json = serde_json::to_string(&ready).unwrap();
+        assert!(json.contains(r#""type":"popupReady""#));
+        assert!(json.contains(r#""window_number":42"#));
+        assert!(matches!(
+            serde_json::from_str::<ClientMsg>(&json).unwrap(),
+            ClientMsg::PopupReady {
+                window_number: Some(42),
+                ..
+            }
+        ));
+
+        let present = ServerMsg::PresentPopup {
+            request_id: "r2".into(),
+            presentation: PopupPresentation::BackgroundCascade {
+                cascade_index: 2,
+                behind_window_number: Some(42),
+            },
+        };
+        let json = serde_json::to_string(&present).unwrap();
+        assert!(json.contains(r#""type":"presentPopup""#));
+        assert!(json.contains(r#""mode":"backgroundCascade""#));
+        assert!(matches!(
+            serde_json::from_str::<ServerMsg>(&json).unwrap(),
+            ServerMsg::PresentPopup {
+                presentation: PopupPresentation::BackgroundCascade {
+                    cascade_index: 2,
+                    behind_window_number: Some(42),
+                },
                 ..
             }
         ));

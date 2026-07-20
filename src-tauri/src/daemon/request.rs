@@ -48,6 +48,8 @@ pub struct RequestEntry {
     pub resolved_agent: Arc<Mutex<Option<ResolvedAgent>>>,
     /// GUI Helper 是否已连上（用于看门狗判定弹窗是否成功拉起）。
     pub gui_connected: AtomicBool,
+    /// GUI content and its hidden native window reached the presentation handshake.
+    pub gui_ready: AtomicBool,
     /// CLI 断开 / 请求结束时通知 GUI 连接处理器收尾。
     pub cancel: Arc<Notify>,
     /// 渲染结果发送端（协调器 finish 与看门狗共用；连接处理器从对应 rx 取）。
@@ -107,6 +109,13 @@ impl InteractionEntry {
         match self {
             Self::Ask(entry) => &entry.token,
             Self::Confirm(entry) => &entry.token,
+        }
+    }
+
+    pub fn seq(&self) -> u64 {
+        match self {
+            Self::Ask(entry) => entry.seq,
+            Self::Confirm(entry) => entry.seq,
         }
     }
 
@@ -409,6 +418,7 @@ impl RequestRegistry {
             gui,
             resolved_agent: Arc::new(Mutex::new(None)),
             gui_connected: AtomicBool::new(false),
+            gui_ready: AtomicBool::new(false),
             cancel: Arc::new(Notify::new()),
             final_tx,
         });
@@ -653,8 +663,8 @@ impl RequestRegistry {
         entries.into_iter().map(|(_, info)| info).collect()
     }
 
-    /// 聚焦某请求的弹窗：向其 GUI 连接下发 `FocusPopup`。返回是否成功投递（无弹窗连接则 false）。
-    pub fn focus_popup(&self, request_id: &str) -> bool {
+    /// Send one message to a request's live popup helper.
+    pub fn send_to_gui(&self, request_id: &str, msg: ServerMsg) -> bool {
         let inner = self.inner.lock().unwrap();
         let gui = if let Some(entry) = inner.by_id.get(request_id) {
             &entry.gui
@@ -667,11 +677,7 @@ impl RequestRegistry {
             return false;
         };
         match slot.as_ref() {
-            Some(tx) => tx
-                .send(ServerMsg::FocusPopup {
-                    request_id: request_id.to_string(),
-                })
-                .is_ok(),
+            Some(tx) => tx.send(msg).is_ok(),
             None => false,
         }
     }

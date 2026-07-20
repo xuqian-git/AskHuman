@@ -38,6 +38,8 @@ mod macos_menu;
 mod macos_quicklook;
 #[cfg(target_os = "macos")]
 mod macos_window_anim;
+#[cfg(target_os = "macos")]
+mod macos_window_order;
 mod mcp;
 mod models;
 mod msg_card;

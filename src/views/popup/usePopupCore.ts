@@ -1763,8 +1763,8 @@ export function usePopupCore() {
   let adopting = false;
   let interactionRendered = false;
 
-  // 把（含 request 的）init 渲染上屏：套主题/语言/来源 → 设 request → 双 rAF 打点 → 首帧后再做非关键初始化。
-  // 预热弹窗（init.warm）窗口起始隐藏，绘制完成后调 popup_show_window 让后端延后 show（杜绝空白闪现）。
+  // 把（含 request 的）init 渲染上屏：套主题/语言/来源 → 设 request → 报告 ready → 双 rAF 打点。
+  // daemon 收到 ready 后统一决定前景显示或后方级联；冷/热 helper 都保持隐藏到该授权到达。
   function renderInit(init: PopupInit) {
     const interaction = init.interaction;
     if (!interaction || interactionRendered) return;
@@ -1860,20 +1860,13 @@ export function usePopupCore() {
         });
       });
     };
-    if (init.warm) {
-      // 预热弹窗的窗口此刻仍隐藏（ordered-out），没有 display link → rAF 不会回调，故不能「先双 rAF 再 show」。
-      // 改为：nextTick 等 DOM 把正文更新完，再请后端上屏；窗口可见后 WebKit 即绘制当前 DOM（已是正文，无
-      // 「加载中→正文」闪现），rAF 也随之恢复，afterPaint 在 show 之后打点 / 自动取消。
-      nextTick(() => {
-        popupShowWindow().catch(() => {});
-        appearGuardUntil = Date.now() + APPEAR_GUARD_MS; // 窗口刚上屏：短时吞掉 ⌘W 防误关
-        afterPaint();
-      });
-    } else {
-      // 冷路径：窗口已在 setup 中显示，rAF 正常回调。
+    // Hidden windows have no display link, so readiness must not wait for rAF. nextTick is enough
+    // to put this request into the DOM; daemon presentation restores rAF for afterPaint.
+    nextTick(() => {
+      popupShowWindow().catch(() => {});
       appearGuardUntil = Date.now() + APPEAR_GUARD_MS;
       afterPaint();
-    }
+    });
     // 内容已渲染：把其余初始化（事件监听 / 语音 / 自更新 / 终端探测）放到首帧之后，不阻塞首屏。
     void initAfterPaint(init);
   }

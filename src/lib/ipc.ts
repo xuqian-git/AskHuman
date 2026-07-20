@@ -63,7 +63,7 @@ export const popupAgentTerminal = (pid: number) =>
 export const popupAgentResolved = () =>
   invoke<PushedAgent>("popup_agent_resolved");
 
-/** 方案6：预热弹窗把本次请求内容绘制完成后调用，让后端把隐藏的窗口上屏（延后 show，杜绝闪现）。 */
+/** Report that popup content is ready; daemon authorizes foreground or background presentation. */
 export const popupShowWindow = () => invoke<void>("popup_show_window");
 
 export const submitPopup = (submission: PopupSubmission) =>

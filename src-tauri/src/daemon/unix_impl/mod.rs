@@ -3,6 +3,7 @@
 
 use super::config_watch;
 use super::lifecycle::{self, DaemonMeta, LockGuard};
+use super::popup_focus::{PopupEffect, PopupFocusArbiter, ReadyMetadata};
 use super::request::{self, InteractionEntry, RequestEntry, RequestRegistry};
 use crate::agents::registry::AgentRegistry;
 use crate::agents::{AgentKind, LifecycleEvent};
@@ -18,8 +19,8 @@ use crate::dingtalk::router::DdRouter;
 use crate::feishu::router::FsRouter;
 use crate::i18n::Lang;
 use crate::ipc::{
-    self, transport, ClientMsg, ConfirmTask, DetectRequest, HelloAck, HelloStatus, ServerMsg,
-    StatusInfo, TaskRequest,
+    self, transport, ClientMsg, ConfirmTask, DetectRequest, HelloAck, HelloStatus,
+    PopupPresentation, ServerMsg, StatusInfo, TaskRequest,
 };
 use crate::models::{ChannelAction, ChannelResult, ConfirmFallbackReason};
 use crate::slack::router::SlRouter;
@@ -159,6 +160,8 @@ struct ServerState {
     draining: AtomicBool,
     /// 活动请求登记表。
     registry: Arc<RequestRegistry>,
+    /// Cross-process popup focus owner and background cascade order.
+    popup_focus: Mutex<PopupFocusArbiter>,
     /// 钉钉长连接 Router（惰性建连、常热复用；连接死亡后按需重连）。
     dd_router: tokio::sync::Mutex<Option<Arc<DdRouter>>>,
     /// 飞书长连接 Router（惰性建连、常热复用；连接死亡后按需重连）。
@@ -206,6 +209,52 @@ impl ServerState {
     fn config_snapshot(&self) -> AppConfig {
         self.config.lock().unwrap().clone()
     }
+}
+
+fn apply_popup_effects(state: &Arc<ServerState>, effects: Vec<PopupEffect>) {
+    for effect in effects {
+        let (request_id, message) = match effect {
+            PopupEffect::PresentForeground { request_id } => {
+                let message = ServerMsg::PresentPopup {
+                    request_id: request_id.clone(),
+                    presentation: PopupPresentation::Foreground,
+                };
+                (request_id, message)
+            }
+            PopupEffect::PresentBackground {
+                request_id,
+                cascade_index,
+                behind_window_number,
+            } => {
+                let message = ServerMsg::PresentPopup {
+                    request_id: request_id.clone(),
+                    presentation: PopupPresentation::BackgroundCascade {
+                        cascade_index,
+                        behind_window_number,
+                    },
+                };
+                (request_id, message)
+            }
+            PopupEffect::Focus { request_id } => {
+                let message = ServerMsg::FocusPopup {
+                    request_id: request_id.clone(),
+                };
+                (request_id, message)
+            }
+        };
+        let _ = state.registry.send_to_gui(&request_id, message);
+    }
+}
+
+fn update_popup_focus(
+    state: &Arc<ServerState>,
+    update: impl FnOnce(&mut PopupFocusArbiter) -> Vec<PopupEffect>,
+) {
+    let effects = {
+        let mut focus = state.popup_focus.lock().unwrap();
+        update(&mut focus)
+    };
+    apply_popup_effects(state, effects);
 }
 
 #[derive(Clone)]
@@ -719,6 +768,7 @@ async fn serve(_lock: LockGuard) -> i32 {
         shutdown: tokio::sync::Notify::new(),
         draining: AtomicBool::new(false),
         registry: RequestRegistry::new(),
+        popup_focus: Mutex::new(PopupFocusArbiter::new()),
         dd_router: tokio::sync::Mutex::new(None),
         fs_router: tokio::sync::Mutex::new(None),
         tg_router: tokio::sync::Mutex::new(None),
@@ -942,6 +992,7 @@ async fn serve(_lock: LockGuard) -> i32 {
     // Shutting down: cancel any in-flight requests so their IM cards finalize to "Cancelled".
     // Unlike CLI-disconnect, the runtime is about to exit, so we give the finalize HTTP calls a
     // brief bounded window to land (sessions may take up to ~1s to notice the cancel + ~0.3s HTTP).
+    state.popup_focus.lock().unwrap().clear();
     if state.registry.cancel_all_requests() > 0 {
         tokio::time::sleep(Duration::from_millis(2000)).await;
     }
@@ -1332,7 +1383,7 @@ async fn control_loop(
             ClientMsg::RefreshUpdateState => refresh_update_snapshot(state),
             // 托盘「待答」子菜单点击：聚焦/闪烁对应请求的弹窗（即发即走，无回包）。
             ClientMsg::FocusRequest { request_id } => {
-                state.registry.focus_popup(&request_id);
+                update_popup_focus(state, |focus| focus.claim_and_focus(&request_id));
             }
             // 状态窗口手动把某 agent 置空闲（纠正漏 hook 卡「工作中」）：变化则持久化 + 推订阅窗口。
             ClientMsg::AgentForceIdle { session_id } => {
@@ -1411,7 +1462,10 @@ async fn control_loop(
             // Answer 只应在 GUI 接管阶段出现；控制阶段收到即忽略。
             ClientMsg::Answer { .. }
             | ClientMsg::ConfirmAnswer { .. }
-            | ClientMsg::ConfirmReady { .. } => {}
+            | ClientMsg::ConfirmReady { .. }
+            | ClientMsg::PopupReady { .. }
+            | ClientMsg::PopupFocused { .. }
+            | ClientMsg::PopupDismissed { .. } => {}
         }
     }
 }
@@ -1562,6 +1616,7 @@ async fn handle_submit_confirm(
         }
         _ = wait_cli_eof(&mut reader) => {
             entry.coordinator.cancel();
+            update_popup_focus(state, |focus| focus.terminal(&request_id));
             entry.cancel.notify_waiters();
             state.registry.remove_confirm(&request_id);
             broadcast_tray_state(state);
@@ -1592,6 +1647,7 @@ async fn handle_submit_confirm(
         }
     }
     entry.mark_deliveries_terminal();
+    update_popup_focus(state, |focus| focus.terminal(&request_id));
     entry.cancel.notify_waiters();
     state.registry.remove_confirm(&request_id);
     broadcast_tray_state(state);
@@ -1773,7 +1829,7 @@ async fn handle_submit(
 
     // 看门狗：弹窗已拉起但限定时间内未连上 → 判失败；但若已挂了 IM 渠道则不致命（让 IM 继续等答）。
     if popup_ok {
-        spawn_gui_watchdog(entry.clone(), lang, im_attached);
+        spawn_gui_watchdog(entry.clone(), lang, im_attached, state.clone());
     }
 
     // 等待结果或 CLI 断开。
@@ -1786,6 +1842,7 @@ async fn handle_submit(
             // daemon need not wait here — it stays alive.
             let caller = crate::i18n::tr(lang, "channel.sourceCaller").to_string();
             entry.coordinator.cancel_request(caller, "caller");
+            update_popup_focus(state, |focus| focus.terminal(&request_id));
             entry.cancel.notify_waiters();
             state.registry.remove(&request_id);
             // 不标记扰动：取消只是就地 PATCH 提问卡定格，不产生新消息（不淹没 watch 卡）。
@@ -1827,6 +1884,7 @@ async fn handle_submit(
             set_active_channel(state, &winner).await;
         }
     }
+    update_popup_focus(state, |focus| focus.terminal(&request_id));
     entry.cancel.notify_waiters();
     state.registry.remove(&request_id);
     // 在途请求数 -1：刷新菜单栏状态。
@@ -1917,12 +1975,45 @@ async fn serve_gui(
         }
     }
 
-    // 读 GUI 答复 / 收到取消通知。
+    // Keep the socket alive after a terminal decision until the native window confirms dismissal.
+    // This prevents the next popup from taking focus while the previous window is still closing.
+    let dismiss_timeout = tokio::time::sleep(Duration::from_secs(24 * 60 * 60));
+    tokio::pin!(dismiss_timeout);
+    let mut awaiting_dismissal = false;
+    let mut answer_received = false;
+    let mut dismissal_received = false;
     loop {
         tokio::select! {
             msg = ipc::read_msg::<_, ClientMsg>(&mut reader) => {
                 match msg {
+                    Ok(Some(ClientMsg::PopupReady {
+                        request_id,
+                        window_number,
+                    })) if request_id == entry.request_id => {
+                        entry.gui_ready.store(true, Ordering::SeqCst);
+                        update_popup_focus(state, |focus| {
+                            focus.ready(&request_id, ReadyMetadata { window_number })
+                        });
+                    }
+                    Ok(Some(ClientMsg::PopupFocused { request_id }))
+                        if request_id == entry.request_id =>
+                    {
+                        update_popup_focus(state, |focus| focus.claim(&request_id));
+                    }
+                    Ok(Some(ClientMsg::PopupDismissed { request_id }))
+                        if request_id == entry.request_id =>
+                    {
+                        update_popup_focus(state, |focus| focus.dismissed(&request_id));
+                        if !answer_received {
+                            entry.coordinator.submit(ChannelResult::cancel("popup"));
+                        }
+                        dismissal_received = true;
+                        break;
+                    }
                     Ok(Some(ClientMsg::Answer { action, answers, .. })) => {
+                        if answer_received {
+                            continue;
+                        }
                         let result = match action {
                             ChannelAction::Send => ChannelResult {
                                 action: ChannelAction::Send,
@@ -1932,17 +2023,29 @@ async fn serve_gui(
                             ChannelAction::Cancel => ChannelResult::cancel("popup"),
                         };
                         entry.coordinator.submit(result);
-                        break;
+                        answer_received = true;
+                        awaiting_dismissal = true;
+                        dismiss_timeout.as_mut().reset(
+                            tokio::time::Instant::now() + Duration::from_millis(750),
+                        );
                     }
                     Ok(Some(_)) => {}
                     Ok(None) | Err(_) => {
                         // Helper 断开且未作答：视为取消（已完成则为 no-op）。
-                        entry.coordinator.submit(ChannelResult::cancel("popup"));
+                        if !answer_received {
+                            entry.coordinator.submit(ChannelResult::cancel("popup"));
+                        }
                         break;
                     }
                 }
             }
-            _ = entry.cancel.notified() => break,
+            _ = entry.cancel.notified(), if !awaiting_dismissal => {
+                awaiting_dismissal = true;
+                dismiss_timeout.as_mut().reset(
+                    tokio::time::Instant::now() + Duration::from_millis(750),
+                );
+            }
+            _ = &mut dismiss_timeout, if awaiting_dismissal => break,
         }
     }
 
@@ -1952,6 +2055,9 @@ async fn serve_gui(
     }
     drop(gui_tx);
     let _ = writer.await;
+    if !dismissal_received {
+        update_popup_focus(state, |focus| focus.disconnected(&entry.request_id));
+    }
 }
 
 /// Structured confirmation popup service. A helper disconnect is a channel failure, never a
@@ -1981,10 +2087,36 @@ async fn serve_confirm_gui(
     }
 
     let mut failed = false;
+    let dismiss_timeout = tokio::time::sleep(Duration::from_secs(24 * 60 * 60));
+    tokio::pin!(dismiss_timeout);
+    let mut awaiting_dismissal = false;
+    let mut answer_received = false;
+    let mut dismissal_received = false;
     loop {
         tokio::select! {
             msg = ipc::read_msg::<_, ClientMsg>(&mut reader) => {
                 match msg {
+                    Ok(Some(ClientMsg::PopupReady {
+                        request_id,
+                        window_number,
+                    })) if request_id == entry.request_id => {
+                        update_popup_focus(state, |focus| {
+                            focus.ready(&request_id, ReadyMetadata { window_number })
+                        });
+                    }
+                    Ok(Some(ClientMsg::PopupFocused { request_id }))
+                        if request_id == entry.request_id =>
+                    {
+                        update_popup_focus(state, |focus| focus.claim(&request_id));
+                    }
+                    Ok(Some(ClientMsg::PopupDismissed { request_id }))
+                        if request_id == entry.request_id =>
+                    {
+                        update_popup_focus(state, |focus| focus.dismissed(&request_id));
+                        failed = !answer_received && !awaiting_dismissal;
+                        dismissal_received = true;
+                        break;
+                    }
                     Ok(Some(ClientMsg::ConfirmReady { request_id }))
                         if request_id == entry.request_id =>
                     {
@@ -2010,7 +2142,13 @@ async fn serve_confirm_gui(
                             comment,
                             "popup",
                         ) {
-                            Ok(_) => break,
+                            Ok(_) => {
+                                answer_received = true;
+                                awaiting_dismissal = true;
+                                dismiss_timeout.as_mut().reset(
+                                    tokio::time::Instant::now() + Duration::from_millis(750),
+                                );
+                            }
                             Err(error) => log(&format!(
                                 "invalid popup confirmation answer for {}: {error}",
                                 entry.request_id
@@ -2019,12 +2157,18 @@ async fn serve_confirm_gui(
                     }
                     Ok(Some(_)) => {}
                     Ok(None) | Err(_) => {
-                        failed = true;
+                        failed = !answer_received && !awaiting_dismissal;
                         break;
                     }
                 }
             }
-            _ = entry.cancel.notified() => break,
+            _ = entry.cancel.notified(), if !awaiting_dismissal => {
+                awaiting_dismissal = true;
+                dismiss_timeout.as_mut().reset(
+                    tokio::time::Instant::now() + Duration::from_millis(750),
+                );
+            }
+            _ = &mut dismiss_timeout, if awaiting_dismissal => break,
         }
     }
 
@@ -2038,6 +2182,9 @@ async fn serve_confirm_gui(
     }
     drop(gui_tx);
     let _ = writer.await;
+    if !dismissal_received {
+        update_popup_focus(state, |focus| focus.disconnected(&entry.request_id));
+    }
 }
 
 /// 方案6 预热弹窗连接（`--popup --warm` 拉起的进程 → `GuiWarmReady`）：建专用写端、入热池待命，
@@ -2158,11 +2305,26 @@ async fn wait_cli_eof(reader: &mut Reader) {
 
 /// 看门狗：限定时间内 GUI 未连上 → 经渲染通道送「弹窗拉起失败」结果（退出码 3）。
 /// `im_attached` 为真时弹窗未连上不判失败——IM 渠道仍可作答。
-fn spawn_gui_watchdog(entry: Arc<RequestEntry>, lang: Lang, im_attached: bool) {
+fn spawn_gui_watchdog(
+    entry: Arc<RequestEntry>,
+    lang: Lang,
+    im_attached: bool,
+    state: Arc<ServerState>,
+) {
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_secs(request::GUI_CONNECT_TIMEOUT_SECS)).await;
-        if !entry.gui_connected.load(Ordering::SeqCst) && !im_attached {
-            let _ = entry.final_tx.send(request::popup_failed_outcome(lang));
+        if !entry.gui_ready.load(Ordering::SeqCst) {
+            update_popup_focus(&state, |focus| focus.dispatch_failed(&entry.request_id));
+            if !im_attached {
+                let _ = state.registry.send_to_gui(
+                    &entry.request_id,
+                    ServerMsg::Cancel {
+                        request_id: entry.request_id.clone(),
+                        winner: "system".to_string(),
+                    },
+                );
+                let _ = entry.final_tx.send(request::popup_failed_outcome(lang));
+            }
         }
     });
 }
@@ -3062,6 +3224,9 @@ fn dispatch_interaction_popup(
     perf_id: &str,
     perf_autodismiss: bool,
 ) -> bool {
+    let request_id = entry.request_id().to_string();
+    let seq = entry.seq();
+    update_popup_focus(state, |focus| focus.reserve(request_id.clone(), seq));
     // 取出热池槽（恒 ≤1）。
     let slot = state.warm_pool.lock().unwrap().take();
     if let Some(slot) = slot {
@@ -3086,6 +3251,7 @@ fn dispatch_interaction_popup(
         }
         Err(e) => {
             log(&format!("failed to spawn GUI helper: {}", e));
+            update_popup_focus(state, |focus| focus.dispatch_failed(&request_id));
             false
         }
     }
