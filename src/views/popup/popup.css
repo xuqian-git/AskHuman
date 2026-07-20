@@ -895,23 +895,72 @@
   gap: var(--space-3);
   min-width: 0;
 }
-/* Vertical-question composers keep identical empty geometry before and after focus. Only real
-   multiline content grows the textarea, so native focus/blur cannot move an option mid-click. */
+/* A collapsible composer is one real control surface. Its textarea and action row are borderless
+   children, so focus and hover belong to the surface instead of sitting behind an overlaid row. */
+.answer-composer.is-collapsible {
+  --compact-answer-height: calc(38px + 2 * var(--hairline));
+  --compact-answer-actions-height: 34px;
+}
+.answer-composer.is-collapsible .input-wrap {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  min-height: var(--compact-answer-height);
+  border: var(--hairline) solid var(--control-border);
+  border-radius: var(--radius-md);
+  background: var(--control-bg);
+  box-shadow: var(--clickable-shadow);
+  box-sizing: border-box;
+}
+.answer-composer.is-collapsible .input-wrap.has-text {
+  grid-template-columns: minmax(0, 1fr);
+  min-height: calc(
+    var(--compact-answer-height) + var(--compact-answer-actions-height)
+  );
+}
+.answer-composer.is-collapsible .input-wrap:not(:focus-within):hover {
+  background: var(--control-hover-bg);
+}
+.answer-composer.is-collapsible .input-wrap:focus-within {
+  box-shadow: var(--focus-ring), var(--clickable-shadow);
+}
 .answer-composer.is-collapsible .textarea,
 .answer-composer.is-collapsible .textarea.collapsed {
-  min-height: 44px;
-  padding: 10px 72px 10px 12px;
+  min-width: 0;
+  min-height: calc(var(--compact-answer-height) - 2 * var(--hairline));
+  height: auto;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
 }
-.answer-composer.is-collapsible .textarea.collapsed {
-  height: 44px;
+.answer-composer.is-collapsible .textarea:focus,
+.answer-composer.is-collapsible .textarea:focus-visible {
+  box-shadow: none;
+}
+.answer-composer.is-collapsible .composer-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  padding-right: 7px;
+  box-sizing: border-box;
+}
+.answer-composer.is-collapsible .input-wrap.has-text .composer-actions {
+  height: var(--compact-answer-actions-height);
+  padding: 1px 7px 7px;
 }
 .answer-composer.is-collapsible .img-btn,
 .answer-composer.is-collapsible .mic-btn {
-  bottom: 9px;
+  position: static;
+  flex: 0 0 26px;
 }
-/* Match the option-to-composer gap to the spacing between adjacent options. */
+/* Keep the visible gap at space-2 when the focus ring extends outside the control. */
 .options + .composer-anchor {
-  margin-top: calc(var(--space-2) - var(--space-3));
+  margin-top: calc(
+    var(--space-2) + var(--focus-ring-width) - var(--space-3)
+  );
 }
 .composer-attachments {
   display: contents;

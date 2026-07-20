@@ -20,7 +20,9 @@
   --hairline: 1px;
   /* Keyboard / text-field focus glow. Composed with --clickable-shadow on controls;
      keep as a single shadow list item so it can be stacked safely. */
-  --focus-ring: 0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent);
+  --focus-ring-width: 3px;
+  --focus-ring: 0 0 0 var(--focus-ring-width)
+    color-mix(in srgb, var(--accent) 35%, transparent);
 }
 @media (-webkit-min-device-pixel-ratio: 2), (min-resolution: 2dppx) {
   :root {

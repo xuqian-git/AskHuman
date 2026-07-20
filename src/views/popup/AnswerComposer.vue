@@ -51,6 +51,9 @@ const isExpanded = computed(
 const ownsSpeech = computed(
   () => listening.value && speechTargetQ.value === props.qIndex
 );
+const hasText = computed(
+  () => (inputByQ.value[props.qIndex] ?? "").trim().length > 0
+);
 
 function handleSpeech() {
   focusQuestionAction(props.qIndex);
@@ -78,6 +81,7 @@ function handlePickFiles() {
         <div
           :ref="(el) => setComposerHomeRef(el as HTMLElement | null, qIndex)"
           class="input-wrap"
+          :class="{ 'has-text': hasText }"
         >
           <textarea
             :ref="(el) => setInputRef(el as HTMLTextAreaElement | null, qIndex)"
@@ -96,7 +100,7 @@ function handlePickFiles() {
             @mousedown="onComposerMouseDown(qIndex)"
             @click="activateComposer(qIndex)"
           ></textarea>
-          <template v-if="isExpanded">
+          <div v-if="isExpanded" class="composer-actions">
             <button
               v-if="speechSupported"
               class="mic-btn"
@@ -138,7 +142,7 @@ function handlePickFiles() {
                 <path d="M21 15l-5-5L5 21" />
               </svg>
             </button>
-          </template>
+          </div>
         </div>
 
         <p v-if="speechTargetQ === qIndex && speechError" class="speech-error">
